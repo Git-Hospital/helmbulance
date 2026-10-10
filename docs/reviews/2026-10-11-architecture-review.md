@@ -1,6 +1,6 @@
 # Review: architecture at 7c9cd34, code at 3ae143f
 
-Date: 11 October 2026. Reviewer: Kadirhan (skeptic role).
+Date: 11 October 2026. Reviewer: Kadirhan.
 
 Three independent read-only reviews looked at `docs/architecture.md`, the README and the Go code: one on architecture and feasibility, one adversarial review of the code and its claims, one on strategy. The blockers were then re-checked by hand. Nothing ran on a cluster (Docker was off), so every item says how it was checked:
 
