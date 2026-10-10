@@ -1,0 +1,5 @@
+apiVersion: v2
+name: keeps-set-key
+description: "Helmbulance fixture. Fixed twin of drops-set-key: keeps the key once set and refuses a different one."
+type: application
+version: 0.1.0

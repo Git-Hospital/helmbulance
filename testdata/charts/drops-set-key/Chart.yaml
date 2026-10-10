@@ -1,0 +1,5 @@
+apiVersion: v2
+name: drops-set-key
+description: "Helmbulance fixture. Bug: an encryption key given with --set is lost on an upgrade without it."
+type: application
+version: 0.1.0

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: regenerates-secret
+description: "Helmbulance fixture. Bug: generates a password on every render."
+type: application
+version: 0.1.0

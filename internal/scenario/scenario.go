@@ -1,0 +1,57 @@
+// Package scenario defines what a scenario is and what it reports.
+package scenario
+
+import (
+	"context"
+	"io"
+
+	"github.com/egezamb/helmbulance/internal/execx"
+	"github.com/egezamb/helmbulance/internal/helm"
+	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/egezamb/helmbulance/internal/oracle"
+)
+
+// Verdicts. A scenario that cannot finish (install fails, timeout) is Inconclusive, never Fail:
+// a finding has to be reproduced, not inferred from a broken run.
+const (
+	Pass         = "PASS"
+	Fail         = "FAIL"
+	Inconclusive = "INCONCLUSIVE"
+)
+
+// Env is what a scenario gets to work with.
+type Env struct {
+	Runner *execx.Runner
+	Helm   *helm.Client
+	Kube   *kube.Client
+	Hasher *oracle.Hasher
+	Chart  string
+	Values helm.Values
+	Log    io.Writer
+}
+
+// Finding is one reproduced problem.
+type Finding struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Severity  string   `json:"severity"`
+	Evidence  []string `json:"evidence"`
+	Impact    string   `json:"impact"`
+	Fix       string   `json:"fix"`
+	Reproduce []string `json:"reproduce"`
+}
+
+// Result is the outcome of one scenario.
+type Result struct {
+	Scenario string    `json:"scenario"`
+	Verdict  string    `json:"verdict"`
+	Summary  string    `json:"summary"`
+	Findings []Finding `json:"findings,omitempty"`
+}
+
+// Scenario is one day-two situation tested against a live release.
+type Scenario interface {
+	Name() string
+	Description() string
+	Run(ctx context.Context, env *Env) Result
+}

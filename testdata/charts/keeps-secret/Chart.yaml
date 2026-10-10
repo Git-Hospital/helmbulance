@@ -1,0 +1,5 @@
+apiVersion: v2
+name: keeps-secret
+description: "Helmbulance fixture. Fixed twin of regenerates-secret: keeps the generated password with lookup."
+type: application
+version: 0.1.0
