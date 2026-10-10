@@ -2,7 +2,7 @@
 
 **Behavioural tests for Helm charts.** Helmbulance installs a chart into a throwaway Kubernetes cluster and runs the things that go wrong in production: upgrades without the original values, uninstall and reinstall, password rotation, network isolation, broken processes, hostile traffic. It reports what actually broke, with evidence and a suggested fix.
 
-> **Status: early.** The project starts from a real case study (below). The CLI and GitHub Action are being built; nothing is released yet.
+> **Status: early.** The CLI runs its first scenario (`upgrade-without-values`) end to end on kind. Nothing is released yet. See [docs/architecture.md](docs/architecture.md) for the design.
 
 ## Why
 
@@ -29,14 +29,14 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 
 | Scenario | Question it answers | Status |
 |---|---|---|
-| `upgrade-without-values` | Does `helm upgrade` without the original values regenerate or drop secrets and keys? | planned for v0.1 |
-| `reinstall` | After `helm uninstall` and `helm install`, do data and credentials come back? | planned for v0.1 |
-| `network-isolation` | Are internal ports and bundled databases unreachable from other namespaces? Is the NetworkPolicy actually enforced? | planned for v0.1 |
-| `secret-rotation` | When a password changes, does every component that uses it restart? | planned |
-| `process-kill` | If a process inside the container dies, does the liveness probe notice? | planned |
-| `probe-abuse` | Do probes depend on things outside the process, such as the database, so that outside load or an outage makes them fail? | planned |
-| `immutable-fields` | Does a values change hit an immutable field (StatefulSet volume templates, selectors) and break the upgrade? | planned |
-| `gitops-render` | Does the chart render the same without cluster access, as Argo CD and Flux do (`lookup` returns nothing there)? | planned |
+| `upgrade-without-values` | Does an upgrade from the values files, without the install-time `--set` flags, change or drop Secret values? | **works** |
+| `reinstall` | After `helm uninstall` and `helm install`, do data and credentials come back? | v0.1 |
+| `gitops-render` | Does the chart render differently without cluster access, as Argo CD does (`lookup` returns nothing there)? | v0.1 |
+| `network-isolation` | Are undeclared ports and bundled datastores unreachable from other namespaces, and is the NetworkPolicy actually enforced? | v0.1 |
+| `secret-rotation` | When a password changes, does every component that uses it restart and keep working? | v0.2 |
+| `immutable-fields` | Does a values change hit an immutable field (StatefulSet volume templates, selectors) and break the upgrade? | v0.2 |
+| `process-kill` | If a process inside the container dies, does the liveness probe notice? | v0.2 |
+| `probe-abuse` | Do probes depend on things outside the process, such as the database, so that outside load or an outage makes them fail? | v0.3 |
 
 ## Case study: Open Archiver
 
@@ -57,9 +57,23 @@ The chart will be published separately; this repository will link to it.
 
 ## Roadmap
 
-- **v0.1:** CLI (`helmbulance test ./chart -f values.yaml`) with the first three scenarios, a Markdown report, and a GitHub Action.
-- **v0.2:** the remaining scenarios, suggested patches in the report, and running against charts from Artifact Hub.
-- **Later:** scanning popular community charts and sending fixes upstream, and a hosted CI service for teams that ship charts to customers.
+- **v0.1:** the CLI with `upgrade-without-values`, `reinstall`, `gitops-render` and `network-isolation`, Markdown and JSON reports, and a GitHub Action.
+- **v0.2:** `secret-rotation`, `immutable-fields`, `process-kill`, SARIF for GitHub code scanning, and signed releases.
+- **v0.3:** `probe-abuse`, a hardened mode for charts you did not write, and optional AI hypotheses that the cluster must confirm.
+- **Later:** running against popular community charts and sending fixes upstream.
+
+Helmbulance runs entirely on your machine or in your CI. There is no server and no account.
+
+## Try it
+
+Requires Go, Docker, kind and helm.
+
+```sh
+go build -o bin/helmbulance ./cmd/helmbulance
+./bin/helmbulance test ./path/to/chart -f values.yaml --set some.secret=value
+```
+
+The fixtures in `testdata/charts/` show what it finds: each defect has a fixed twin that must pass.
 
 ## Contributing
 
