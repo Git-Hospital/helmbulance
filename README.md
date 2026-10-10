@@ -13,7 +13,7 @@ The most expensive chart bugs are behavioural. They only show up when something 
 - An upgrade without the original `--set` flags silently drops an encryption key, and the app keeps running without it.
 - A password rotation restarts the app but not the database it talks to.
 - A NetworkPolicy exists, but the cluster's CNI never enforces it.
-- A liveness probe hits an endpoint that unauthenticated traffic can make fail, so anyone can put the pod into a restart loop.
+- A liveness probe calls the database, so a slow database restarts every app pod at once.
 
 None of these produce an invalid manifest, so no linter flags them. Each one is found in minutes by doing the thing and watching what happens.
 
@@ -34,7 +34,7 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 | `network-isolation` | Are internal ports and bundled databases unreachable from other namespaces? Is the NetworkPolicy actually enforced? | planned for v0.1 |
 | `secret-rotation` | When a password changes, does every component that uses it restart? | planned |
 | `process-kill` | If a process inside the container dies, does the liveness probe notice? | planned |
-| `probe-abuse` | Can unauthenticated traffic make a probe fail (rate limits, auth, database checks in liveness)? | planned |
+| `probe-abuse` | Do probes depend on things outside the process, such as the database, so that outside load or an outage makes them fail? | planned |
 | `immutable-fields` | Does a values change hit an immutable field (StatefulSet volume templates, selectors) and break the upgrade? | planned |
 | `gitops-render` | Does the chart render the same without cluster access, as Argo CD and Flux do (`lookup` returns nothing there)? | planned |
 
@@ -50,7 +50,7 @@ We wrote a Helm chart for [Open Archiver](https://github.com/LogicLabs-OU/OpenAr
 | **PostgreSQL password change locked the app out.** PostgreSQL reads its passwords only when it creates the database, so the chart updated the Secret and the app could no longer log in. | Upgraded with a new password. | The chart refuses the change and explains how to rotate the password safely. |
 | **Internal API port reachable cluster-wide.** The app's backend listens on a port that the Service does not expose, but every pod could still reach it. | Connected from another namespace, with and without the policy. | A NetworkPolicy that admits only the web port. The bundled services accept connections only from the app and have no egress. |
 | **App connected as a database superuser.** A SQL injection would have reached `COPY … TO PROGRAM`. | Queried `pg_roles` on the live database. | A separate non-superuser app role that owns the database. The superuser can log in through the local socket only. |
-| **One more finding, in responsible disclosure.** | Reproduced on kind. | Mitigated in the chart. The upstream report is in progress; details will follow here once the maintainers have fixed it. |
+| **One more finding, in responsible disclosure.** | Reproduced on kind. | Details after the upstream fix. |
 | **A reported problem that was not real.** A reviewer claimed PostgreSQL would be SIGKILLed on every stop. | Deleted the pod and timed it: a clean shutdown in one second, because containerd honours the image's `STOPSIGNAL`. | No change. This is why findings need a cluster to confirm them. |
 
 The chart will be published separately; this repository will link to it.
