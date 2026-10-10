@@ -17,7 +17,18 @@ The research saw a README-only repository. Commit 3ae143f (CLI skeleton, `upgrad
 
 ## Where the research and `docs/architecture.md` differ
 
-These are points for review, not decisions. The code owner decides.
+**Update:** commit 7c9cd34 rewrote `docs/architecture.md` and settled all six points, so nothing here needs action:
+
+1. Resolved: §3.1 now runs Helm and kind as commands.
+2. Resolved: §3.2 names Argo CD and says `lookup` works under Flux.
+3. Resolved: §3.5 uses an HMAC with a per-run key.
+4. Decided: SARIF stays, from v0.2, with findings pointing at the template line or values key (§3.6).
+5. Decided: `gitops-render` is in v0.1; `network-isolation` is v0.1, or v0.2 if time runs short (§3.4, §8).
+6. Resolved: §3.6 lists exit codes 0 to 3.
+
+The open items after the rewrite are in `docs/reviews/2026-10-11-architecture-review.md` and `docs/decisions/0001-v0.1-path.md` (separate PR).
+
+The original notes, written against 3ae143f, follow for the record.
 
 1. **Shelling out vs in-process.** Architecture §3.1 says Helm, client-go and kind are used in-process. The code in 3ae143f runs `helm` and `kind` as commands (`internal/execx`, `internal/sandbox`), and the research recommends exactly that: chart-testing and terratest both shell out, the run then uses the Helm the user actually has, and a Helm 3.22 / 4.3 matrix is cheap. §3.1 may need to follow the code.
 2. **Flux and `lookup`.** Architecture §3.2 (and the README) say Argo CD and Flux render without cluster access. Argo CD does (`helm template`), but Flux's helm-controller performs a real install or upgrade, so `lookup` works there; Flux's drift detection compares the stored manifest instead of re-rendering ([helm-controller HelmRelease spec](https://github.com/fluxcd/helm-controller/blob/main/docs/spec/v2/helmreleases.md), [helm-controller#1583](https://github.com/fluxcd/helm-controller/issues/1583)). `gitops-render` needs separate expectations for the two.
