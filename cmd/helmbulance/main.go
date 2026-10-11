@@ -120,7 +120,7 @@ func test(args []string) int {
 		selected = without(selected, "chart-upgrade")
 	}
 
-	runner := &execx.Runner{Env: os.Environ()}
+	runner := &execx.Runner{Env: execx.SandboxEnv(os.Environ())}
 	started := time.Now()
 
 	var c *sandbox.Cluster
@@ -292,7 +292,7 @@ func matrixCmd(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	runner := &execx.Runner{Env: os.Environ()}
+	runner := &execx.Runner{Env: execx.SandboxEnv(os.Environ())}
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
@@ -357,7 +357,7 @@ func scanCmd(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	runner := &execx.Runner{Env: os.Environ()}
+	runner := &execx.Runner{Env: execx.SandboxEnv(os.Environ())}
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
