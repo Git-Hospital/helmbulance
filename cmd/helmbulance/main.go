@@ -170,7 +170,7 @@ func test(args []string) int {
 		SchemaVersion: report.SchemaVersion,
 		Chart:         chart,
 		ValuesFiles:   files,
-		SetKeys:       keysOf(sets),
+		SetKeys:       execx.SetKeys(sets),
 		HelmVersion:   h.Version(ctx),
 		Cluster:       c.Name,
 		Started:       started,
@@ -217,17 +217,6 @@ func pick(names []string) ([]scenario.Scenario, error) {
 		}
 	}
 	return out, nil
-}
-
-func keysOf(sets []string) []string {
-	var keys []string
-	for _, s := range sets {
-		for _, part := range strings.Split(s, ",") {
-			k, _, _ := strings.Cut(part, "=")
-			keys = append(keys, k)
-		}
-	}
-	return keys
 }
 
 // refuseRemote stops a run on a chart that is not on disk unless --allow-remote was given. A chart
@@ -298,7 +287,7 @@ func matrixCmd(args []string) int {
 		SchemaVersion: report.SchemaVersion,
 		Chart:         chart,
 		ValuesFiles:   files,
-		SetKeys:       keysOf(sets),
+		SetKeys:       execx.SetKeys(sets),
 		HelmVersion:   (&helm.Client{Runner: runner}).Version(ctx),
 		Cluster:       "one per Kubernetes version",
 		Started:       started,
@@ -363,7 +352,7 @@ func scanCmd(args []string) int {
 		SchemaVersion: report.SchemaVersion,
 		Chart:         chart,
 		ValuesFiles:   files,
-		SetKeys:       keysOf(sets),
+		SetKeys:       execx.SetKeys(sets),
 		HelmVersion:   (&helm.Client{Runner: runner}).Version(ctx),
 		Cluster:       "none (static scan)",
 		Started:       started,
