@@ -51,10 +51,12 @@ func (c *Client) waitArgs() []string {
 	return []string{"--wait", "--timeout", c.Timeout.String()}
 }
 
-// Install installs chart as release into ns, creating the namespace.
-func (c *Client) Install(ctx context.Context, release, ns, chart string, v Values) error {
+// Install installs chart as release into ns, creating the namespace. extra carries flags such as
+// --version or --repo.
+func (c *Client) Install(ctx context.Context, release, ns, chart string, v Values, extra ...string) error {
 	args := append([]string{"install", release, chart, "--create-namespace"}, c.base(ns)...)
 	args = append(args, c.waitArgs()...)
+	args = append(args, extra...)
 	args = append(args, v.args()...)
 	_, err := c.Runner.Run(ctx, c.bin(), args...)
 	return err

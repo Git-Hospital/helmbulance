@@ -1,0 +1,5 @@
+apiVersion: v2
+name: upgrade-fixture
+description: "Bug: adds a label to the Deployment selector, which Kubernetes does not allow to change."
+type: application
+version: 2.0.0

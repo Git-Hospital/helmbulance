@@ -155,3 +155,63 @@ func (c *Client) DeleteNamespace(ctx context.Context, ns string) error {
 		"--ignore-not-found", "--wait=true", "--timeout=5m")
 	return err
 }
+
+// Pod is the health of one pod.
+type Pod struct {
+	Name     string
+	Owner    string // kind/name of the controlling object
+	Ready    bool
+	Restarts int
+}
+
+// Pods returns the pods in ns with their readiness and restart counts.
+func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pods", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name            string `json:"name"`
+				OwnerReferences []struct {
+					Kind string `json:"kind"`
+					Name string `json:"name"`
+				} `json:"ownerReferences"`
+			} `json:"metadata"`
+			Status struct {
+				Phase      string `json:"phase"`
+				Conditions []struct {
+					Type   string `json:"type"`
+					Status string `json:"status"`
+				} `json:"conditions"`
+				ContainerStatuses []struct {
+					RestartCount int `json:"restartCount"`
+				} `json:"containerStatuses"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse pods: %w", err)
+	}
+	var pods []Pod
+	for _, item := range list.Items {
+		if item.Status.Phase == "Succeeded" { // finished Jobs
+			continue
+		}
+		p := Pod{Name: item.Metadata.Name}
+		if refs := item.Metadata.OwnerReferences; len(refs) > 0 {
+			p.Owner = refs[0].Kind + "/" + refs[0].Name
+		}
+		for _, c := range item.Status.Conditions {
+			if c.Type == "Ready" && c.Status == "True" {
+				p.Ready = true
+			}
+		}
+		for _, cs := range item.Status.ContainerStatuses {
+			p.Restarts += cs.RestartCount
+		}
+		pods = append(pods, p)
+	}
+	return pods, nil
+}

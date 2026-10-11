@@ -27,7 +27,12 @@ type Env struct {
 	Hasher *oracle.Hasher
 	Chart  string
 	Values helm.Values
-	Log    io.Writer
+
+	// From is the release the chart-upgrade scenario starts from: a chart reference (repo/chart,
+	// oci://… or a path) and a version. Empty From means "the same chart reference as Chart".
+	From        string
+	FromVersion string
+	Log         io.Writer
 }
 
 // Finding is one reproduced problem.

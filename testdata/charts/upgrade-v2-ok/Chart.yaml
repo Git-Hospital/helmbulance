@@ -1,0 +1,5 @@
+apiVersion: v2
+name: upgrade-fixture
+description: "Fixed twin of upgrade-v2-breaks: the new label goes on the pods only, the selector is unchanged."
+type: application
+version: 2.0.0

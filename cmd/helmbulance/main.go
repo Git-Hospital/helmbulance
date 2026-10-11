@@ -30,6 +30,7 @@ const (
 
 var scenarios = []scenario.Scenario{
 	scenario.UpgradeValues{},
+	scenario.ChartUpgrade{},
 }
 
 type multiFlag []string
@@ -73,6 +74,8 @@ func test(args []string) int {
 	nodeImage := fs.String("node-image", "", "kind node image")
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install or upgrade")
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
+	from := fs.String("from", "", "chart to upgrade from in chart-upgrade (repo/chart, oci://… or a path); defaults to the chart under test")
+	fromVersion := fs.String("from-version", "", "chart version to upgrade from; enables the chart-upgrade scenario")
 
 	// Accept the chart path before or after the flags.
 	var chart string
@@ -97,6 +100,9 @@ func test(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitError
+	}
+	if *fromVersion == "" && len(only) == 0 {
+		selected = without(selected, "chart-upgrade")
 	}
 
 	runner := &execx.Runner{Env: os.Environ()}
@@ -138,6 +144,9 @@ func test(args []string) int {
 		Chart:  chart,
 		Values: helm.Values{Files: files, Sets: sets},
 		Log:    os.Stderr,
+
+		From:        *from,
+		FromVersion: *fromVersion,
 	}
 
 	rep := &report.Report{
@@ -202,4 +211,14 @@ func keysOf(sets []string) []string {
 		}
 	}
 	return keys
+}
+
+func without(list []scenario.Scenario, name string) []scenario.Scenario {
+	var out []scenario.Scenario
+	for _, s := range list {
+		if s.Name() != name {
+			out = append(out, s)
+		}
+	}
+	return out
 }
