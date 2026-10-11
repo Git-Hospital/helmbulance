@@ -22,12 +22,13 @@ The Secret itself never changes, so a Secret-only check misses this. Helmbulance
 ## How the charts were found
 
 1. **Static pre-screen of about 480 popular Artifact Hub charts.** It looked for pod-template annotations that hash an included template whose body, or a helper it includes, uses both `lookup` and a random generator. 20 charts matched, among them Harbor, JupyterHub, Authelia, Netbox, Zitadel, NeuVector, SeaweedFS, Semaphore and several Bitnami charts.
-2. **Confirmed on kind for two of them.**
+2. **Confirmed on kind for three of them.**
 
 | Chart | Version | What restarts | Impact |
 |---|---|---|---|
 | JupyterHub | 4.4.2 | hub and proxy | short hub outage; single-user servers keep running |
 | Semaphore | 16.2.2 | the app | a real outage: one replica, `Recreate` |
+| SeaweedFS | 4.48.0 (S3 with auth) | the filer StatefulSet and the S3 gateway | a short outage of the filesystem's metadata service |
 
 For JupyterHub, by hand:
 
@@ -37,7 +38,18 @@ For JupyterHub, by hand:
 | 1st upgrade, no changes | **replaced** | **changed** | unchanged |
 | 2nd upgrade, no changes | unchanged | unchanged | unchanged |
 
-The other 18 candidates are unverified; the pre-screen only ranks them.
+SeaweedFS shows the pattern in its plainest form. Two workloads each include the S3 Secret template for their checksum, so on install the same Secret gets **two different** hashes:
+
+| | filer-0 pod | filer checksum | S3 checksum | Secret |
+|---|---|---|---|---|
+| after install | `06faf8ab…` | `78c07bb7…` | `df816172…` | `c572432d…` |
+| 1st upgrade, no changes | **replaced** | `24ccc99e…` | `24ccc99e…` | unchanged |
+| 2nd upgrade, no changes | unchanged | unchanged | unchanged | unchanged |
+
+Not verified:
+- **Harbor 1.19.2:** its images are published for amd64 only, and the sandbox here is arm64. It is a candidate for a run on an amd64 CI runner.
+- **Authelia 0.11.22:** does not start with default values; it needs a users file and session configuration.
+- **The other 15 candidates:** the pre-screen only ranks them.
 
 ## The fix
 
