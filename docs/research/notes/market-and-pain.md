@@ -30,12 +30,12 @@ Static scanners / policy (no live release behaviour)
 - helm/helm: 30,308 stars, v4.3.0 (2026-09-09). — [repo](https://github.com/helm/helm)
 
 Scenario coverage matrix (my reading of the docs above; "partial" = could be scripted by the user)
-- upgrade-without-values: none; ct only reuses CI values. immutable-fields: ct's own test suite has a deliberately failing selector-change case ([mirror of ct docs](https://docsearch.algolia.com/mcp/docs/repo/helm/chart-testing)), only when versions differ and values files exist. gitops-render: helm-unittest/kubeconform render without a cluster but do not compare against a cluster render. network-isolation: netassert/cyclonus partial. process-kill: Chaos Mesh/Litmus partial. secret-rotation, reinstall, probe-abuse: none found.
+- upgrade-without-values: none; ct only reuses CI values. immutable-fields: ct's own test suite has a deliberately failing selector-change case ([ct test chart README](https://github.com/helm/chart-testing/blob/main/pkg/chart/test_charts/simple-deployment-different-selector/README.md), [ct install docs](https://github.com/helm/chart-testing/blob/main/doc/ct_install.md)), only when versions differ and values files exist. gitops-render: helm-unittest/kubeconform render without a cluster but do not compare against a cluster render. network-isolation: netassert/cyclonus partial. process-kill: Chaos Mesh/Litmus partial. secret-rotation, reinstall, probe-abuse: none found.
 
 Commercial / startups
-- Search for "Helm chart upgrade testing", "day-2", "behavioural testing" products found nothing that matches; only ct, helm-test hooks and an MCP "operate" tool for running upgrades (not testing). — [web search result: ct docs mirror](https://docsearch.algolia.com/mcp/docs/repo/helm/chart-testing), [dot-ai Helm day-2 changelog](https://glama.ai/mcp/servers/@vfarcic/dot-ai/blob/da9254ad6bd2a4385f15005926d7f220b67ef8a8/changelog.d/251.feature.md)
+- Search for "Helm chart upgrade testing", "day-2", "behavioural testing" products found nothing that matches; only ct and helm-test hooks. — [ct install docs](https://github.com/helm/chart-testing/blob/main/doc/ct_install.md)
 - One ISV-side upgrade-test example: GitLab's agent chart MR "Add tests for a real-world upgrade scenario to look for breaking changes" shows maintainers hand-rolling upgrade tests in CI. — [MR](https://gitlab.com/gitlab-org/charts/gitlab-agent/-/merge_requests/76)
-- Snyk, Wiz and other commercial scanners: I did not verify any product page; treated as static/CVE/misconfig scanners (assumption, not sourced).
+- Snyk, Wiz and other commercial scanners: product pages not verified; treated as static/CVE/misconfig scanners (assumption, not sourced).
 
 ### Inferences
 - The whitespace is real but narrow: the competitor set is "static + generic harness", and nobody ships opinionated, pre-written day-2 scenarios with a reproduce-before-report rule.
@@ -55,11 +55,10 @@ Artifact Hub lists 18,197 Helm charts across about 6,225 Helm repositories (21,6
 - Artifact Hub stats API (2026-10-10): 21,683 packages total, 503,182 snapshots, 6,997 repositories, 3,711 organizations, 44,012 users. — [stats API](https://artifacthub.io/api/v1/stats)
 - Helm charts (kind=0) in search: 18,197 packages; 6,225 Helm repositories; 652 "official"; 117 CNCF-project packages; 8,420 from verified publishers (from `pagination-total-count` headers). — [API](https://artifacthub.io/api/v1/packages/search?kind=0&limit=1)
 - CNCF/Linux Foundation survey of 689 respondents (published Mar 2025, 2024 data): Helm preferred by 75%. — [LF report](https://www.linuxfoundation.org/hubfs/Research%20Reports/cncf_annual_survey24_031225a.pdf), [Cloud Native Now summary](https://cloudnativenow.com/topics/cloudnativedevelopment/cncf-survey-surfaces-steady-pace-of-increased-cloud-native-technology-adoption/)
-- A DEV Community post claims the Jan 2026 CNCF survey ranks Helm second-most-used CNCF project after Kubernetes (no percentage; secondary source, unverified). — [post](https://scour.ing/p/https:%2F%2Fdev.to%2Fmetalbear%2Fa-beginners-guide-to-helm-5fj0)
 - Bitnami charts repo: 10,415 stars; bitnami/containers 4,468 stars (still pushed 2026-10-10). — [charts](https://github.com/bitnami/charts), [containers](https://github.com/bitnami/containers)
 - `randAlphaNum` is a recognised, documented source of perpetual OutOfSync in Argo CD. — [Argo CD docs](https://argo-cd.readthedocs.io/en/stable/user-guide/helm/)
 - Argo CD does not allow cluster access while rendering, so `lookup` returns empty; the long-open request "Helm lookup Function Support" has 112 comments and 254 reactions (open since 2021-01-07); a 2025 proposal exists (argo-cd #21745, open). — [#5202](https://github.com/argoproj/argo-cd/issues/5202), [#21745](https://github.com/argoproj/argo-cd/issues/21745)
-- Helm itself has an open ask to warn when `lookup` returns nil (#32101, closed). — [helm #32101](https://github.com/helm/helm/issues/32101)
+- Helm itself had a request to warn when `lookup` returns nil (#32101, since closed). — [helm #32101](https://github.com/helm/helm/issues/32101)
 
 ### Inferences
 - A typical large "scan popular charts" sweep is feasible: ~18k charts, but the ~650 official + 8.4k verified-publisher subset is a sensible first target list.
@@ -138,12 +137,12 @@ Broadcom's Bitnami change (announced 2025-07-16, effective 2025-08-28, public ca
 - CNCF statement (2025-09-24): Helm project is unaffected; users should migrate or mirror. — [CNCF blog](https://www.cncf.io/blog/2025/09/24/cncfs-helm-project-remains-fully-open-source-and-unaffected-by-recent-vendor-deprecations/)
 - User impact examples: ImagePullBackOff on pinned tags; GitLab's infra team opened remediation issues ([gitlab-com/gl-infra#27125](https://gitlab.com/gitlab-com/gl-infra/production-engineering/-/issues/27125)); MOSIP advisory ([MOSIP](https://community.mosip.io/t/advisory-bitnami-catalog-changes-and-impact-on-mosip-deployments/2311)); nextcloud/helm needs replacement subcharts ([#754](https://github.com/nextcloud/helm/issues/754)).
 - Replacements: Chainguard published 40+ first-party charts forked from Bitnami ([Chainguard guide](https://www.chainguard.dev/supply-chain-security-101/a-practical-guide-to-migrating-helm-charts-from-bitnami)); CloudPirates-io/helm-charts repo created 2025-08-12, now 611 stars, pushed 2026-10-10 ([repo](https://github.com/CloudPirates-io/helm-charts)); TrueCharts 1,355 stars ([repo](https://github.com/truecharts/public)); CloudNativePG operator 9,423 stars as DB-subchart replacement ([repo](https://github.com/cloudnative-pg/cloudnative-pg), suggested in nextcloud #754).
-- Helm 4.0.0 released 2025-11-12 at KubeCon; adds server-side apply, kstatus-based wait, plugin-based post-renderers; Helm 3 bug fixes until 2026-07-08, security fixes until 2026-11-11. Latest in repo now v4.3.0 (2026-09-09). — [Helm blog](https://helm.sh/blog/helm-4-released), [helm releases](https://github.com/helm/helm/releases)
+- Helm 4.0.0 released 2025-11-12 at KubeCon; adds server-side apply, kstatus-based wait, plugin-based post-renderers; Helm 3 bug fixes and the final (limited) feature release 2026-09-09, security fixes until 2027-02-10 (originally 2026-11-11, extended by three months). Latest in repo now v4.3.0 (2026-09-09). — [Helm 4 blog](https://helm.sh/blog/helm-4-released), [Helm 3 end of life](https://helm.sh/blog/helm-v3-end-of-life), [helm releases](https://github.com/helm/helm/releases)
 - v4.0.0 release notes: "Existing charts should continue to install, upgrade... Please test the installation and upgrade of charts... Changes (e.g., server side apply) may impact the experience." — [v4.0.0 release notes](https://github.com/helm/helm/releases/tag/v4.0.0)
 - Whether SSA is default is reported inconsistently (one source: default for new installs only; others: default). Not resolved. — [DEV summary](https://dev.to/ilya-lesikov/helm-v4-key-changes-from-v3-2i26), [AlternativeTo](https://alternativeto.net/news/2025/11/helm-4-0-0-released-with-wasm-plugin-system-and-server-side-apply)
 
 ### Inferences
-- Helm 3 security EOL on 2026-11-11 (a month away) means a forced migration wave; "does my chart still upgrade under Helm 4 SSA" is a natural Helmbulance scenario (immutable-fields + field-ownership conflicts).
+- Helm 3 security fixes end on 2027-02-10 (after the final feature release on 2026-09-09), which means a forced migration wave; "does my chart still upgrade under Helm 4 SSA" is a natural Helmbulance scenario (immutable-fields + field-ownership conflicts).
 - Bitnami's lock-in turned many to forks/rewrites that are young and untested for upgrades (CloudPirates is ~14 months old), a fresh scan target set.
 
 ### Gaps

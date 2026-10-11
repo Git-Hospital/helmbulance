@@ -9,7 +9,7 @@ Desk research done on 11 October 2026, before the CLI skeleton landed. It covers
 | [notes/oss-growth-playbook.md](notes/oss-growth-playbook.md) | English | OSS-Fuzz, Coccinelle, CodeQL, curl, FFmpeg, Hacktoberfest; disclosure norms; channels and realistic star counts |
 | [notes/technical-design.md](notes/technical-design.md) | English | Helm 3/4 semantics, kind on runners, NetworkPolicy enforcement, static detectors, SARIF, scanning third-party charts, LLM loop |
 
-Every factual claim carries a source link. Sentences marked as inference or estimate are the authors' judgement, not sourced facts. Star counts and Artifact Hub figures are snapshots from 10-11 October 2026.
+Sourced claims carry a link. Sentences marked as inference or estimate are the authors' judgement, not sourced facts. Star counts and Artifact Hub figures are snapshots from 10-11 October 2026.
 
 ## Status: written against 9c5e05b
 
@@ -17,13 +17,13 @@ The research saw a README-only repository. Commit 3ae143f (CLI skeleton, `upgrad
 
 ## Where the research and `docs/architecture.md` differ
 
-**Update:** commit 7c9cd34 rewrote `docs/architecture.md` and settled all six points, so nothing here needs action:
+**Update:** commit 7c9cd34 rewrote `docs/architecture.md` and settled all six points. Where the research or the roadmap still differs from `docs/architecture.md` (especially §8, the milestones), the architecture document wins:
 
 1. Resolved: §3.1 now runs Helm and kind as commands.
 2. Resolved: §3.2 names Argo CD and says `lookup` works under Flux.
 3. Resolved: §3.5 uses an HMAC with a per-run key.
 4. Decided: SARIF stays, from v0.2, with findings pointing at the template line or values key (§3.6).
-5. Decided: `gitops-render` is in v0.1; `network-isolation` is v0.1, or v0.2 if time runs short (§3.4, §8).
+5. Decided: `gitops-render` and `network-isolation` are both in v0.1 (§8; §3.4 allows `network-isolation` to slip to v0.2 if time runs short); `immutable-fields` is v0.2.
 6. Resolved: §3.6 lists exit codes 0 to 3.
 
 The open items after the rewrite are in `docs/reviews/2026-10-11-architecture-review.md` and `docs/decisions/0001-v0.1-path.md` (separate PR).
@@ -37,6 +37,6 @@ The original notes, written against 3ae143f, follow for the record.
 5. **v0.1 scope.** Architecture §7 puts `network-isolation` in v0.1. The research suggests `gitops-render` instead and `network-isolation` later: Argo CD's `lookup` request alone has 254 reactions ([argo-cd#5202](https://github.com/argoproj/argo-cd/issues/5202)), it needs no chart knowledge and it reuses the Secret snapshot oracle, while the issue search found no community chart whose NetworkPolicy silently failed to isolate. The Open Archiver network finding is still a strong demo, so this is a trade-off, not a correction.
 6. **Exit codes.** Architecture §3.7 lists 0, 1 and 2; `cmd/helmbulance/main.go` also defines 3 (`exitIncomplete`: a scenario could not finish, for example the chart did not install). §3.7 may need to follow the code.
 
-## Time-sensitive item
+## KubeCon Europe 2027 CFP (closed)
 
-The KubeCon + CloudNativeCon Europe 2027 CFP (Barcelona, 15-18 March 2027) closes on 11 October 2026 at 23:59 CEST; notifications on 7 December ([CFP page](https://events.linuxfoundation.org/kubecon-cloudnativecon-europe/program/cfp/)). The report's suggestion is a single 5-minute lightning talk about the documented failure classes rather than the tool's results.
+The KubeCon + CloudNativeCon Europe 2027 CFP (Barcelona, 15-18 March 2027) closed on 11 October 2026 at 23:59 CEST; notifications are due on 7 December ([CFP page](https://events.linuxfoundation.org/kubecon-cloudnativecon-europe/program/cfp/)). The report suggested a single 5-minute lightning talk about the documented failure classes rather than the tool's results.

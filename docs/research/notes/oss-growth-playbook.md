@@ -1,11 +1,11 @@
 # OSS growth playbook for bug-finding / upstream-fix tools (as of 2026-10-11)
 
-Method note: web searches via a summarising search tool plus a few page fetches; GitHub star counts pulled live with `gh api repos/OWNER/REPO` on 2026-10-11. Several claims come from secondary summaries and are flagged. Nothing was posted, starred or opened.
+Method note: web searches plus a few page fetches; GitHub star counts pulled live with `gh api repos/OWNER/REPO` on 2026-10-11. Several claims come from secondary summaries and are flagged. Nothing was posted, starred or opened.
 
 ## 1. Case studies: tools that grew by finding/fixing bugs in other projects
 
 ### Takeaway
-The tools that became famous attached a visible, countable proof (OSS-Fuzz: 10,000+ vulnerabilities; Coccinelle: 400+ accepted kernel patches; Rogers/curl: ~50 merged fixes) to a free service or a respected maintainer-facing workflow. Of the k8s linters, stars cluster at 2.5k-6k (niche tools) with Trivy (38k) and Kubescape (11.8k) as outliers backed by a vendor and, for Kubescape, CNCF. Datree shows that a popular linter (6.3k stars) can still die when the company dies.
+The tools that became famous attached a visible, countable proof (OSS-Fuzz: 10,000+ vulnerabilities; Coccinelle: 400+ accepted kernel patches; Rogers/curl: 22 merged fixes at the time of the maintainer's post, 49 closed PRs crediting the scan data) to a free service or a respected maintainer-facing workflow. Of the k8s linters, stars cluster at 2.5k-6k (niche tools) with Trivy (38k) and Kubescape (11.8k) as outliers backed by a vendor and, for Kubescape, CNCF. Datree shows that a popular linter (6.3k stars) can still die when the company dies.
 
 ### Cited Findings
 - OSS-Fuzz launched 2016 after Heartbleed; docs state over 10,000 vulnerabilities and over 36,000 bugs found and fixed across about 1,000 projects (as of August 2023) — [OSS-Fuzz docs](https://google.github.io/oss-fuzz/)
@@ -36,12 +36,12 @@ The tools that became famous attached a visible, countable proof (OSS-Fuzz: 10,0
 ## 2. Failures and backlash; 2025-2026 AI contribution policies; etiquette
 
 ### Takeaway
-Maintainers reject volume without understanding: curl ended its bounty (Jan 2026) after AI slop, FFmpeg called Google's AI-found bugs "CVE slop", Hacktoberfest 2020 and UMN 2021 show the cost of unsolicited or non-consensual work. But the same maintainers praise AI-assisted findings that are verified and come from a skilled human (Rogers/curl: ~50 merged fixes). Kubernetes (Apr 2026) requires disclosure and human accountability.
+Maintainers reject volume without understanding: curl ended its bounty (Jan 2026) after AI slop, FFmpeg called Google's AI-found bugs "CVE slop", Hacktoberfest 2020 and UMN 2021 show the cost of unsolicited or non-consensual work. But the same maintainers praise AI-assisted findings that are verified and come from a skilled human (Rogers/curl: 22 merged fixes at the time of the maintainer's post, 49 closed PRs crediting the scan data). Kubernetes (Apr 2026) requires disclosure and human accountability.
 
 ### Cited Findings
 - curl ended its bug bounty at the end of Jan 2026; Stenberg's stated goal: "remove the incentive for people to submit crap and non-well researched reports to us. AI generated or not." Quote: "you should NEVER report a bug or a vulnerability unless you actually understand it – and can reproduce it." The Register reports 7 submissions in one week, none a vulnerability — [The Register 2026-01-21](https://www.theregister.com/2026/01/21/curl_ends_bug_bounty/)
 - Reports moved from HackerOne to GitHub from Feb 1 2026; a secondary source claims only 5% of 2025 reports were real and 3-4 reviewers per report — [BleepingComputer](https://bleepingcomputer.com/news/security/curl-ending-bug-bounty-program-after-flood-of-ai-slop-reports/), [Hackmag](https://hackmag.com/news/bug-bounty-curl). A Pinggy post claims curl paused reports 1 Jul-3 Aug 2026; single source, unverified — [Pinggy](https://pinggy.io/amp/blog/curl_ai_slop_summer_of_bliss/)
-- Counter-example: Joshua Rogers sent curl a large list from AI-assisted scanners (ZeroPath, Almanax, Corgea, Gecko, Amplify); Stenberg called it "truly awesome", about 50 bugfixes merged, curl dropped krb5-ftp support — [Simon Willison 2025-10-02](https://simonwillison.net/2025/Oct/2/curl/), [Slashdot](https://developers.slashdot.org/story/25/10/12/0619247/ai-slop-not-this-time-ai-tools-found-50-real-bugs-in-curl), [opensourcesecurity.io](https://opensourcesecurity.io/2025/2025-10-ai-joshua-rogers/)
+- Counter-example: Joshua Rogers sent curl a large list from AI-assisted scanners (ZeroPath, Almanax, Corgea, Gecko, Amplify); Stenberg called it "truly awesome"; he reported 22 bugfixes landed at the time of his post and Willison counted 49 closed PRs crediting the scan data, curl dropped krb5-ftp support — [Simon Willison 2025-10-02](https://simonwillison.net/2025/Oct/2/curl/), [Slashdot](https://developers.slashdot.org/story/25/10/12/0619247/ai-slop-not-this-time-ai-tools-found-50-real-bugs-in-curl), [opensourcesecurity.io](https://opensourcesecurity.io/2025/2025-10-ai-joshua-rogers/)
 - FFmpeg vs Google (Nov 2025): Big Sleep found a bug in a 1995 game codec; FFmpeg called it "CVE slop" and asked Google to fund the project or stop sending AI-found bugs. Project Zero's Reporting Transparency trial (July 2025) flags new reports publicly in about a week with the 90-day clock. Big Sleep had reported 20 flaws, mostly FFmpeg and ImageMagick — [It's FOSS](https://itsfoss.com/news/ffmpeg-google-fiasco/), [The New Stack](https://thenewstack.io/ffmpeg-to-google-fund-us-or-stop-sending-bugs/), [Computing](https://www.computing.co.uk/news/2025/security/big-sleep-finds-20-flaws-in-open-source-software)
 - Hacktoberfest 2020: DigitalOcean said at least 4% of PRs were invalid/spam; switched to opt-in (repo topic `hacktoberfest` or maintainer label `hacktoberfest-accepted`) from Oct 3 2020; review window cut 14 to 7 days in 2021 — [The Register 2020-10-01](https://www.theregister.com/2020/10/01/digitalocean_hacktoberfest_pull_request_spam/), [DevRel case study](https://developerrelations.com/case-studies/overcoming-hacktoberfest-spam), [Drew DeVault](https://hacktivis.me/git/mirror/drewdevault.com/file/content/blog/Spamtoberfest.gmi.html)
 - UMN "hypocrite commits": Feb 2021 paper, April 2021 Kroah-Hartman banned UMN, vowing to revert past commits; the trigger was patches from a "new static analyzer" sent without warning; Linux TAB later published its audit and recommendations. Lesson for tool authors: bot/tool-generated patches must be labelled as such and honest — [It's FOSS](https://itsfoss.com/news/hypocrite-commits/), [Phoronix](https://www.phoronix.com/news/Hypocrite-Commit-Open-Letter), [SD Times](https://sdtimes.com/security/umn-security-researchers-apologize-to-the-linux-community/)
@@ -58,7 +58,7 @@ Maintainers reject volume without understanding: curl ended its bounty (Jan 2026
 - Helm project, Artifact Hub, bitnami, prometheus-community: whether they have written AI/bot contribution rules was not checked; look at each CONTRIBUTING.md before sending anything.
 - CNCF-level AI policy (beyond Kubernetes) not found.
 - Node/other bot bans: not researched.
-- Kubernetes blog's concrete numbers not read (truncated).
+- Concrete numbers from the Kubernetes blog are not included (not verified).
 
 ## 3. Responsible disclosure norms
 
@@ -81,11 +81,11 @@ Maintainers reject volume without understanding: curl ended its bounty (Jan 2026
 ## 4. Launch and distribution channels
 
 ### Takeaway
-KubeCon EU 2027 CFP closes 2026-10-11 23:59 CEST (today); NA 2027 CFP not yet published (2026 pattern: opened Apr 6, closed May 31). CNCF Sandbox is cheap to apply for but gives little except credibility. HN is hit and miss for k8s tools.
+KubeCon EU 2027 CFP closed 2026-10-11 23:59 CEST; NA 2027 CFP not yet published (2026 pattern: opened Apr 6, closed May 31). CNCF Sandbox is cheap to apply for but gives little except credibility. HN is hit and miss for k8s tools.
 
 ### Cited Findings
 - KubeCon + CloudNativeCon Europe 2027: Barcelona, 15-18 March 2027. CFP deadline Sunday 11 Oct (2026) 11:59 PM CEST, notifications Mon 7 Dec, schedule Wed 9 Dec. Formats: 30-min session, 30-min panel, 5-min lightning talk, digital poster, 80-min tutorial; first-time speakers encouraged; submitters list any CNCF sandbox/incubating/graduated software; no eligibility rule for sandbox — [LF CFP page](https://events.linuxfoundation.org/kubecon-cloudnativecon-europe/program/cfp/), [Sessionize](https://sessionize.com/kubecon-cloudnativecon-europe-2027/)
-- Maintainer Summit EU 2027 on 14 March 2027 is limited to TOC reps, graduated/incubating maintainers, TAG/WG leads - not Sandbox — [Sessionize](https://sessionize.com/maintainer-summit-eu-2027/)
+- Maintainer Summit EU 2027 on 14 March 2027 lists TOC reps, graduated/incubating maintainers and TAG/WG leads as attendees; that Sandbox maintainers are excluded is an inference, not stated on the page — [Sessionize](https://sessionize.com/maintainer-summit-eu-2027/)
 - KubeCon NA 2027: 8-11 Nov 2027, New Orleans (third-party listing); no official CFP dates found. 2026 NA pattern: CFP open April 6, close May 31, notification Aug 3 — [beri.net](https://www.beri.net/events/kubecon-cloudnativecon-na-2027), [Sessionize NA 2026](https://sessionize.com/kubecon-cloudnativecon-north-america-2026/)
 - CNCF Sandbox: apply via issue form in the Sandbox Applications repo; TOC reviews; requires license compliance, repo, roadmap, contribution guide, code of conduct, comparison with similar projects; sandbox is "early-stage, warrants experimentation", no due diligence; CNCF-hosted in-person co-located events are for Incubating+/not Sandbox (2026 guidelines) — [CNCF lifecycle](https://contribute.cncf.io/projects/lifecycle/), [2026 event guidelines PDF](https://events.linuxfoundation.org/wp-content/uploads/2026/02/2026-cncf-project-and-co-located-event-guidelines-2-5-26.pdf), [devclass](https://devclass.com/?p=3003)
 - Google Summer of Code 2026: 185 mentoring orgs; org applications Jan 19-Feb 3, contributor applications Mar 16-31, results ~Apr 30, coding from May 25 (stipend figures vary by source) — [GSoC 2026 flyer](https://developers.google.com/open-source/gsoc/resources/downloads/GSoC2026Flyer.pdf), [Canonical deck](https://events.canonical.com/event/154/contributions/1018/attachments/548/885/How%20to%20start%20your%20GSoC%20Journey.pdf)
@@ -93,7 +93,7 @@ KubeCon EU 2027 CFP closes 2026-10-11 23:59 CEST (today); NA 2027 CFP not yet pu
 - Artifact Hub already shows security reports per chart version (Section 1) and is a natural integration surface.
 
 ### Inferences
-- EU 2027 CFP is closing the day of this report; a lightning talk or poster is the lowest-bar entry. For NA 2027 expect a spring 2027 window (inference).
+- The EU 2027 CFP closed on the day of this report; a lightning talk or poster was the lowest-bar entry. For NA 2027 expect a spring 2027 window (inference).
 - Sandbox: pursue after there is a public findings page and external adopters; kubescape took 2022 to 2025 to go Sandbox to Incubating.
 - A realistic GSoC path for Helmbulance needs the project to be accepted under an umbrella org first; applications for 2027 would be early 2027.
 
