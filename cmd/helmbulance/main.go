@@ -121,6 +121,7 @@ func test(args []string) int {
 	}
 
 	runner := execx.NewSandboxRunner()
+	runner.Secrets = execx.SetValues(sets)
 	started := time.Now()
 
 	var c *sandbox.Cluster
@@ -282,6 +283,7 @@ func matrixCmd(args []string) int {
 	defer stop()
 
 	runner := execx.NewSandboxRunner()
+	runner.Secrets = execx.SetValues(sets)
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
@@ -347,6 +349,7 @@ func scanCmd(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	runner := execx.NewSandboxRunner()
+	runner.Secrets = execx.SetValues(sets)
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
