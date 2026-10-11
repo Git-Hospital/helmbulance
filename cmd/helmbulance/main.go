@@ -14,6 +14,7 @@ import (
 	"github.com/egezamb/helmbulance/internal/execx"
 	"github.com/egezamb/helmbulance/internal/helm"
 	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/egezamb/helmbulance/internal/matrix"
 	"github.com/egezamb/helmbulance/internal/oracle"
 	"github.com/egezamb/helmbulance/internal/report"
 	"github.com/egezamb/helmbulance/internal/sandbox"
@@ -47,6 +48,8 @@ func main() {
 	switch os.Args[1] {
 	case "test":
 		os.Exit(test(os.Args[2:]))
+	case "matrix":
+		os.Exit(matrixCmd(os.Args[2:]))
 	case "list-scenarios":
 		for _, s := range scenarios {
 			fmt.Printf("%-24s %s\n", s.Name(), s.Description())
@@ -60,6 +63,7 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
   helmbulance test <chart> [-f values.yaml]... [--set key=value]... [flags]
+  helmbulance matrix <chart> [-f values.yaml]... [--set key=value]... [--k8s 1.34,1.37]
   helmbulance list-scenarios
 `)
 }
@@ -226,4 +230,68 @@ func without(list []scenario.Scenario, name string) []scenario.Scenario {
 		}
 	}
 	return out
+}
+
+// matrixCmd installs the chart on several Kubernetes versions, one fresh cluster each.
+func matrixCmd(args []string) int {
+	fs := flag.NewFlagSet("matrix", flag.ContinueOnError)
+	var files, sets multiFlag
+	fs.Var(&files, "f", "values file (repeatable)")
+	fs.Var(&sets, "set", "value, key=value (repeatable)")
+	versions := fs.String("k8s", strings.Join(matrix.Versions(), ","), "Kubernetes versions to test, comma-separated")
+	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install")
+	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
+	var chart string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		chart, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return exitError
+	}
+	if chart == "" && fs.NArg() > 0 {
+		chart = fs.Arg(0)
+	}
+	if chart == "" {
+		usage()
+		return exitError
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	runner := &execx.Runner{Env: os.Environ()}
+	started := time.Now()
+	rep := &report.Report{
+		SchemaVersion: report.SchemaVersion,
+		Chart:         chart,
+		ValuesFiles:   files,
+		SetKeys:       keysOf(sets),
+		HelmVersion:   (&helm.Client{Runner: runner}).Version(ctx),
+		Cluster:       "one per Kubernetes version",
+		Started:       started,
+	}
+	opts := matrix.Options{Runner: runner, Chart: chart, Values: helm.Values{Files: files, Sets: sets}, Timeout: *timeout, Log: os.Stdout}
+	for _, v := range strings.Split(*versions, ",") {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		fmt.Printf("▶ Kubernetes %s\n", v)
+		res := matrix.Run(ctx, v, opts)
+		fmt.Printf("  %s: %s\n", res.Verdict, res.Summary)
+		rep.Results = append(rep.Results, res)
+	}
+	rep.Duration = time.Since(started).Round(time.Second).String()
+	rep.Commands = runner.Transcript()
+	if err := rep.Write(*out); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitError
+	}
+	fmt.Printf("Report: %s/report.md\n", *out)
+	switch rep.Worst() {
+	case scenario.Fail:
+		return exitFindings
+	case scenario.Inconclusive:
+		return exitIncomplete
+	}
+	return exitClean
 }

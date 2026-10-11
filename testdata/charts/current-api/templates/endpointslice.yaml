@@ -1,0 +1,12 @@
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: {{ .Release.Name }}-external
+  labels:
+    kubernetes.io/service-name: {{ .Release.Name }}-external
+addressType: IPv4
+endpoints:
+  - addresses: ["192.0.2.10"]
+ports:
+  - name: http
+    port: 80

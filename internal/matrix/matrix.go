@@ -1,0 +1,202 @@
+// Package matrix installs a chart on several Kubernetes versions, one disposable kind cluster per
+// version, and reports where it does not install, does not become healthy, or uses APIs the
+// version warns about.
+package matrix
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/egezamb/helmbulance/internal/execx"
+	"github.com/egezamb/helmbulance/internal/helm"
+	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/egezamb/helmbulance/internal/sandbox"
+	"github.com/egezamb/helmbulance/internal/scenario"
+)
+
+// NodeImages are the kind node images for kind v0.33, pinned by digest.
+var NodeImages = map[string]string{
+	"1.34": "kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d",
+	"1.35": "kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0",
+	"1.36": "kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed",
+	"1.37": "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5",
+}
+
+// Versions returns the supported versions, oldest first.
+func Versions() []string {
+	var v []string
+	for k := range NodeImages {
+		v = append(v, k)
+	}
+	sort.Slice(v, func(i, j int) bool { return minor(v[i]) < minor(v[j]) })
+	return v
+}
+
+func minor(v string) int {
+	var maj, min int
+	fmt.Sscanf(v, "%d.%d", &maj, &min)
+	return min
+}
+
+// Options is what one matrix run needs.
+type Options struct {
+	Runner  *execx.Runner
+	Chart   string
+	Values  helm.Values
+	Timeout time.Duration
+	Log     io.Writer
+}
+
+// warningLine matches the API server warnings helm prints, e.g.
+// "W1011 12:00:00.000000 12345 warnings.go:70] policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+".
+var warningLine = regexp.MustCompile(`warnings\.go:\d+\] (.*)`)
+
+// Run checks the chart on one Kubernetes version and removes the cluster afterwards.
+func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
+	res.Scenario = "k8s-" + version
+	image, ok := NodeImages[version]
+	if !ok {
+		res.Verdict = scenario.Inconclusive
+		res.Summary = "no kind node image for Kubernetes " + version + "; supported: " + strings.Join(Versions(), ", ")
+		return res
+	}
+	fmt.Fprintf(o.Log, "Creating a Kubernetes %s cluster…\n", version)
+	c, err := sandbox.Create(ctx, o.Runner, image)
+	if err != nil {
+		res.Verdict = scenario.Inconclusive
+		res.Summary = "the cluster did not start: " + err.Error()
+		return res
+	}
+	defer func() {
+		if err := c.Delete(context.Background(), o.Runner); err != nil {
+			fmt.Fprintf(o.Log, "cleanup: %v\n", err)
+		}
+	}()
+
+	h := &helm.Client{Runner: o.Runner, Kubeconfig: c.Kubeconfig, Timeout: o.Timeout}
+	k := &kube.Client{Runner: o.Runner, Kubeconfig: c.Kubeconfig}
+	const release, ns = "hb-matrix", "hb-matrix"
+
+	mark := len(o.Runner.Transcript())
+	stderr, err := h.InstallCapture(ctx, release, ns, o.Chart, o.Values)
+	repro := []string{"kind create cluster --image " + image, reproLine(o.Runner.Transcript()[mark].Line)}
+	warnings := apiWarnings(stderr)
+
+	if err != nil {
+		res.Verdict = scenario.Fail
+		res.Summary = "does not install on Kubernetes " + version
+		res.Findings = append(res.Findings, scenario.Finding{
+			ID:        "HB-K8S-001",
+			Title:     "The chart does not install on Kubernetes " + version,
+			Severity:  "high",
+			Evidence:  append([]string{"`helm install` failed: " + helmMessage(err)}, warnings...),
+			Impact:    "Clusters on Kubernetes " + version + " cannot run this chart. Upgrading the cluster breaks existing installs too.",
+			Fix:       "Look for an API version this release removed (`kubectl api-versions` on the cluster) or a field it no longer accepts, and gate it on `.Capabilities.KubeVersion` / `.Capabilities.APIVersions.Has`.",
+			Reproduce: repro,
+		})
+		return res
+	}
+
+	if bad := unhealthy(ctx, k, ns); len(bad) > 0 {
+		res.Verdict = scenario.Fail
+		res.Summary = "installs on Kubernetes " + version + " but does not become healthy"
+		res.Findings = append(res.Findings, scenario.Finding{
+			ID:        "HB-K8S-002",
+			Title:     "Workloads are not healthy on Kubernetes " + version,
+			Severity:  "high",
+			Evidence:  append(bad, warnings...),
+			Impact:    "The install reports success, but the application does not run on this version.",
+			Fix:       "Compare the pod events and logs with an older version; typical causes are changed defaults (cgroup v2, seccomp, sidecar handling) or a removed feature gate.",
+			Reproduce: repro,
+		})
+		return res
+	}
+
+	if len(warnings) > 0 {
+		res.Verdict = scenario.Fail
+		res.Summary = fmt.Sprintf("runs on Kubernetes %s, with %d API warning(s)", version, len(warnings))
+		res.Findings = append(res.Findings, scenario.Finding{
+			ID:        "HB-K8S-003",
+			Title:     "The API server warns about resources this chart creates on Kubernetes " + version,
+			Severity:  "medium",
+			Evidence:  warnings,
+			Impact:    "A deprecated API keeps working until the release that removes it; then installs and upgrades fail.",
+			Fix:       "Move to the API version the warning names, gated on `.Capabilities.APIVersions.Has` if older clusters still need the old one.",
+			Reproduce: repro,
+		})
+		return res
+	}
+	res.Verdict = scenario.Pass
+	res.Summary = "installs and runs on Kubernetes " + version + " with no API warnings"
+	return res
+}
+
+func apiWarnings(stderr string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range strings.Split(stderr, "\n") {
+		m := warningLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		w := strings.Trim(strings.TrimSpace(m[1]), `"`)
+		w = strings.TrimPrefix(w, "Warning: ")
+		if !seen[w] {
+			seen[w] = true
+			out = append(out, "API warning: "+w)
+		}
+	}
+	return out
+}
+
+// unhealthy waits for pods to settle and lists those that are not ready. Restarts alone are not
+// counted: many apps restart once at first start while their database comes up.
+func unhealthy(ctx context.Context, k *kube.Client, ns string) []string {
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		pods, err := k.Pods(ctx, ns)
+		if err != nil {
+			return []string{"could not read pods: " + err.Error()}
+		}
+		var bad []string
+		for _, p := range pods {
+			if !p.Ready {
+				bad = append(bad, fmt.Sprintf("pod `%s` is not ready (%d restart(s))", p.Name, p.Restarts))
+			}
+		}
+		if len(bad) == 0 || time.Now().After(deadline) {
+			return bad
+		}
+		select {
+		case <-ctx.Done():
+			return bad
+		case <-time.After(10 * time.Second):
+		}
+	}
+}
+
+func reproLine(line string) string {
+	fields := strings.Fields(line)
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] == "--kubeconfig" {
+			fields[i+1] = "$KUBECONFIG"
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
+func helmMessage(err error) string {
+	msg := err.Error()
+	if i := strings.LastIndex(msg, "Error: "); i >= 0 {
+		msg = msg[i+len("Error: "):]
+	}
+	if len(msg) > 600 {
+		msg = msg[:600] + "…"
+	}
+	return msg
+}

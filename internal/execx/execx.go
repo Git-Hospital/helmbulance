@@ -29,6 +29,13 @@ type Runner struct {
 
 // Run executes name with args and returns its stdout. On failure the error includes stderr.
 func (r *Runner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	out, _, err := r.RunCapture(ctx, name, args...)
+	return out, err
+}
+
+// RunCapture is Run that also returns stderr, for commands whose warnings matter even when they
+// succeed (API deprecation warnings from helm install, for example).
+func (r *Runner) RunCapture(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = r.Env
 	var stdout, stderr bytes.Buffer
@@ -46,9 +53,9 @@ func (r *Runner) Run(ctx context.Context, name string, args ...string) ([]byte, 
 	r.mu.Unlock()
 
 	if err != nil {
-		return stdout.Bytes(), fmt.Errorf("%s: %w: %s", rec.Line, err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("%s: %w: %s", rec.Line, err, strings.TrimSpace(stderr.String()))
 	}
-	return stdout.Bytes(), nil
+	return stdout.Bytes(), stderr.Bytes(), nil
 }
 
 // Transcript returns the commands run so far.

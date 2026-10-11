@@ -1,0 +1,5 @@
+apiVersion: v2
+name: deprecated-api
+description: "Helmbulance fixture. Bug: a selector-less Service with a v1 Endpoints object, deprecated since Kubernetes 1.33."
+type: application
+version: 0.1.0

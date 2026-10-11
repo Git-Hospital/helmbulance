@@ -87,3 +87,14 @@ func (c *Client) Version(ctx context.Context) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// InstallCapture is Install that also returns what helm printed on stderr, where the API server's
+// warnings (deprecated or removed APIs) end up.
+func (c *Client) InstallCapture(ctx context.Context, release, ns, chart string, v Values, extra ...string) (string, error) {
+	args := append([]string{"install", release, chart, "--create-namespace"}, c.base(ns)...)
+	args = append(args, c.waitArgs()...)
+	args = append(args, extra...)
+	args = append(args, v.args()...)
+	_, stderr, err := c.Runner.RunCapture(ctx, c.bin(), args...)
+	return string(stderr), err
+}

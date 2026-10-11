@@ -1,0 +1,5 @@
+apiVersion: v2
+name: current-api
+description: "Fixed twin of deprecated-api: the same Service with a discovery.k8s.io/v1 EndpointSlice."
+type: application
+version: 0.1.0

@@ -127,6 +127,11 @@ Each scenario goes through these phases:
 - Reports failed requests, the longest outage, and the settings that explain it: Recreate, a single replica, no readiness probe, no preStop.
 - This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
 
+**`helmbulance matrix`** (implemented). A command rather than a scenario, because each Kubernetes version needs its own cluster.
+- For each version (kind node images pinned by digest: 1.34, 1.35, 1.36, 1.37): create a cluster, install, wait for the pods, collect the API server's warnings from helm's stderr, delete the cluster.
+- Reports a failed install, pods that never become ready (restarts alone are not counted, apps often restart once at first start), and warnings about deprecated APIs.
+- Known deprecations are also caught statically (`helm lint`, pluto); what the matrix adds is whether the chart actually runs on each version.
+
 **`reinstall`** (v0.1).
 - Write a sentinel file into each PVC.
 - Uninstall, install again, and check the sentinels, the Secrets and the health of the release.
