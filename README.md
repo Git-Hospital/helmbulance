@@ -61,6 +61,7 @@ The chart will be published separately; this repository will link to it.
 
 More case studies:
 
+- [Sweep of ~1000 Artifact Hub charts](docs/case-studies/sweep-2026-10.md): what `helmbulance scan` found and what was confirmed, including a selector bug in docker-registry-ui whose open fix was verified ([Joxit/helm-charts#22](https://github.com/Joxit/helm-charts/pull/22)).
 - [The first upgrade restarts pods for nothing](docs/case-studies/first-upgrade-restart.md): a common checksum pattern, confirmed in JupyterHub, Semaphore and SeaweedFS ([#3996](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/3996), [#34](https://github.com/semaphoreui/charts/issues/34), [#11719](https://github.com/seaweedfs/seaweedfs/issues/11719)).
 - [yugabyte 2026.1.2](docs/case-studies/yugabyte-2026.1.2.md): a patch release whose StatefulSet selector change breaks every upgrade from 2026.1.0 and 2026.1.1 ([reported](https://github.com/yugabyte/charts/issues/240)).
 - [docker-registry and openfaas](docs/case-studies/oss-charts-2026-10.md): a Secret regenerated on every upgrade, and a correct negative.
