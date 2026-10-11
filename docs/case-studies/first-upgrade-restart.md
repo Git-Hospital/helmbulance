@@ -1,6 +1,6 @@
 # The first upgrade restarts pods for nothing
 
-**Reported upstream:** [JupyterHub #3996](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/3996), [Semaphore #34](https://github.com/semaphoreui/charts/issues/34).
+**Reported upstream:** [JupyterHub #3996](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/3996), [Semaphore #34](https://github.com/semaphoreui/charts/issues/34), [SeaweedFS #11719](https://github.com/seaweedfs/seaweedfs/issues/11719).
 
 ## The pattern
 
