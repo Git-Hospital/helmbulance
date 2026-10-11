@@ -69,18 +69,18 @@ func (r *Runner) Transcript() []Command {
 // carry passwords.
 func Mask(name string, args []string) string {
 	out := []string{name}
-	maskNext := false
+	flag := ""
 	for _, a := range args {
 		switch {
-		case maskNext:
-			out = append(out, maskAssignments(a))
-			maskNext = false
+		case flag != "":
+			out = append(out, maskValue(flag, a))
+			flag = ""
 		case isSetFlag(a):
 			out = append(out, a)
-			maskNext = true
+			flag = a
 		case strings.HasPrefix(a, "--set") && strings.Contains(a, "="):
-			flag, value, _ := strings.Cut(a, "=")
-			out = append(out, flag+"="+maskAssignments(value))
+			f, value, _ := strings.Cut(a, "=")
+			out = append(out, f+"="+maskValue(f, value))
 		default:
 			out = append(out, a)
 		}
@@ -92,12 +92,21 @@ func isSetFlag(a string) bool {
 	return a == "--set" || a == "--set-string" || a == "--set-file" || a == "--set-json" || a == "--set-literal"
 }
 
-// maskAssignments turns "a=1,b.c=2" into "a=***,b.c=***".
-func maskAssignments(s string) string {
-	parts := strings.Split(s, ",")
+// maskValue turns "a=1,b.c=2" into "a=***,b.c=***". --set-literal and --set-json values are one
+// assignment whatever they contain, so everything after the first key is masked.
+func maskValue(flag, s string) string {
+	if flag == "--set-literal" || flag == "--set-json" {
+		if key, _, ok := cutAssignment(s); ok {
+			return key + "=***"
+		}
+		return "***"
+	}
+	parts := splitAssignments(s)
 	for i, p := range parts {
-		if key, _, ok := strings.Cut(p, "="); ok {
+		if key, _, ok := cutAssignment(p); ok {
 			parts[i] = key + "=***"
+		} else {
+			parts[i] = "***"
 		}
 	}
 	return strings.Join(parts, ",")
