@@ -60,6 +60,7 @@ The chart will be published separately; this repository will link to it.
 
 More case studies:
 
+- [The first upgrade restarts pods for nothing](docs/case-studies/first-upgrade-restart.md): a common checksum pattern, confirmed in JupyterHub and Semaphore ([#3996](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/3996), [#34](https://github.com/semaphoreui/charts/issues/34)).
 - [yugabyte 2026.1.2](docs/case-studies/yugabyte-2026.1.2.md): a patch release whose StatefulSet selector change breaks every upgrade from 2026.1.0 and 2026.1.1 ([reported](https://github.com/yugabyte/charts/issues/240)).
 - [docker-registry and openfaas](docs/case-studies/oss-charts-2026-10.md): a Secret regenerated on every upgrade, and a correct negative.
 
