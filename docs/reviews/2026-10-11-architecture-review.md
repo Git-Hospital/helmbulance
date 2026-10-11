@@ -35,7 +35,7 @@ These are in the code, and the architecture already promises the opposite.
 - helm reads `HELM_KUBEAPISERVER`, `HELM_KUBETOKEN`, `HELM_KUBECAFILE`, `HELM_KUBEINSECURE_SKIP_TLS_VERIFY`, `HELM_KUBECONTEXT`, `HELM_DRIVER` and `HELM_DRIVER_SQL_CONNECTION_STRING` from the environment (`helm --help`; `pkg/cli/environment.go`).
 - **Expected failure (Hypothesis; the experiment below settles it):** a CI job with deploy variables set runs `helmbulance test`. helm installs, upgrades and uninstalls on that cluster, kubectl reads the empty sandbox namespace, and the verdict is PASS.
 - This contradicts §3.1 ("no flag to run scenarios against any other cluster"): no flag is needed.
-- **Fix:** pass an allowlist (PATH, HOME, helm's cache, config and data dirs, proxy variables), drop every `HELM_KUBE*` and `HELM_DRIVER*` variable, and set `HELM_DRIVER=secret`. Add a test that sets `HELM_KUBEAPISERVER=https://127.0.0.1:1` and expects the run to still use the sandbox.
+- **Fix:** pass an allowlist (PATH, HOME, helm's cache, config and data dirs, proxy variables, and `DOCKER_HOST`, `DOCKER_CONTEXT` and `KIND_EXPERIMENTAL_PROVIDER` so kind keeps working with Colima and Podman), drop every `HELM_KUBE*` and `HELM_DRIVER*` variable, and set `HELM_DRIVER=secret`. Add a test that sets `HELM_KUBEAPISERVER=https://127.0.0.1:1` and expects the run to still use the sandbox.
 - **Cluster experiment (optional):** two kind clusters; export cluster B's server, CA and token; run the `drops-set-key` fixture against A; check `helm list -A` on B.
 
 ### B2. Secret values reach transcripts and reports (Run, Code, Source)
@@ -49,7 +49,7 @@ These are in the code, and the architecture already promises the opposite.
 
 - §4 says third-party mode is "automatic for OCI, URL and repository charts". No such mode exists in the code yet: `internal/helm/helm.go:55` installs any chart reference, and `internal/sandbox/sandbox.go:59` creates a default kind cluster.
 - So an OCI or repository chart runs today in own-chart mode, where a privileged pod is root on the Docker host.
-- **Fix now, cheap:** refuse non-local chart references until the hardened mode exists, and say so in the README's "Try it".
+- **Fix now, cheap:** refuse non-local chart references until the hardened mode exists. This is a guard against accidents, not a protection: `helm pull --untar` and a local path bypass it, and the corpus (D3) needs its own isolation. The README should say that any third-party chart runs unprotected until v0.3.
 
 ## Major: oracle accuracy
 

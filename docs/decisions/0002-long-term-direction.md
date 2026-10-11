@@ -11,7 +11,7 @@ What would make Helmbulance a tool nobody else has, rather than one more checker
 | Direction | Closest prior art | What is left for us | Proposed verdict |
 |---|---|---|---|
 | 1. Lifecycle exploration with shrinking ("Jepsen for Helm charts") | Acto (SOSP 2023), Sieve (OSDI 2022), DUPTester (SOSP 2021), Kivi (ATC 2024): operators, controllers and distributed-system upgrades, not Helm charts | Helm operations (rollback, reinstall, chart bump, Helm 3 to 4), shrinking a failing sequence to the minimum | **Later**, after its experiment |
-| 2. Deployment-path differential testing | Nothing found as a tool or paper. Argo CD vs Helm differences exist only in docs and open issues ([argo-cd#5202](https://github.com/argoproj/argo-cd/issues/5202), [#21745](https://github.com/argoproj/argo-cd/issues/21745), [#14943](https://github.com/argoproj/argo-cd/issues/14943), [#14944](https://github.com/argoproj/argo-cd/issues/14944)) | A runnable matrix: the same chart through Helm 3, Helm 4, Argo CD and Flux, with the results compared | **Now** for Helm 3 vs Helm 4; **next** for Argo CD, then Flux |
+| 2. Deployment-path differential testing | Nothing found as a tool or paper. Argo CD vs Helm differences exist only in docs and open issues ([argo-cd#5202](https://github.com/argoproj/argo-cd/issues/5202), [#21745](https://github.com/argoproj/argo-cd/issues/21745), [#14943](https://github.com/argoproj/argo-cd/issues/14943), [#14944](https://github.com/argoproj/argo-cd/issues/14944)) | A runnable matrix: the same chart through Helm 3, Helm 4, Argo CD and Flux, with the results compared | **Now** for Helm 3 vs Helm 4 (fixtures in CI); **next** as `helmbulance matrix` axes: Helm major, then Argo CD and Flux |
 | 3. Upgrade-history map of popular charts | [Zerouali et al., MSR 2023](https://conf.researchr.org/details/msr-2023/msr-2023-technical-papers/24/Helm-Charts-for-Kubernetes-Applications-Evolution-Outdatedness-and-Security-Risks) and [Minna et al., EMSE 2025](https://link.springer.com/article/10.1007/s10664-025-10688-0) are static studies | Behavioural, cluster-observed upgrade edges as a public dataset | **Later**; a pilot on the latest upgrade of the top 50 charts comes with the corpus work |
 | 4. Upgrade rehearsal from a production release's shape | [Replicated preflight](https://docs.replicated.com/vendor/preflight-support-bundle-about) checks the environment only; helm-diff, Pluto, vcluster and Velero cover pieces | Rehearsing a planned upgrade from a captured release shape | **Drop** until users ask. It conflicts with §3.1, and what breaks real upgrades (data, operators, real Secrets) cannot leave production. "Preflight" is Replicated's term, so avoid the name |
 | 5. Day-two taxonomy, behaviour contract, fix with proof | [OWASP Kubernetes Top 10](https://owasp.org/www-project-kubernetes-top-ten/), kube-score and Polaris rules: security and static manifests, not day-two behaviour | A numbered catalogue of day-two chart weaknesses; chart-declared invariants that hold across upgrades; proof bundles | **Now** for the taxonomy and proof bundles; **next** for the contract; **later** for AI-written patches and any badge |
@@ -21,12 +21,12 @@ What would make Helmbulance a tool nobody else has, rather than one more checker
 **It is unclaimed.** No tool or paper runs one chart through several deployers and compares the results.
 
 **It is timely.**
-- Helm 3 security fixes end on 11 November 2026.
+- Helm 3's bug fixes ended with its final feature release on 9 September 2026, and its security fixes end on 10 February 2027 ([helm.sh](https://helm.sh/blog/helm-v3-end-of-life)).
 - Helm 4 installs with server-side apply.
 - A release first installed by Helm 3 keeps client-side apply when Helm 4 upgrades it (`helm upgrade --help` in Helm 4: `--server-side` defaults to `auto`, which "defaults the value from the previous chart release's method").
 - Many users will cross that line in the coming months.
 
-**It is cheap on today's code.** helm is already run as a command (`helm.Client.Binary`). A Helm 3 vs Helm 4 comparison needs a second binary and a way to compare two observations, not a new engine.
+**It is cheap on today's code.** helm is already run as a command (`helm.Client.Binary`), and `helmbulance matrix` already repeats a run across Kubernetes versions. A Helm major, Argo CD or Flux is another axis of that matrix, not a new engine. The first step costs almost nothing: CI runs the fixture pairs under both Helm majors.
 
 **It has a concrete first case.** openfaas creates its `basic-auth` Secret in a `pre-install` hook with `randAlphaNum` (`chart/openfaas/templates/secret.yaml`).
 - Helm CLI upgrades leave it alone, which is why the first [case study](../case-studies/oss-charts-2026-10.md) reports PASS.
@@ -51,9 +51,9 @@ The top 50 Artifact Hub charts by stars have 13,804 published versions. That is 
 ## Build order
 
 1. **Trusted oracles:** B1 to B3, M1, D4 and D5 from the review and decision 0001.
-2. **Shared base:** lifecycle operations as reusable steps, a versioned `Observation` JSON, and a `Deployer` interface.
-3. **Helm 3 vs Helm 4**, proof bundles and the taxonomy, in v0.1.
-4. **Argo CD and Flux** deployers, and the behaviour contract (it generalises the `expectedRotation` list from D5).
+2. **Shared base:** lifecycle operations as reusable steps, a versioned `Observation` JSON, and a `Deployer` interface that `helmbulance matrix` can iterate over like a Kubernetes version.
+3. **Helm 3 vs Helm 4** fixture runs in CI (a v0.1 stretch goal), then proof bundles and the taxonomy.
+4. **A Helm-major axis in `helmbulance matrix`, then Argo CD and Flux**, and the behaviour contract (it generalises the `expectedRotation` list from D5).
 5. **The top 50 latest-upgrade pilot.**
 6. **Exploration and shrinking,** only if experiment 1 passes. Rehearsal only on demand.
 
@@ -65,9 +65,9 @@ The top 50 Artifact Hub charts by stars have 13,804 published versions. That is 
 
 **Third-party charts follow D3 of decision 0001** until the hardened mode exists.
 
-## Ownership (proposed; Ege and Kadirhan decide)
+## Ownership
 
 See the plan in decision 0001:
-- Ege owns the engine (operations, oracles, `Observation`, scenarios, sandbox).
-- Kadirhan owns invocation and the differential layer (`Deployer` implementations, the comparison, proof bundles, corpus, taxonomy, gate).
-- The two meet at `Deployer` and `Observation`.
+- Ege owns the CLI and the scenarios, `helmbulance matrix` included.
+- Kadirhan owns CI and the GitHub Action, so the first Helm 3 vs Helm 4 comparison (fixtures under both majors) lands in his CI.
+- Who builds the deployer axes in `matrix` is decided after v0.1.

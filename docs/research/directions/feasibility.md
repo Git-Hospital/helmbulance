@@ -7,7 +7,7 @@
 - Laptop: 8 GiB RAM, 8 CPUs [M]; Docker VM ~4 GiB, kind node idle 0.6-1.0 GiB, one real-chart scenario 3-8 min [E]; `report.json` timings will replace these.
 - Argo CD v3.5.4: 7 workloads (core: 4), no resource requests [M]; core idle 0.3-0.5 GiB [E]; bundles Helm 4.2.1 [S].
 - Flux v2.9.6: 7 controllers requesting 50-100m CPU, 64 MiB each; source and helm controllers need 150m/128 MiB [M].
-- Helm 3 security fixes end 11 November 2026 [S].
+- Helm 3 bug fixes ended 9 September 2026; security fixes end 10 February 2027 [S] ([helm.sh](https://helm.sh/blog/helm-v3-end-of-life)).
 - Top 50 charts by stars [M]: 13,804 versions; edges: all pairs 3,578,833, consecutive 13,754, minor-to-minor 3,639 (last two years: 1,166). 7 of 12 Bitnami charts stopped in August 2025.
 
 ## 1. Jepsen for Helm charts
@@ -64,7 +64,7 @@
 5. Top-50 latest-edge pilot.
 6. Explorer and shrinker if experiment 1 passes; preflight on demand.
 
-## Ownership (suggestion; Ege and Kadirhan decide)
+## Ownership (suggestion at the time; superseded by the plan in decision 0001)
 
 - **Ege, engine:** ops, oracles, `Observation`, scenarios, sandbox add-ons, releases.
 - **Kadirhan, differential layer:** `internal/diff`, Helm 3/4, proof bundle, corpus, taxonomy, gate; later the shrinker.
@@ -72,4 +72,4 @@
 
 ## Most distinctive, soonest
 
-**Direction 2, starting with Helm 3 vs Helm 4.** Cheap on today's code, timely (Helm 3 security support ends after v0.1), unclaimed (`prior-art.md`), and it builds on differential-testing experience in the team.
+**Direction 2, starting with Helm 3 vs Helm 4.** Cheap on today's code, timely (Helm 3 security support ends 10 February 2027), unclaimed (`prior-art.md`).
