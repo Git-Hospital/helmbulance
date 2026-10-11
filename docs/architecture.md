@@ -117,6 +117,16 @@ Each scenario goes through these phases:
 - **Control:** `helm upgrade` with no values flags. Helm reuses the install values, so nothing should change. Secrets that change here are regenerated on every render.
 - **Treatment:** `helm upgrade --reset-values -f <files>`. This leaves out every install-time `--set`, which is what happens when someone upgrades months later from the values file in git. Keys that change or disappear here, and did not already change in the control, are values the chart does not keep once set.
 
+**`chart-upgrade`** (implemented).
+- Install the earlier version (`--from-version`), upgrade it to itself as the control, then upgrade to the chart under test with the same values.
+- Report a failed upgrade with Helm's error, Secrets the new version changes or drops, and workloads that are not healthy afterwards.
+
+**`zero-downtime`** (implemented).
+- A pod in the release namespace sends one request every 200 ms to the most HTTP-like Service port (`--traffic-target`, `--traffic-path` to choose).
+- Control: 20 s with no change, which must be clean. Treatment: the same traffic during the version upgrade (with `--from-version`), or during a rolling restart of every Deployment and StatefulSet.
+- Reports failed requests, the longest outage, and the settings that explain it: Recreate, a single replica, no readiness probe, no preStop.
+- This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
+
 **`reinstall`** (v0.1).
 - Write a sentinel file into each PVC.
 - Uninstall, install again, and check the sentinels, the Secrets and the health of the release.

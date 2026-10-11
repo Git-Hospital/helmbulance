@@ -17,6 +17,8 @@ const (
 	Pass         = "PASS"
 	Fail         = "FAIL"
 	Inconclusive = "INCONCLUSIVE"
+	// Skipped: the chart has nothing this scenario tests (no HTTP Service, say). Not a failure.
+	Skipped = "SKIPPED"
 )
 
 // Env is what a scenario gets to work with.
@@ -32,7 +34,12 @@ type Env struct {
 	// oci://… or a path) and a version. Empty From means "the same chart reference as Chart".
 	From        string
 	FromVersion string
-	Log         io.Writer
+
+	// TrafficTarget ("service:port") and TrafficPath are where zero-downtime sends its requests.
+	// Empty picks the Service port that looks most like HTTP, and "/".
+	TrafficTarget string
+	TrafficPath   string
+	Log           io.Writer
 }
 
 // Finding is one reproduced problem.

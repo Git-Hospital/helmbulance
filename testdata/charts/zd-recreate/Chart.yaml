@@ -1,0 +1,5 @@
+apiVersion: v2
+name: zd-recreate
+description: "Helmbulance fixture. Bug: one replica and the Recreate strategy, so every restart has a gap."
+type: application
+version: 0.1.0

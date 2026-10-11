@@ -2,7 +2,7 @@
 
 **Behavioural tests for Helm charts.** Helmbulance installs a chart into a throwaway Kubernetes cluster and runs the things that go wrong in production: upgrades without the original values, uninstall and reinstall, password rotation, network isolation, broken processes, hostile traffic. It reports what actually broke, with evidence and a suggested fix.
 
-> **Status: early.** The CLI runs its first scenario (`upgrade-without-values`) end to end on kind. Nothing is released yet. See [docs/architecture.md](docs/architecture.md) for the design.
+> **Status: early.** The CLI runs three scenarios (`upgrade-without-values`, `chart-upgrade`, `zero-downtime`) end to end on kind. Nothing is released yet. See [docs/architecture.md](docs/architecture.md) for the design.
 
 ## Why
 
@@ -30,6 +30,8 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 | Scenario | Question it answers | Status |
 |---|---|---|
 | `upgrade-without-values` | Does an upgrade from the values files, without the install-time `--set` flags, change or drop Secret values? | **works** |
+| `chart-upgrade` | Does upgrading from an earlier chart version, with the same values, succeed, keep the Secrets, and leave the workloads healthy? | **works** |
+| `zero-downtime` | Do requests fail while the pods are replaced, during a rolling restart or a version upgrade? How long is the outage? | **works** |
 | `reinstall` | After `helm uninstall` and `helm install`, do data and credentials come back? | v0.1 |
 | `gitops-render` | Does the chart render differently without cluster access, as Argo CD does (`lookup` returns nothing there)? | v0.1 |
 | `network-isolation` | Are undeclared ports and bundled datastores unreachable from other namespaces, and is the NetworkPolicy actually enforced? | v0.1 |

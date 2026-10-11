@@ -1,0 +1,5 @@
+apiVersion: v2
+name: zd-rolling
+description: "Helmbulance fixture. Fixed twin of zd-recreate: two replicas, nothing unavailable during a rollout, and a preStop pause."
+type: application
+version: 0.1.0

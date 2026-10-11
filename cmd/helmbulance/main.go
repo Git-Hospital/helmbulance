@@ -31,6 +31,7 @@ const (
 var scenarios = []scenario.Scenario{
 	scenario.UpgradeValues{},
 	scenario.ChartUpgrade{},
+	scenario.ZeroDowntime{},
 }
 
 type multiFlag []string
@@ -76,6 +77,8 @@ func test(args []string) int {
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
 	from := fs.String("from", "", "chart to upgrade from in chart-upgrade (repo/chart, oci://… or a path); defaults to the chart under test")
 	fromVersion := fs.String("from-version", "", "chart version to upgrade from; enables the chart-upgrade scenario")
+	trafficTarget := fs.String("traffic-target", "", "Service and port that zero-downtime sends requests to (service:port); default: the most HTTP-like Service port")
+	trafficPath := fs.String("traffic-path", "/", "path that zero-downtime requests; it must answer 2xx")
 
 	// Accept the chart path before or after the flags.
 	var chart string
@@ -145,8 +148,10 @@ func test(args []string) int {
 		Values: helm.Values{Files: files, Sets: sets},
 		Log:    os.Stderr,
 
-		From:        *from,
-		FromVersion: *fromVersion,
+		From:          *from,
+		FromVersion:   *fromVersion,
+		TrafficTarget: *trafficTarget,
+		TrafficPath:   *trafficPath,
 	}
 
 	rep := &report.Report{

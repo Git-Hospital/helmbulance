@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/egezamb/helmbulance/internal/execx"
 )
@@ -214,4 +215,182 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 		pods = append(pods, p)
 	}
 	return pods, nil
+}
+
+// Service is one Service of the release and the ports it exposes.
+type Service struct {
+	Name  string
+	Ports []ServicePort
+}
+
+// ServicePort is one port of a Service.
+type ServicePort struct {
+	Name     string
+	Port     int
+	Protocol string
+}
+
+// Services returns the Services in ns that select pods (headless Services included).
+func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "services", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Selector map[string]string `json:"selector"`
+				Ports    []struct {
+					Name     string `json:"name"`
+					Port     int    `json:"port"`
+					Protocol string `json:"protocol"`
+				} `json:"ports"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse services: %w", err)
+	}
+	var services []Service
+	for _, item := range list.Items {
+		if len(item.Spec.Selector) == 0 {
+			continue
+		}
+		s := Service{Name: item.Metadata.Name}
+		for _, p := range item.Spec.Ports {
+			s.Ports = append(s.Ports, ServicePort{Name: p.Name, Port: p.Port, Protocol: p.Protocol})
+		}
+		services = append(services, s)
+	}
+	return services, nil
+}
+
+// Workload is a Deployment or StatefulSet and the settings that decide whether replacing its pods
+// interrupts traffic.
+type Workload struct {
+	Kind, Name     string
+	Replicas       int
+	Strategy       string // RollingUpdate or Recreate (Deployments), RollingUpdate or OnDelete (StatefulSets)
+	MaxUnavailable string
+	HasReadiness   bool
+	HasPreStop     bool
+}
+
+// Workloads returns the Deployments and StatefulSets in ns.
+func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "deployments,statefulsets", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Replicas *int `json:"replicas"`
+				Strategy struct {
+					Type          string `json:"type"`
+					RollingUpdate struct {
+						MaxUnavailable any `json:"maxUnavailable"`
+					} `json:"rollingUpdate"`
+				} `json:"strategy"`
+				UpdateStrategy struct {
+					Type string `json:"type"`
+				} `json:"updateStrategy"`
+				Template struct {
+					Spec struct {
+						Containers []struct {
+							ReadinessProbe *json.RawMessage `json:"readinessProbe"`
+							Lifecycle      struct {
+								PreStop *json.RawMessage `json:"preStop"`
+							} `json:"lifecycle"`
+						} `json:"containers"`
+					} `json:"spec"`
+				} `json:"template"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse workloads: %w", err)
+	}
+	var workloads []Workload
+	for _, item := range list.Items {
+		w := Workload{Kind: item.Kind, Name: item.Metadata.Name, Replicas: 1, Strategy: item.Spec.Strategy.Type}
+		if item.Spec.Replicas != nil {
+			w.Replicas = *item.Spec.Replicas
+		}
+		if item.Kind == "StatefulSet" {
+			w.Strategy = item.Spec.UpdateStrategy.Type
+		}
+		if mu := item.Spec.Strategy.RollingUpdate.MaxUnavailable; mu != nil {
+			w.MaxUnavailable = fmt.Sprint(mu)
+		}
+		for _, c := range item.Spec.Template.Spec.Containers {
+			if c.ReadinessProbe != nil {
+				w.HasReadiness = true
+			}
+			if c.Lifecycle.PreStop != nil {
+				w.HasPreStop = true
+			}
+		}
+		workloads = append(workloads, w)
+	}
+	return workloads, nil
+}
+
+// RolloutRestart replaces the pods of every Deployment and StatefulSet in ns and waits until the
+// rollouts finish.
+func (c *Client) RolloutRestart(ctx context.Context, ns string, workloads []Workload, timeout string) error {
+	for _, w := range workloads {
+		ref := strings.ToLower(w.Kind) + "/" + w.Name
+		if _, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "rollout", "restart", ref); err != nil {
+			return err
+		}
+	}
+	for _, w := range workloads {
+		ref := strings.ToLower(w.Kind) + "/" + w.Name
+		if _, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "rollout", "status", ref, "--timeout", timeout); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// StartPod runs a pod with a shell script and returns once it is created.
+func (c *Client) StartPod(ctx context.Context, ns, name, image, script string, labels map[string]string) error {
+	args := []string{"--kubeconfig", c.Kubeconfig, "--namespace", ns, "run", name, "--image", image, "--restart", "Never"}
+	var l []string
+	for k, v := range labels {
+		l = append(l, k+"="+v)
+	}
+	sort.Strings(l)
+	if len(l) > 0 {
+		args = append(args, "--labels", strings.Join(l, ","))
+	}
+	args = append(args, "--command", "--", "sh", "-c", script)
+	_, err := c.Runner.Run(ctx, "kubectl", args...)
+	return err
+}
+
+// WaitPodRunning waits until the pod is running.
+func (c *Client) WaitPodRunning(ctx context.Context, ns, name, timeout string) error {
+	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "wait", "--for=jsonpath={.status.phase}=Running", "pod/"+name, "--timeout", timeout)
+	return err
+}
+
+// Logs returns the logs of a pod.
+func (c *Client) Logs(ctx context.Context, ns, name string) (string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "logs", name)
+	return string(out), err
+}
+
+// DeletePod removes a pod without waiting for it to go.
+func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
+	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "delete", "pod", name, "--ignore-not-found", "--wait=false")
+	return err
 }
