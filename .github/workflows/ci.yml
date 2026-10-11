@@ -39,7 +39,8 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   fixtures:
-    name: fixtures (Helm ${{ matrix.helm }})
+    # The job names stay the same when a Helm version is bumped, so required checks keep matching.
+    name: fixtures (Helm ${{ matrix.major }})
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -49,9 +50,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - helm: v4.3.0
+          - major: 4
+            helm: v4.3.0
             helm-sha256: 86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
-          - helm: v3.22.0
+          - major: 3
+            helm: v3.22.0
             helm-sha256: 1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb
     env:
       KIND_VERSION: v0.33.0
