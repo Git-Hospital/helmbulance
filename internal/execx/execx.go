@@ -22,6 +22,9 @@ type Command struct {
 // Runner executes commands with a fixed environment and records each one.
 type Runner struct {
 	Env []string
+	// Secrets are values (from --set) that are replaced with *** in error text, since helm can
+	// quote them in schema errors and chart fail messages.
+	Secrets []string
 
 	mu         sync.Mutex
 	transcript []Command
@@ -53,7 +56,7 @@ func (r *Runner) RunCapture(ctx context.Context, name string, args ...string) ([
 	r.mu.Unlock()
 
 	if err != nil {
-		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("%s: %w: %s", rec.Line, err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("%s: %w: %s", rec.Line, err, Redact(strings.TrimSpace(stderr.String()), r.Secrets))
 	}
 	return stdout.Bytes(), stderr.Bytes(), nil
 }
