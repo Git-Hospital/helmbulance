@@ -147,3 +147,54 @@ jobs:
           name: fixtures-helm-${{ matrix.helm }}
           path: ${{ runner.temp }}/fixtures
           retention-days: 7
+
+  # The composite Action (action.yml) on one fixture pair. The fixed twin runs with variables that
+  # would point helm at another cluster; the Action must drop them, or helm fails to connect.
+  action:
+    name: action (fixture pair)
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Defective chart
+        id: bad
+        continue-on-error: true
+        uses: ./ # zizmor: ignore[self-repository] only this commit is checked out; switch to $/ once confirmed for a root action
+        with:
+          chart: testdata/charts/regenerates-secret
+          scenarios: upgrade-without-values
+          timeout: 3m
+          report-dir: reports/bad
+
+      - name: Fixed twin, with a hostile helm environment
+        id: good
+        uses: ./ # zizmor: ignore[self-repository] only this commit is checked out; switch to $/ once confirmed for a root action
+        env:
+          HELM_KUBEAPISERVER: https://127.0.0.1:1
+          HELM_KUBETOKEN: not-a-token
+        with:
+          chart: testdata/charts/keeps-secret
+          scenarios: upgrade-without-values
+          timeout: 3m
+          report-dir: reports/good
+
+      - name: Check outcomes
+        env:
+          BAD_OUTCOME: ${{ steps.bad.outcome }}
+          BAD_CODE: ${{ steps.bad.outputs.exit-code }}
+          BAD_VERDICT: ${{ steps.bad.outputs.verdict }}
+          GOOD_CODE: ${{ steps.good.outputs.exit-code }}
+          GOOD_VERDICT: ${{ steps.good.outputs.verdict }}
+        run: |
+          echo "defective: outcome=$BAD_OUTCOME exit=$BAD_CODE verdict=$BAD_VERDICT"
+          echo "fixed:     exit=$GOOD_CODE verdict=$GOOD_VERDICT"
+          [ "$BAD_OUTCOME" = failure ] && [ "$BAD_CODE" = 1 ] && [ "$BAD_VERDICT" = FAIL ]
+          [ "$GOOD_CODE" = 0 ] && [ "$GOOD_VERDICT" = PASS ]
+          test -s reports/bad/report.md
+          test -s reports/good/report.md

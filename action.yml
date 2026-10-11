@@ -1,0 +1,184 @@
+name: Helmbulance
+description: Install a Helm chart in a throwaway kind cluster, run Helmbulance's day-two scenarios, and put the report in the job summary.
+branding:
+  icon: life-buoy
+  color: red
+
+inputs:
+  chart:
+    description: Path to the chart directory, relative to the workspace.
+    default: ./chart
+  values:
+    description: Values files, one per line.
+    default: ""
+  scenarios:
+    description: Scenarios to run, one per line. Empty runs the default set (see `helmbulance list-scenarios`).
+    default: ""
+  from:
+    description: Chart that chart-upgrade and zero-downtime upgrade from (a path, repo/chart or oci://…). Empty means the chart under test.
+    default: ""
+  from-version:
+    description: Chart version to upgrade from. Setting it enables chart-upgrade.
+    default: ""
+  timeout:
+    description: Timeout for each install or upgrade.
+    default: 10m
+  report-dir:
+    description: Where report.md and report.json are written, relative to the workspace.
+    default: helmbulance-report
+  fail-on:
+    description: >-
+      When the step fails. "findings": on findings, errors or an incomplete run (exit 1, 2 or 3).
+      "error": only on errors or an incomplete run (exit 2 or 3). "never": the step always passes;
+      read the exit-code output instead.
+    default: findings
+
+outputs:
+  exit-code:
+    description: Helmbulance's exit code. 0 clean, 1 findings, 2 error, 3 incomplete.
+    value: ${{ steps.run.outputs.exit-code }}
+  verdict:
+    description: PASS, FAIL, ERROR or INCONCLUSIVE, from the exit code.
+    value: ${{ steps.run.outputs.verdict }}
+  report-dir:
+    description: Directory that holds report.md and report.json.
+    value: ${{ steps.run.outputs.report-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the runner
+      shell: bash
+      env:
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        if [ "$RUNNER_OS" != Linux ]; then
+          echo "::error::Helmbulance needs a Linux runner with Docker (kind runs the sandbox cluster in containers)."
+          exit 1
+        fi
+        case "$RUNNER_ARCH" in
+          X64 | ARM64) ;;
+          *) echo "::error::Unsupported runner architecture: $RUNNER_ARCH"; exit 1 ;;
+        esac
+        case "$FAIL_ON" in
+          findings | error | never) ;;
+          *) echo "::error::fail-on must be findings, error or never, not '$FAIL_ON'"; exit 1 ;;
+        esac
+        if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
+          echo "::warning::Self-hosted runner. Helmbulance creates privileged kind containers on this machine and installs the chart into them. Use an ephemeral runner, and only with charts you trust."
+        fi
+
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: false
+
+    # Pinned tools go into a private directory. PATH is changed only for the Helmbulance run, so the
+    # caller's later steps keep their own helm and kubectl.
+    - name: Install kind, kubectl and helm
+      shell: bash
+      run: |
+        bin="$RUNNER_TEMP/helmbulance-bin"
+        mkdir -p "$bin"
+        if [ "$RUNNER_ARCH" = ARM64 ]; then
+          arch=arm64
+          kind_sha=20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2
+          kubectl_sha=ff749f4b78d9c4f1ec87307df9b50119ed819e2094aa9810cb9acffc3286c8c7
+          helm_sha=31c5794dd55c66a51e6b7d2e2ac7a114ae8b1de41ff1d9ba51748ac973b06a08
+        else
+          arch=amd64
+          kind_sha=aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+          kubectl_sha=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
+          helm_sha=86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+        fi
+        curl -fsSLo "$bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-$arch"
+        echo "$kind_sha  $bin/kind" | sha256sum -c -
+        curl -fsSLo "$bin/kubectl" "https://dl.k8s.io/release/v1.37.1/bin/linux/$arch/kubectl"
+        echo "$kubectl_sha  $bin/kubectl" | sha256sum -c -
+        curl -fsSLo "$RUNNER_TEMP/helmbulance-helm.tar.gz" "https://get.helm.sh/helm-v4.3.0-linux-$arch.tar.gz"
+        echo "$helm_sha  $RUNNER_TEMP/helmbulance-helm.tar.gz" | sha256sum -c -
+        tar -xzf "$RUNNER_TEMP/helmbulance-helm.tar.gz" -C "$RUNNER_TEMP" "linux-$arch/helm"
+        mv "$RUNNER_TEMP/linux-$arch/helm" "$bin/helm"
+        chmod +x "$bin/kind" "$bin/kubectl" "$bin/helm"
+
+    - name: Build Helmbulance
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: go build -trimpath -o "$RUNNER_TEMP/helmbulance-bin/helmbulance" ./cmd/helmbulance
+
+    - name: Run Helmbulance
+      id: run
+      shell: bash
+      env:
+        CHART: ${{ inputs.chart }}
+        VALUES: ${{ inputs.values }}
+        SCENARIOS: ${{ inputs.scenarios }}
+        FROM: ${{ inputs.from }}
+        FROM_VERSION: ${{ inputs.from-version }}
+        TIMEOUT: ${{ inputs.timeout }}
+        REPORT_DIR: ${{ inputs.report-dir }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        args=(test "$CHART" --timeout "$TIMEOUT" --report-dir "$REPORT_DIR")
+        while read -r f; do
+          if [ -n "$f" ]; then args+=(-f "$f"); fi
+        done <<< "$VALUES"
+        while read -r s; do
+          if [ -n "$s" ]; then args+=(--scenario "$s"); fi
+        done <<< "$SCENARIOS"
+        if [ -n "$FROM" ]; then args+=(--from "$FROM"); fi
+        if [ -n "$FROM_VERSION" ]; then args+=(--from-version "$FROM_VERSION"); fi
+
+        # Variables that point helm or kubectl at another cluster never reach Helmbulance.
+        dropped=()
+        while read -r v; do
+          dropped+=("$v")
+          unset "$v"
+        done < <(compgen -e | grep -E '^(HELM_KUBE|HELM_DRIVER|KUBECONFIG$|HELM_NAMESPACE$)' || true)
+        if [ "${#dropped[@]}" -gt 0 ]; then
+          echo "Not passed to Helmbulance: ${dropped[*]}"
+        fi
+
+        # A report left by an earlier run must not be published as this run's.
+        rm -f "$REPORT_DIR/report.md" "$REPORT_DIR/report.json"
+
+        code=0
+        PATH="$RUNNER_TEMP/helmbulance-bin:$PATH" helmbulance "${args[@]}" || code=$?
+        case "$code" in
+          0) verdict=PASS ;;
+          1) verdict=FAIL ;;
+          3) verdict=INCONCLUSIVE ;;
+          *) verdict=ERROR ;;
+        esac
+        {
+          echo "exit-code=$code"
+          echo "verdict=$verdict"
+          echo "report-dir=$REPORT_DIR"
+        } >> "$GITHUB_OUTPUT"
+
+        # The job summary is limited to 1 MiB per step.
+        report="$REPORT_DIR/report.md"
+        if [ -f "$report" ]; then
+          limit=1000000
+          if [ "$(wc -c < "$report")" -gt "$limit" ]; then
+            # Cut at the last whole line, and close a code fence the cut left open.
+            cut="$RUNNER_TEMP/helmbulance-summary.md"
+            head -c "$limit" "$report" | sed '$d' > "$cut"
+            cat "$cut" >> "$GITHUB_STEP_SUMMARY"
+            if [ $(( $(grep -c '^```' "$cut" || true) % 2 )) -eq 1 ]; then
+              printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
+            printf '\n_Report truncated; the full report is in %s._\n' "$report" >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        else
+          echo "Helmbulance wrote no report (exit $code)." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        case "$FAIL_ON" in
+          findings) [ "$code" = 0 ] || exit "$code" ;;
+          error) [ "$code" = 0 ] || [ "$code" = 1 ] || exit "$code" ;;
+          never) ;;
+        esac
