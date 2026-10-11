@@ -3,10 +3,12 @@ package scenario
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/egezamb/helmbulance/internal/execx"
 	"github.com/egezamb/helmbulance/internal/helm"
+	"github.com/egezamb/helmbulance/internal/kube"
 	"github.com/egezamb/helmbulance/internal/oracle"
 )
 
@@ -59,6 +61,11 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "could not read Secrets after install", err)
 	}
 
+	podsBefore, err := env.Kube.Pods(ctx, ns)
+	if err != nil {
+		return inconclusive(res, "could not read pods after install", err)
+	}
+
 	// Control: Helm reuses the install values.
 	mark := len(env.Runner.Transcript())
 	if err := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{}); err != nil {
@@ -69,10 +76,16 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not read Secrets after the control upgrade", err)
 	}
+	podsAfter, err := env.Kube.Pods(ctx, ns)
+	if err != nil {
+		return inconclusive(res, "could not read pods after the control upgrade", err)
+	}
+	restarted := replacedPods(podsBefore, podsAfter)
 
 	// Treatment: values files only. Without any --set or values file it would repeat the control.
 	if len(env.Values.Sets) == 0 && len(env.Values.Files) == 0 {
-		return s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res = s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		return withRestarts(res, restarted, installCmd, reuseCmd)
 	}
 	mark = len(env.Runner.Transcript())
 	// --reset-values: without any values flag Helm would reuse the install values, --set included.
@@ -85,7 +98,63 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "could not read Secrets after the upgrade", err)
 	}
 
-	return s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
+	res = s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
+	return withRestarts(res, restarted, installCmd, reuseCmd)
+}
+
+// replacedPods lists the workloads whose pods were replaced, by pod UID, between two readings.
+func replacedPods(before, after []kube.Pod) []string {
+	uids := map[string]bool{}
+	for _, p := range after {
+		uids[p.UID] = true
+	}
+	seen := map[string]bool{}
+	var owners []string
+	for _, p := range before {
+		owner := p.Owner
+		if strings.HasPrefix(owner, "ReplicaSet/") {
+			// Name the Deployment, not the ReplicaSet: <deployment>-<hash>.
+			if i := strings.LastIndex(owner, "-"); i > len("ReplicaSet/") {
+				owner = "Deployment/" + owner[len("ReplicaSet/"):i]
+			}
+		}
+		if !uids[p.UID] && !seen[owner] {
+			seen[owner] = true
+			owners = append(owners, owner)
+		}
+	}
+	sort.Strings(owners)
+	return owners
+}
+
+// withRestarts adds HB-UV-003 when an upgrade that changed nothing replaced pods.
+func withRestarts(res Result, restarted []string, installCmd, reuseCmd []execx.Command) Result {
+	if len(restarted) == 0 || res.Verdict == Inconclusive {
+		return res
+	}
+	var repro []string
+	for _, c := range installCmd {
+		repro = append(repro, reproLine(c.Line))
+	}
+	var evidence []string
+	for _, o := range restarted {
+		evidence = append(evidence, "`"+o+"`: its pods were replaced by an upgrade that changed no values")
+	}
+	res.Findings = append(res.Findings, Finding{
+		ID:       "HB-UV-003",
+		Title:    "An upgrade that changes nothing restarts pods",
+		Severity: "medium",
+		Evidence: evidence,
+		Impact: "Every `helm upgrade`, even a no-op one from a GitOps sync, restarts these workloads: a " +
+			"short outage for single replicas, lost in-memory or emptyDir state, and noise in alerts.",
+		Fix: "Usually a pod-template annotation that changes on every render, such as a checksum of a " +
+			"Secret with a generated value, a timestamp or randAlphaNum. Keep generated values stable " +
+			"(see HB-UV-001) and hash only inputs that come from values.",
+		Reproduce: concat(repro, reproLine(reuseCmd[0].Line)),
+	})
+	res.Verdict = Fail
+	res.Summary = fmt.Sprintf("%d problem(s) across upgrades", len(res.Findings))
+	return res
 }
 
 func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reused, filesOnly oracle.SecretSnapshot,

@@ -9,6 +9,11 @@ spec:
   template:
     metadata:
       labels: {app: {{ .Release.Name }}-app}
+      # Restart when a user-given value changes. Hashing the rendered secret.yaml instead would
+      # differ between the install (lookup finds nothing, a second random value is drawn) and the
+      # first upgrade, and restart the pods once for nothing.
+      annotations:
+        checksum/values: {{ toJson .Values | sha256sum }}
     spec:
       automountServiceAccountToken: false
       securityContext: {runAsNonRoot: true, runAsUser: 65535}

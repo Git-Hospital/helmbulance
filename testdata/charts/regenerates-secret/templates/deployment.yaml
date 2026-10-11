@@ -9,6 +9,9 @@ spec:
   template:
     metadata:
       labels: {app: {{ .Release.Name }}-app}
+      # Restart when the Secret changes, as many charts do.
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
       automountServiceAccountToken: false
       securityContext: {runAsNonRoot: true, runAsUser: 65535}

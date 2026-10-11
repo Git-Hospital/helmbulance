@@ -58,7 +58,7 @@ func (c *Client) Install(ctx context.Context, release, ns, chart string, v Value
 	args = append(args, c.waitArgs()...)
 	args = append(args, extra...)
 	args = append(args, v.args()...)
-	_, err := c.Runner.Run(ctx, c.bin(), args...)
+	_, err := c.run(ctx, args...)
 	return err
 }
 
@@ -68,14 +68,14 @@ func (c *Client) Upgrade(ctx context.Context, release, ns, chart string, v Value
 	args = append(args, c.waitArgs()...)
 	args = append(args, extra...)
 	args = append(args, v.args()...)
-	_, err := c.Runner.Run(ctx, c.bin(), args...)
+	_, err := c.run(ctx, args...)
 	return err
 }
 
 // Uninstall removes release and waits for its resources to go.
 func (c *Client) Uninstall(ctx context.Context, release, ns string) error {
 	args := append([]string{"uninstall", release, "--wait", "--timeout", c.Timeout.String()}, c.base(ns)...)
-	_, err := c.Runner.Run(ctx, c.bin(), args...)
+	_, err := c.run(ctx, args...)
 	return err
 }
 
@@ -95,6 +95,20 @@ func (c *Client) InstallCapture(ctx context.Context, release, ns, chart string, 
 	args = append(args, c.waitArgs()...)
 	args = append(args, extra...)
 	args = append(args, v.args()...)
+	ctx, cancel := c.deadline(ctx)
+	defer cancel()
 	_, stderr, err := c.Runner.RunCapture(ctx, c.bin(), args...)
 	return string(stderr), err
+}
+
+// deadline bounds a helm call: helm's own --timeout is not always honoured (an uninstall --wait was
+// seen running well past it), and a hung helm would hang the whole run.
+func (c *Client) deadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, c.Timeout+2*time.Minute)
+}
+
+func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
+	ctx, cancel := c.deadline(ctx)
+	defer cancel()
+	return c.Runner.Run(ctx, c.bin(), args...)
 }

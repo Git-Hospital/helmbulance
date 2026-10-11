@@ -92,6 +92,10 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not read the workloads", err)
 	}
+	services, err := env.Kube.Services(ctx, ns)
+	if err != nil {
+		return inconclusive(res, "could not read the Services", err)
+	}
 	operation := "a rolling restart of every Deployment and StatefulSet"
 	act := func() error { return env.Kube.RolloutRestart(ctx, ns, workloads, env.Helm.Timeout.String()) }
 	if env.FromVersion != "" {
@@ -129,7 +133,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		ID:       "HB-ZD-001",
 		Title:    "Requests fail while the pods are replaced",
 		Severity: "medium",
-		Evidence: append(evidence, causes(workloads)...),
+		Evidence: append(evidence, causes(serving(workloads, services, target))...),
 		Impact: "Users and other services see errors on every upgrade or restart, even when nothing " +
 			"is wrong with the new version.",
 		Fix: "Run at least two replicas with a RollingUpdate that keeps them available " +
@@ -244,4 +248,26 @@ func outageText(d time.Duration) string {
 		return "under a second"
 	}
 	return "about " + d.String()
+}
+
+// serving narrows the workloads to those behind the Service the traffic went to, so the causes
+// listed are the ones users of that Service feel. Falls back to all workloads if none match.
+func serving(workloads []kube.Workload, services []kube.Service, target string) []kube.Workload {
+	name, _, _ := strings.Cut(target, ":")
+	name, _, _ = strings.Cut(name, ".")
+	for _, s := range services {
+		if s.Name != name {
+			continue
+		}
+		var out []kube.Workload
+		for _, w := range workloads {
+			if w.Serves(s) {
+				out = append(out, w)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return workloads
 }

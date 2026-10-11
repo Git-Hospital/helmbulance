@@ -160,12 +160,14 @@ func (c *Client) DeleteNamespace(ctx context.Context, ns string) error {
 // Pod is the health of one pod.
 type Pod struct {
 	Name     string
+	UID      string
 	Owner    string // kind/name of the controlling object
 	Ready    bool
 	Restarts int
 }
 
-// Pods returns the pods in ns with their readiness and restart counts.
+// Pods returns the pods in ns with their readiness and restart counts. Finished pods and pods that
+// are terminating are left out.
 func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pods", "-o", "json")
 	if err != nil {
@@ -174,8 +176,10 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 	var list struct {
 		Items []struct {
 			Metadata struct {
-				Name            string `json:"name"`
-				OwnerReferences []struct {
+				Name              string  `json:"name"`
+				UID               string  `json:"uid"`
+				DeletionTimestamp *string `json:"deletionTimestamp"`
+				OwnerReferences   []struct {
 					Kind string `json:"kind"`
 					Name string `json:"name"`
 				} `json:"ownerReferences"`
@@ -200,7 +204,10 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 		if item.Status.Phase == "Succeeded" { // finished Jobs
 			continue
 		}
-		p := Pod{Name: item.Metadata.Name}
+		if item.Metadata.DeletionTimestamp != nil { // on its way out, already replaced
+			continue
+		}
+		p := Pod{Name: item.Metadata.Name, UID: item.Metadata.UID}
 		if refs := item.Metadata.OwnerReferences; len(refs) > 0 {
 			p.Owner = refs[0].Kind + "/" + refs[0].Name
 		}
@@ -219,8 +226,9 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 
 // Service is one Service of the release and the ports it exposes.
 type Service struct {
-	Name  string
-	Ports []ServicePort
+	Name     string
+	Selector map[string]string
+	Ports    []ServicePort
 }
 
 // ServicePort is one port of a Service.
@@ -259,7 +267,7 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 		if len(item.Spec.Selector) == 0 {
 			continue
 		}
-		s := Service{Name: item.Metadata.Name}
+		s := Service{Name: item.Metadata.Name, Selector: item.Spec.Selector}
 		for _, p := range item.Spec.Ports {
 			s.Ports = append(s.Ports, ServicePort{Name: p.Name, Port: p.Port, Protocol: p.Protocol})
 		}
@@ -277,6 +285,20 @@ type Workload struct {
 	MaxUnavailable string
 	HasReadiness   bool
 	HasPreStop     bool
+	PodLabels      map[string]string
+}
+
+// Serves reports whether the Service selects this workload's pods.
+func (w Workload) Serves(s Service) bool {
+	if len(s.Selector) == 0 {
+		return false
+	}
+	for k, v := range s.Selector {
+		if w.PodLabels[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // Workloads returns the Deployments and StatefulSets in ns.
@@ -303,6 +325,9 @@ func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
 					Type string `json:"type"`
 				} `json:"updateStrategy"`
 				Template struct {
+					Metadata struct {
+						Labels map[string]string `json:"labels"`
+					} `json:"metadata"`
 					Spec struct {
 						Containers []struct {
 							ReadinessProbe *json.RawMessage `json:"readinessProbe"`
@@ -320,7 +345,8 @@ func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
 	}
 	var workloads []Workload
 	for _, item := range list.Items {
-		w := Workload{Kind: item.Kind, Name: item.Metadata.Name, Replicas: 1, Strategy: item.Spec.Strategy.Type}
+		w := Workload{Kind: item.Kind, Name: item.Metadata.Name, Replicas: 1, Strategy: item.Spec.Strategy.Type,
+			PodLabels: item.Spec.Template.Metadata.Labels}
 		if item.Spec.Replicas != nil {
 			w.Replicas = *item.Spec.Replicas
 		}
