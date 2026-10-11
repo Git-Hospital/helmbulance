@@ -55,6 +55,11 @@ We wrote a Helm chart for [Open Archiver](https://github.com/LogicLabs-OU/OpenAr
 
 The chart will be published separately; this repository will link to it.
 
+More case studies:
+
+- [yugabyte 2026.1.2](docs/case-studies/yugabyte-2026.1.2.md): a patch release whose StatefulSet selector change breaks every upgrade from 2026.1.0 and 2026.1.1 ([reported](https://github.com/yugabyte/charts/issues/240)).
+- [docker-registry and openfaas](docs/case-studies/oss-charts-2026-10.md): a Secret regenerated on every upgrade, and a correct negative.
+
 ## Roadmap
 
 - **v0.1:** the CLI with `upgrade-without-values`, `reinstall`, `gitops-render` and `network-isolation`, Markdown and JSON reports, and a GitHub Action.
