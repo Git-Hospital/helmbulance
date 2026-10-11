@@ -127,6 +127,12 @@ Each scenario goes through these phases:
 - Reports failed requests, the longest outage, and the settings that explain it: Recreate, a single replica, no readiness probe, no preStop.
 - This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
 
+**`helmbulance scan`** (implemented). A static pre-screen: no cluster, seconds. It reports candidates, never findings; each names the `helmbulance test` run that confirms or rejects it. It exits 0 unless `--strict`.
+- **Immutable fields:** render `--from-version` as an install and the chart as an upgrade (`--is-upgrade`), compare selectors, StatefulSet `serviceName`/`volumeClaimTemplates`/`podManagementPolicy`, Job templates and PVC access modes. Hooks and Jobs named after `.Release.Revision` are skipped (a real upgrade gives them a new name).
+- **First-upgrade restart:** a pod-template checksum of an included template that keeps generated values with `lookup` (helpers it includes are followed one level).
+- **Regenerated Secrets:** render twice; keys that differ in a Secret that is not a hook and whose template (or helper) does not use `lookup`.
+- Checked against the cases confirmed on a cluster: yugabyte, JupyterHub, SeaweedFS and docker-registry are flagged; zammad's revision-named Job and this project's OpenArchiver chart are not.
+
 **`helmbulance matrix`** (implemented). A command rather than a scenario, because each Kubernetes version needs its own cluster.
 - For each version (kind node images pinned by digest: 1.34, 1.35, 1.36, 1.37): create a cluster, install, wait for the pods, collect the API server's warnings from helm's stderr, delete the cluster.
 - Reports a failed install, pods that never become ready (restarts alone are not counted, apps often restart once at first start), and warnings about deprecated APIs.

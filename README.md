@@ -32,6 +32,7 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 | `upgrade-without-values` | Does an upgrade from the values files, without the install-time `--set` flags, change or drop Secret values? | **works** |
 | `chart-upgrade` | Does upgrading from an earlier chart version, with the same values, succeed, keep the Secrets, and leave the workloads healthy? | **works** |
 | `zero-downtime` | Do requests fail while the pods are replaced, during a rolling restart or a version upgrade? How long is the outage? | **works** |
+| `helmbulance scan` | Static pre-screen, no cluster, seconds: immutable fields changed since `--from-version`, checksums that change on the first upgrade, Secrets generated anew on every render. Lists **candidates** and the `test` run that confirms each. | **works** |
 | `helmbulance matrix` | Does the chart install and run on every supported Kubernetes version (1.34–1.37), and does the API server warn about what it creates? | **works** |
 | `reinstall` | After `helm uninstall` and `helm install`, do data and credentials come back? | v0.1 |
 | `gitops-render` | Does the chart render differently without cluster access, as Argo CD does (`lookup` returns nothing there)? | v0.1 |
@@ -82,6 +83,7 @@ go build -o bin/helmbulance ./cmd/helmbulance
 ./bin/helmbulance test ./path/to/chart -f values.yaml --set some.secret=value
 ./bin/helmbulance test ./path/to/chart --scenario chart-upgrade --from-version 1.2.3
 ./bin/helmbulance matrix ./path/to/chart -f values.yaml --k8s 1.34,1.37
+./bin/helmbulance scan ./path/to/chart --from-version 1.2.3     # no cluster needed
 ```
 
 The fixtures in `testdata/charts/` show what it finds: each defect has a fixed twin that must pass.

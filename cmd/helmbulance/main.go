@@ -18,6 +18,7 @@ import (
 	"github.com/egezamb/helmbulance/internal/oracle"
 	"github.com/egezamb/helmbulance/internal/report"
 	"github.com/egezamb/helmbulance/internal/sandbox"
+	"github.com/egezamb/helmbulance/internal/scan"
 	"github.com/egezamb/helmbulance/internal/scenario"
 )
 
@@ -50,6 +51,8 @@ func main() {
 		os.Exit(test(os.Args[2:]))
 	case "matrix":
 		os.Exit(matrixCmd(os.Args[2:]))
+	case "scan":
+		os.Exit(scanCmd(os.Args[2:]))
 	case "list-scenarios":
 		for _, s := range scenarios {
 			fmt.Printf("%-24s %s\n", s.Name(), s.Description())
@@ -64,6 +67,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
   helmbulance test <chart> [-f values.yaml]... [--set key=value]... [flags]
   helmbulance matrix <chart> [-f values.yaml]... [--set key=value]... [--k8s 1.34,1.37]
+  helmbulance scan <chart-dir> [-f values.yaml]... [--from-version 1.2.3 [--from repo/chart]] [--strict]
   helmbulance list-scenarios
 `)
 }
@@ -292,6 +296,61 @@ func matrixCmd(args []string) int {
 		return exitFindings
 	case scenario.Inconclusive:
 		return exitIncomplete
+	}
+	return exitClean
+}
+
+// scanCmd runs the static pre-screen. It reports candidates, not findings, so it exits 0 unless
+// --strict is given.
+func scanCmd(args []string) int {
+	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
+	var files, sets multiFlag
+	fs.Var(&files, "f", "values file (repeatable)")
+	fs.Var(&sets, "set", "value, key=value (repeatable)")
+	from := fs.String("from", "", "chart to compare against for immutable fields (repo/chart, oci://… or a path); defaults to the chart")
+	fromVersion := fs.String("from-version", "", "version users upgrade from; enables the immutable-field check")
+	strict := fs.Bool("strict", false, "exit 1 when there are candidates")
+	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
+	var chart string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		chart, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return exitError
+	}
+	if chart == "" && fs.NArg() > 0 {
+		chart = fs.Arg(0)
+	}
+	if chart == "" {
+		usage()
+		return exitError
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	runner := &execx.Runner{Env: os.Environ()}
+	started := time.Now()
+	rep := &report.Report{
+		SchemaVersion: report.SchemaVersion,
+		Chart:         chart,
+		ValuesFiles:   files,
+		SetKeys:       keysOf(sets),
+		HelmVersion:   (&helm.Client{Runner: runner}).Version(ctx),
+		Cluster:       "none (static scan)",
+		Started:       started,
+	}
+	rep.Results = scan.Run(ctx, scan.Options{Runner: runner, Chart: chart, Values: helm.Values{Files: files, Sets: sets}, From: *from, FromVersion: *fromVersion})
+	for _, r := range rep.Results {
+		fmt.Printf("%-30s %s: %s\n", r.Scenario, r.Verdict, r.Summary)
+	}
+	rep.Duration = time.Since(started).Round(time.Second).String()
+	rep.Commands = runner.Transcript()
+	if err := rep.Write(*out); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitError
+	}
+	fmt.Printf("Report: %s/report.md\n", *out)
+	if *strict && rep.Worst() == scenario.Fail {
+		return exitFindings
 	}
 	return exitClean
 }
