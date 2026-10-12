@@ -24,9 +24,13 @@ type ZeroDowntime struct{}
 const (
 	zeroDowntimeNamespace = "hb-zero-downtime"
 	trafficImage          = "busybox:1.36.1"
-	controlDuration       = 20 * time.Second
-	trafficLead           = 5 * time.Second
-	trafficTail           = 10 * time.Second
+)
+
+// Variables, not constants, so tests can shorten them.
+var (
+	controlDuration = 20 * time.Second
+	trafficLead     = 5 * time.Second
+	trafficTail     = 10 * time.Second
 )
 
 func (ZeroDowntime) Name() string { return "zero-downtime" }
