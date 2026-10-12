@@ -144,8 +144,8 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	return res
 }
 
-// target picks the Service and port to send traffic to: --traffic-target when given, otherwise a
-// port named http or web, then a common HTTP port number, then any port with http in its name.
+// target picks the Service and port to send traffic to: --traffic-target when given, otherwise
+// pickTarget's choice among the release's Services.
 func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, error) {
 	if env.TrafficTarget != "" {
 		return env.TrafficTarget, nil
@@ -154,6 +154,12 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 	if err != nil {
 		return "", err
 	}
+	return pickTarget(services)
+}
+
+// pickTarget returns "service:port" for a port named http or web, then a common HTTP port number,
+// then any port with http in its name.
+func pickTarget(services []kube.Service) (string, error) {
 	score := func(p kube.ServicePort) int {
 		switch {
 		case p.Protocol != "" && p.Protocol != "TCP":
