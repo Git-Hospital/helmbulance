@@ -45,4 +45,7 @@ func TestParseTrafficSince(t *testing.T) {
 	if s.Total != 3 || s.Failed != 1 {
 		t.Fatalf("Total/Failed = %d/%d, want 3/1 (the failure at 100 is before since)", s.Total, s.Failed)
 	}
+	if len(s.FailedAt) != 1 || s.FailedAt[0] != 1 {
+		t.Errorf("FailedAt = %v, want [1]", s.FailedAt)
+	}
 }
