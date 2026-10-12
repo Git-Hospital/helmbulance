@@ -1,0 +1,149 @@
+# Helmbulance's own CI: vet, unit tests and govulncheck, then every fixture pair on kind under
+# Helm 4 and Helm 3. Follows the CI row of the security model (docs/architecture.md §4): runs on
+# pull_request, never pull_request_target; read-only token; no secrets, no caches; actions pinned by
+# commit SHA; downloaded tools pinned by version and checksum.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: vet, test, govulncheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  fixtures:
+    # The job names stay the same when a Helm version is bumped, so required checks keep matching.
+    name: fixtures (Helm ${{ matrix.major }})
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - major: 4
+            helm: v4.3.0
+            helm-sha256: 86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+          - major: 3
+            helm: v3.22.0
+            helm-sha256: 1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb
+    env:
+      KIND_VERSION: v0.33.0
+      KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+      KUBECTL_VERSION: v1.37.1
+      KUBECTL_SHA256: 65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
+      HELM_VERSION: ${{ matrix.helm }}
+      HELM_SHA256: ${{ matrix.helm-sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install kind, kubectl and helm
+        run: |
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -fsSLo "$bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/$KIND_VERSION/kind-linux-amd64"
+          echo "$KIND_SHA256  $bin/kind" | sha256sum -c -
+          curl -fsSLo "$bin/kubectl" "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+          echo "$KUBECTL_SHA256  $bin/kubectl" | sha256sum -c -
+          curl -fsSLo "$RUNNER_TEMP/helm.tar.gz" "https://get.helm.sh/helm-$HELM_VERSION-linux-amd64.tar.gz"
+          echo "$HELM_SHA256  $RUNNER_TEMP/helm.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" linux-amd64/helm
+          mv "$RUNNER_TEMP/linux-amd64/helm" "$bin/helm"
+          chmod +x "$bin/kind" "$bin/kubectl" "$bin/helm"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Tool versions
+        run: |
+          kind version
+          kubectl version --client
+          helm version
+
+      - run: go build -o bin/helmbulance ./cmd/helmbulance
+
+      # fixtures.sh writes its logs and reports under mktemp -d; TMPDIR keeps them in one place for
+      # the artifact below.
+      - name: Fixture pairs (test)
+        env:
+          TMPDIR: ${{ runner.temp }}/fixtures
+        run: |
+          mkdir -p "$TMPDIR"
+          scripts/fixtures.sh | tee "$RUNNER_TEMP/fixtures.txt"
+
+      - name: Fixture pairs (matrix)
+        if: ${{ !cancelled() }}
+        env:
+          OUT: ${{ runner.temp }}/fixtures/matrix
+        run: |
+          mkdir -p "$OUT"
+          failed=0
+          # No pipe around the calls: a piped group runs in a subshell and would lose $failed.
+          run() {
+            local name=$1 want=$2 line
+            shift 2
+            local got=0
+            ./bin/helmbulance matrix "$@" --k8s 1.37 >"$OUT/$name.log" 2>&1 || got=$?
+            if [ "$got" = "$want" ]; then
+              line="ok    $name (exit $got)"
+            else
+              line="FAIL  $name (exit $got, want $want)  log: $OUT/$name.log"
+              failed=1
+            fi
+            echo "$line" | tee -a "$RUNNER_TEMP/fixtures.txt"
+          }
+          run deprecated-api 1 testdata/charts/deprecated-api
+          run current-api    0 testdata/charts/current-api
+          exit "$failed"
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### Fixtures, Helm $HELM_VERSION"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/fixtures.txt" 2>/dev/null || echo "no results"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs and reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fixtures-helm-${{ matrix.helm }}
+          path: ${{ runner.temp }}/fixtures
+          retention-days: 7
