@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/egezamb/helmbulance/internal/kube"
@@ -44,5 +45,24 @@ func TestPickTarget(t *testing.T) {
 func TestPickTargetNoHTTPPort(t *testing.T) {
 	if got, err := pickTarget([]kube.Service{svc("db", kube.ServicePort{Name: "pg", Port: 5432})}); err == nil {
 		t.Errorf("pickTarget = %q, want an error", got)
+	}
+}
+
+func TestPickTargetSkipsServicesThatLeaveThePods(t *testing.T) {
+	ext := svc("ext", kube.ServicePort{Name: "http", Port: 80})
+	ext.Type, ext.ClusterIP = "ExternalName", ""
+	headless := svc("headless", kube.ServicePort{Name: "http", Port: 80})
+	headless.ClusterIP = "None"
+	public := svc("public", kube.ServicePort{Name: "http", Port: 80})
+	public.ExternalIPs = []string{"203.0.113.5"}
+	app := svc("app", kube.ServicePort{Name: "main", Port: 8080})
+
+	got, err := pickTarget([]kube.Service{ext, headless, public, app})
+	if err != nil || got != "app:8080" {
+		t.Errorf("pickTarget = %q, %v; want app:8080", got, err)
+	}
+	_, err = pickTarget([]kube.Service{ext, headless, public})
+	if err == nil || !strings.Contains(err.Error(), "skipped ext (ExternalName), headless (headless), public (externalIPs)") {
+		t.Errorf("err = %v, want the skipped Services named", err)
 	}
 }
