@@ -88,7 +88,7 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	warnings := apiWarnings(stderr)
 
 	if err != nil {
-		return installFailed(res, version, err, warnings, repro)
+		return installFailed(ctx, res, version, err, warnings, repro)
 	}
 
 	if bad := unhealthy(ctx, k, ns); len(bad) > 0 {
@@ -125,8 +125,14 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	return res
 }
 
-// installFailed is the result when helm install failed on Kubernetes version.
-func installFailed(res scenario.Result, version string, err error, warnings, repro []string) scenario.Result {
+// installFailed is the result when helm install failed on Kubernetes version. A timeout, a pull
+// error or a cluster that did not answer says nothing about the version, so it is INCONCLUSIVE.
+func installFailed(ctx context.Context, res scenario.Result, version string, err error, warnings, repro []string) scenario.Result {
+	if scenario.IsEnvironmentError(ctx, err) {
+		res.Verdict = scenario.Inconclusive
+		res.Summary = "the install did not finish on Kubernetes " + version + ": " + helmMessage(err)
+		return res
+	}
 	res.Verdict = scenario.Fail
 	res.Summary = "does not install on Kubernetes " + version
 	res.Findings = append(res.Findings, scenario.Finding{
