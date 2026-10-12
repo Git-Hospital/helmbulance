@@ -54,6 +54,28 @@ func runZeroDowntime(t *testing.T, logs map[string]string) Result {
 	return ZeroDowntime{}.Run(t.Context(), env)
 }
 
+func TestZeroDowntimeRepeatsAFailedControlOnce(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control":   "100 fail\n100 ok\n101 ok\n",
+		"hb-traffic-control-2": "200 ok\n201 ok\n",
+		"hb-traffic":           "9999999999 ok\n",
+	})
+	if res.Verdict != Pass {
+		t.Errorf("verdict = %s (%s), want PASS", res.Verdict, res.Summary)
+	}
+}
+
+func TestZeroDowntimeTwoFailedControls(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control":   "100 fail\n101 ok\n",
+		"hb-traffic-control-2": "200 ok\n203 fail\n",
+		"hb-traffic":           "9999999999 ok\n",
+	})
+	if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "in two controls (the second failed at second 3)") {
+		t.Errorf("verdict = %s (%s), want INCONCLUSIVE after two controls", res.Verdict, res.Summary)
+	}
+}
+
 func TestZeroDowntimeCountsFailuresDuringTheOperation(t *testing.T) {
 	res := runZeroDowntime(t, map[string]string{
 		"hb-traffic-control": "100 ok\n",

@@ -16,7 +16,8 @@ import (
 //
 // A small pod in the release namespace sends one HTTP request every 200 ms to the release's
 // Service, from inside the cluster, as other workloads would. Control: 20 s with no change, which
-// must be clean. Treatment: the same traffic while the release is upgraded from --from-version, or,
+// must be clean, and is run once more if it is not, so one slow request on a busy machine does not
+// end the run. Treatment: the same traffic while the release is upgraded from --from-version, or,
 // without it, while every Deployment and StatefulSet is restarted (what any upgrade that changes
 // the pods does). Failed requests from the start of the operation on are the downtime users see.
 type ZeroDowntime struct{}
@@ -44,6 +45,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	const release, ns = "hb-zd", zeroDowntimeNamespace
 	defer func() {
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control")
+		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control-2")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic")
 		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
 			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
@@ -78,18 +80,27 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	url := "http://" + target + path
 
-	controlLog, err := s.measure(ctx, env, ns, "hb-traffic-control", url, func() error {
-		return sleep(ctx, controlDuration)
-	})
-	if err != nil {
-		return inconclusive(res, "the control traffic could not run", err)
-	}
-	control := oracle.ParseTraffic(controlLog)
-	if control.Total == 0 {
-		return inconclusive(res, "the control traffic sent no requests", fmt.Errorf("check that %s can be pulled", trafficImage))
+	var control oracle.TrafficStats
+	for _, pod := range []string{"hb-traffic-control", "hb-traffic-control-2"} {
+		log, err := s.measure(ctx, env, ns, pod, url, func() error {
+			return sleep(ctx, controlDuration)
+		})
+		if err != nil {
+			return inconclusive(res, "the control traffic could not run", err)
+		}
+		control = oracle.ParseTraffic(log)
+		if control.Total == 0 {
+			return inconclusive(res, "the control traffic sent no requests", fmt.Errorf("check that %s can be pulled", trafficImage))
+		}
+		if control.Failed == 0 {
+			break
+		}
+		fmt.Fprintf(env.Log, "  control: %d of %d requests failed (at second %s); running it once more\n",
+			control.Failed, control.Total, seconds(control.FailedAt))
 	}
 	if control.Failed > 0 {
-		return inconclusive(res, fmt.Sprintf("%d of %d requests to %s failed with nothing changing", control.Failed, control.Total, url),
+		return inconclusive(res, fmt.Sprintf("%d of %d requests to %s failed with nothing changing, in two controls (the second failed at second %s)",
+			control.Failed, control.Total, url, seconds(control.FailedAt)),
 			fmt.Errorf("set --traffic-path to a URL that answers 2xx, or check NetworkPolicies that block the traffic pod"))
 	}
 
@@ -267,6 +278,15 @@ func causes(workloads []kube.Workload) []string {
 		}
 	}
 	return out
+}
+
+// seconds lists failure times for a summary: "0, 1, 14".
+func seconds(at []int64) string {
+	out := make([]string, len(at))
+	for i, t := range at {
+		out[i] = strconv.FormatInt(t, 10)
+	}
+	return strings.Join(out, ", ")
 }
 
 func sleep(ctx context.Context, d time.Duration) error {
