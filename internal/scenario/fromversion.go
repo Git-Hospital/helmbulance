@@ -25,3 +25,14 @@ func installedFrom(ctx context.Context, env *Env, release, ns string) (string, e
 func isExactVersion(v string) bool {
 	return v != "" && !strings.ContainsAny(v, "^~<>=*xX ,|")
 }
+
+// toVersion is " to <version>" for the version release runs after an upgrade, or "" if helm cannot
+// say.
+func toVersion(ctx context.Context, env *Env, release, ns string) string {
+	v, err := env.Helm.ReleaseVersion(ctx, release, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not read the upgraded version: %v\n", err)
+		return ""
+	}
+	return " to " + v
+}

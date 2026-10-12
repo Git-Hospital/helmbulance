@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,5 +46,17 @@ func TestInstalledFrom(t *testing.T) {
 		if err != nil && !strings.Contains(err.Error(), "runs 2.0.0, not --from-version 1.2.3") {
 			t.Errorf("error %q does not name both versions", err)
 		}
+	}
+}
+
+func TestToVersion(t *testing.T) {
+	env := envWithRelease(t, "1.0.0", "2.0.0")
+	if got := toVersion(t.Context(), env, "hb", "ns"); got != " to 2.0.0" {
+		t.Errorf("toVersion = %q, want \" to 2.0.0\"", got)
+	}
+	env = envWithRelease(t, "1.0.0", "")
+	env.Log = io.Discard
+	if got := toVersion(t.Context(), env, "hb", "ns"); got != "" {
+		t.Errorf("toVersion without a version = %q, want \"\"", got)
 	}
 }

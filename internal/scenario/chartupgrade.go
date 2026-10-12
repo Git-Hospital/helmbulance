@@ -54,7 +54,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "the earlier version did not install", err)
 	}
 	repro := []string{reproLine(env.Runner.Transcript()[mark].Line)}
-	if _, err := installedFrom(ctx, env, release, ns); err != nil {
+	// fromV is the version helm resolved, which differs from --from-version for a range like ~1.2.
+	fromV, err := installedFrom(ctx, env, release, ns)
+	if err != nil {
 		return inconclusive(res, "could not confirm the earlier version", err)
 	}
 
@@ -89,13 +91,13 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
 	if upgradeErr != nil {
 		res.Verdict = Fail
-		res.Summary = "the upgrade from " + env.FromVersion + " fails"
+		res.Summary = "the upgrade from " + fromV + " fails"
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-CU-001",
-			Title:    "Upgrading from " + env.FromVersion + " fails",
+			Title:    "Upgrading from " + fromV + " fails",
 			Severity: "high",
 			Evidence: []string{"`helm upgrade` failed: " + helmMessage(upgradeErr)},
-			Impact: "Users on " + env.FromVersion + " cannot upgrade with their existing values. A " +
+			Impact: "Users on " + fromV + " cannot upgrade with their existing values. A " +
 				"failed upgrade can leave the release in a failed state that needs a manual rollback.",
 			Fix: "If the error names an immutable field (selector, StatefulSet volumeClaimTemplates or " +
 				"serviceName), keep it unchanged or document the migration (for example deleting the " +
@@ -143,14 +145,14 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	}
 
 	if len(regenerated) > 0 {
-		fmt.Fprintf(env.Log, "note: %d Secret key(s) change on every upgrade of %s; see upgrade-without-values\n", len(regenerated), env.FromVersion)
+		fmt.Fprintf(env.Log, "note: %d Secret key(s) change on every upgrade of %s; see upgrade-without-values\n", len(regenerated), fromV)
 	}
 	if len(res.Findings) > 0 {
 		res.Verdict = Fail
-		res.Summary = fmt.Sprintf("%d problem(s) upgrading from %s", len(res.Findings), env.FromVersion)
+		res.Summary = fmt.Sprintf("%d problem(s) upgrading from %s%s", len(res.Findings), fromV, toVersion(ctx, env, release, ns))
 	} else {
 		res.Verdict = Pass
-		res.Summary = "upgraded from " + env.FromVersion + " with Secrets kept and workloads healthy"
+		res.Summary = "upgraded from " + fromV + toVersion(ctx, env, release, ns) + " with Secrets kept and workloads healthy"
 	}
 	return res
 }
