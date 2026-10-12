@@ -89,7 +89,7 @@ go build -o bin/helmbulance ./cmd/helmbulance
 
 The fixtures in `testdata/charts/` show what it finds: each defect has a fixed twin that must pass.
 
-**Run only charts you trust.** `test` and `matrix` install the chart into a kind cluster on your Docker host, and the protections for someone else's chart (architecture §4) arrive in v0.3. Until then any third-party chart runs unprotected, whether it comes from a repository or a local copy. `test` and `matrix` refuse a repository, OCI or URL reference unless you pass `--allow-remote`. `scan` only renders the chart and needs no cluster.
+**Run only charts you trust.** `test` and `matrix` install the chart into a kind cluster on your Docker host, and the protections for someone else's chart (architecture §4) arrive in v0.3. Until then any third-party chart runs unprotected, whether it comes from a repository or a local copy. `test` and `matrix` refuse a repository, OCI or URL reference unless you pass `--allow-remote`. The refusal catches mistakes; it is not a protection: `helm pull --untar` and a local path skip it, and a local chart's vendored `charts/` subcharts are third-party code too. `scan` only renders the chart and needs no cluster.
 
 ## Contributing
 
