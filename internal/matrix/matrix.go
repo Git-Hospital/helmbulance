@@ -125,6 +125,31 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	return res
 }
 
+// Attribute keeps a failed install (HB-K8S-001) as a finding only if the chart installed on
+// another version: otherwise the failure is not about a Kubernetes version, and the result is
+// INCONCLUSIVE. A version installed when its result is not an install failure or INCONCLUSIVE.
+func Attribute(results []scenario.Result) []scenario.Result {
+	for _, r := range results {
+		if r.Verdict != scenario.Inconclusive && !installFailure(r) {
+			return results
+		}
+	}
+	out := make([]scenario.Result, len(results))
+	for i, r := range results {
+		if installFailure(r) {
+			r.Verdict = scenario.Inconclusive
+			r.Summary += "; it installed on no version tested, so the cause is not a Kubernetes version (run helmbulance test)"
+			r.Findings = nil
+		}
+		out[i] = r
+	}
+	return out
+}
+
+func installFailure(r scenario.Result) bool {
+	return r.Verdict == scenario.Fail && len(r.Findings) > 0 && r.Findings[0].ID == "HB-K8S-001"
+}
+
 // installFailed is the result when helm install failed on Kubernetes version. A timeout, a pull
 // error or a cluster that did not answer says nothing about the version, so it is INCONCLUSIVE.
 func installFailed(ctx context.Context, res scenario.Result, version string, err error, warnings, repro []string) scenario.Result {

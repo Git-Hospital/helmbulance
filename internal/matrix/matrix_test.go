@@ -26,3 +26,42 @@ func TestInstallTimeoutIsInconclusive(t *testing.T) {
 		}
 	}
 }
+
+func result(version, verdict, finding string) scenario.Result {
+	r := scenario.Result{Scenario: "k8s-" + version, Verdict: verdict}
+	if finding != "" {
+		r.Findings = []scenario.Finding{{ID: finding}}
+	}
+	return r
+}
+
+func TestBlameOnlyWhenAnotherVersionInstalled(t *testing.T) {
+	// 1.37 fails to install while 1.34 installs: the version is to blame.
+	got := Attribute([]scenario.Result{
+		result("1.34", scenario.Pass, ""),
+		result("1.37", scenario.Fail, "HB-K8S-001"),
+	})
+	if got[1].Verdict != scenario.Fail {
+		t.Errorf("1.37 = %s, want FAIL when 1.34 installed", got[1].Verdict)
+	}
+
+	// Nothing installed anywhere: no version is to blame.
+	got = Attribute([]scenario.Result{
+		result("1.34", scenario.Fail, "HB-K8S-001"),
+		result("1.37", scenario.Fail, "HB-K8S-001"),
+	})
+	for _, r := range got {
+		if r.Verdict != scenario.Inconclusive || len(r.Findings) > 0 {
+			t.Errorf("%s = %s with %d finding(s), want INCONCLUSIVE and none", r.Scenario, r.Verdict, len(r.Findings))
+		}
+	}
+
+	// A version that installed but was unhealthy still counts as installed.
+	got = Attribute([]scenario.Result{
+		result("1.34", scenario.Fail, "HB-K8S-002"),
+		result("1.37", scenario.Fail, "HB-K8S-001"),
+	})
+	if got[1].Verdict != scenario.Fail {
+		t.Errorf("1.37 = %s, want FAIL when 1.34 installed but was unhealthy", got[1].Verdict)
+	}
+}
