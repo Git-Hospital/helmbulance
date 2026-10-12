@@ -63,3 +63,13 @@ func TestZeroDowntimeCountsFailuresDuringTheOperation(t *testing.T) {
 		t.Errorf("verdict = %s (%s), want FAIL with 1 of 2", res.Verdict, res.Summary)
 	}
 }
+
+func TestZeroDowntimeIgnoresFailuresBeforeTheOperation(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic":         "300 fail\n9999999999 ok\n",
+	})
+	if res.Verdict != Pass {
+		t.Errorf("verdict = %s (%s), want PASS", res.Verdict, res.Summary)
+	}
+}

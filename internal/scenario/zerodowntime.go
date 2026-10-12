@@ -18,7 +18,7 @@ import (
 // Service, from inside the cluster, as other workloads would. Control: 20 s with no change, which
 // must be clean. Treatment: the same traffic while the release is upgraded from --from-version, or,
 // without it, while every Deployment and StatefulSet is restarted (what any upgrade that changes
-// the pods does). Failed requests in the treatment are the downtime users see.
+// the pods does). Failed requests from the start of the operation on are the downtime users see.
 type ZeroDowntime struct{}
 
 const (
@@ -108,17 +108,21 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		act = func() error { return env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values) }
 	}
 	var actErr error
+	var actStart int64
 	log, err := s.measure(ctx, env, ns, "hb-traffic", url, func() error {
 		if err := sleep(ctx, trafficLead); err != nil {
 			return err
 		}
+		// The traffic pod stamps its requests with the node's clock. A second of margin covers a
+		// node clock slightly behind this machine's.
+		actStart = time.Now().Unix() - 1
 		actErr = act()
 		return sleep(ctx, trafficTail)
 	})
 	if err != nil {
 		return inconclusive(res, "the traffic during the operation could not run", err)
 	}
-	treatment := oracle.ParseTraffic(log)
+	treatment := oracle.ParseTrafficSince(log, actStart)
 	if actErr != nil {
 		return inconclusive(res, operation+" failed", actErr)
 	}
