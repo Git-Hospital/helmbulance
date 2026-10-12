@@ -104,7 +104,7 @@ func test(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart, *from) {
+	if refuseRemote(*allowRemote, chart, *from) || refuseFromVersion(chart, *from, *fromVersion) {
 		return exitError
 	}
 
@@ -242,6 +242,17 @@ func refuseRemote(allow bool, refs ...string) bool {
 	return false
 }
 
+// refuseFromVersion stops a run whose --from-version cannot take effect. helm ignores --version for
+// a chart on disk, so without --from a local chart would be upgraded to itself and the upgrade
+// would pass without testing anything.
+func refuseFromVersion(chart, from, fromVersion string) bool {
+	if fromVersion == "" || from != "" || !helm.IsLocal(chart) {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "--from-version %s needs --from with a local chart: helm ignores --version for a path, so %s would be upgraded to itself.\nGive the earlier chart, e.g. --from ./old-chart or --from repo/chart.\n", fromVersion, chart)
+	return true
+}
+
 func without(list []scenario.Scenario, name string) []scenario.Scenario {
 	var out []scenario.Scenario
 	for _, s := range list {
@@ -344,6 +355,9 @@ func scanCmd(args []string) int {
 	}
 	if chart == "" {
 		usage()
+		return exitError
+	}
+	if refuseFromVersion(chart, *from, *fromVersion) {
 		return exitError
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

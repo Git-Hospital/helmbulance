@@ -48,3 +48,26 @@ func TestRefuseRemote(t *testing.T) {
 		}
 	}
 }
+
+func TestRefuseFromVersionWithoutFrom(t *testing.T) {
+	const local = "../../testdata/charts/upgrade-v2-ok"
+	cases := []struct {
+		chart, from, fromVersion string
+		refused                  bool
+	}{
+		{local, "", "", false},
+		{local, "", "1.0.0", true},
+		{local, "../../testdata/charts/upgrade-v1", "1.0.0", false},
+		{"repo/chart", "", "1.0.0", false},
+	}
+	for _, c := range cases {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseFromVersion(c.chart, c.from, c.fromVersion) })
+		if refused != c.refused {
+			t.Errorf("refuseFromVersion(%q, %q, %q) = %v, want %v", c.chart, c.from, c.fromVersion, refused, c.refused)
+		}
+		if refused && !strings.Contains(out, "needs --from") {
+			t.Errorf("message %q does not say --from is needed", out)
+		}
+	}
+}
