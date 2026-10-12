@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -74,10 +75,13 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	}
 
 	target, err := s.target(ctx, env, ns)
-	if err != nil {
+	if errors.Is(err, errNoTarget) {
 		res.Verdict = Skipped
 		res.Summary = "no Service to send traffic to: " + err.Error()
 		return res
+	}
+	if err != nil {
+		return inconclusive(res, "could not read the release's Services", err)
 	}
 	path := env.TrafficPath
 	if path == "" {
@@ -185,6 +189,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	return res
 }
 
+// errNoTarget means the release has nothing zero-downtime can send traffic to.
+var errNoTarget = errors.New("no Service port looks like HTTP; give --traffic-target service:port")
+
 // target picks the Service and port to send traffic to: --traffic-target when given, otherwise
 // pickTarget's choice among the release's Services.
 func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, error) {
@@ -235,11 +242,10 @@ func pickTarget(services []kube.Service) (string, error) {
 		}
 	}
 	if len(cands) == 0 {
-		msg := "no Service port looks like HTTP"
 		if len(skipped) > 0 {
-			msg += "; skipped " + strings.Join(skipped, ", ")
+			return "", fmt.Errorf("%w (skipped %s)", errNoTarget, strings.Join(skipped, ", "))
 		}
-		return "", fmt.Errorf("%s; give --traffic-target service:port", msg)
+		return "", errNoTarget
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].score > cands[j].score })
 	return cands[0].name + ":" + strconv.Itoa(cands[0].port), nil
