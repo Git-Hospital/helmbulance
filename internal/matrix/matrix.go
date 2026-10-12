@@ -88,18 +88,7 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	warnings := apiWarnings(stderr)
 
 	if err != nil {
-		res.Verdict = scenario.Fail
-		res.Summary = "does not install on Kubernetes " + version
-		res.Findings = append(res.Findings, scenario.Finding{
-			ID:        "HB-K8S-001",
-			Title:     "The chart does not install on Kubernetes " + version,
-			Severity:  "high",
-			Evidence:  append([]string{"`helm install` failed: " + helmMessage(err)}, warnings...),
-			Impact:    "Clusters on Kubernetes " + version + " cannot run this chart. Upgrading the cluster breaks existing installs too.",
-			Fix:       "Look for an API version this release removed (`kubectl api-versions` on the cluster) or a field it no longer accepts, and gate it on `.Capabilities.KubeVersion` / `.Capabilities.APIVersions.Has`.",
-			Reproduce: repro,
-		})
-		return res
+		return installFailed(res, version, err, warnings, repro)
 	}
 
 	if bad := unhealthy(ctx, k, ns); len(bad) > 0 {
@@ -133,6 +122,22 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	}
 	res.Verdict = scenario.Pass
 	res.Summary = "installs and runs on Kubernetes " + version + " with no API warnings"
+	return res
+}
+
+// installFailed is the result when helm install failed on Kubernetes version.
+func installFailed(res scenario.Result, version string, err error, warnings, repro []string) scenario.Result {
+	res.Verdict = scenario.Fail
+	res.Summary = "does not install on Kubernetes " + version
+	res.Findings = append(res.Findings, scenario.Finding{
+		ID:        "HB-K8S-001",
+		Title:     "The chart does not install on Kubernetes " + version,
+		Severity:  "high",
+		Evidence:  append([]string{"`helm install` failed: " + helmMessage(err)}, warnings...),
+		Impact:    "Clusters on Kubernetes " + version + " cannot run this chart. Upgrading the cluster breaks existing installs too.",
+		Fix:       "Look for an API version this release removed (`kubectl api-versions` on the cluster) or a field it no longer accepts, and gate it on `.Capabilities.KubeVersion` / `.Capabilities.APIVersions.Has`.",
+		Reproduce: repro,
+	})
 	return res
 }
 
