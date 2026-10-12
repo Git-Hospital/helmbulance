@@ -78,12 +78,13 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	url := "http://" + target + path
 
-	control, err := s.measure(ctx, env, ns, "hb-traffic-control", url, func() error {
+	controlLog, err := s.measure(ctx, env, ns, "hb-traffic-control", url, func() error {
 		return sleep(ctx, controlDuration)
 	})
 	if err != nil {
 		return inconclusive(res, "the control traffic could not run", err)
 	}
+	control := oracle.ParseTraffic(controlLog)
 	if control.Total == 0 {
 		return inconclusive(res, "the control traffic sent no requests", fmt.Errorf("check that %s can be pulled", trafficImage))
 	}
@@ -107,7 +108,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		act = func() error { return env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values) }
 	}
 	var actErr error
-	treatment, err := s.measure(ctx, env, ns, "hb-traffic", url, func() error {
+	log, err := s.measure(ctx, env, ns, "hb-traffic", url, func() error {
 		if err := sleep(ctx, trafficLead); err != nil {
 			return err
 		}
@@ -117,6 +118,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "the traffic during the operation could not run", err)
 	}
+	treatment := oracle.ParseTraffic(log)
 	if actErr != nil {
 		return inconclusive(res, operation+" failed", actErr)
 	}
@@ -221,25 +223,25 @@ func leavesThePods(s kube.Service) string {
 	return ""
 }
 
-// measure runs a traffic pod for as long as during() takes and returns what it saw.
-func (ZeroDowntime) measure(ctx context.Context, env *Env, ns, pod, url string, during func() error) (oracle.TrafficStats, error) {
+// measure runs a traffic pod for as long as during() takes and returns its log.
+func (ZeroDowntime) measure(ctx context.Context, env *Env, ns, pod, url string, during func() error) (string, error) {
 	script := "URL=" + shellQuote(url) + "; " + oracle.TrafficScript
 	labels := map[string]string{"app.kubernetes.io/name": "helmbulance-traffic"}
 	if err := env.Kube.StartPod(ctx, ns, pod, trafficImage, script, labels); err != nil {
-		return oracle.TrafficStats{}, err
+		return "", err
 	}
 	if err := env.Kube.WaitPodRunning(ctx, ns, pod, "3m"); err != nil {
-		return oracle.TrafficStats{}, err
+		return "", err
 	}
 	if err := during(); err != nil {
-		return oracle.TrafficStats{}, err
+		return "", err
 	}
 	log, err := env.Kube.Logs(ctx, ns, pod)
 	if err != nil {
-		return oracle.TrafficStats{}, err
+		return "", err
 	}
 	_ = env.Kube.DeletePod(ctx, ns, pod)
-	return oracle.ParseTraffic(log), nil
+	return log, nil
 }
 
 // causes lists settings of the release's workloads that explain a gap during a rollout.
