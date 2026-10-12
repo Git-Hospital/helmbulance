@@ -104,7 +104,7 @@ func test(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart, *from) || refuseFromVersion(chart, *from, *fromVersion) {
+	if refuseRemote(*allowRemote, chart, *from) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 
@@ -244,13 +244,38 @@ func refuseRemote(allow bool, refs ...string) bool {
 
 // refuseFromVersion stops a run whose --from-version cannot take effect. helm ignores --version for
 // a chart on disk, so without --from a local chart would be upgraded to itself and the upgrade
-// would pass without testing anything.
-func refuseFromVersion(chart, from, fromVersion string) bool {
-	if fromVersion == "" || from != "" || !helm.IsLocal(chart) {
+// would pass without testing anything, and a local --from installs the version in its Chart.yaml
+// whatever --from-version says. versionOf reads that version.
+func refuseFromVersion(chart, from, fromVersion string, versionOf func(string) (string, error)) bool {
+	if fromVersion == "" {
+		return false
+	}
+	if from != "" {
+		if !helm.IsLocal(from) {
+			return false
+		}
+		v, err := versionOf(from)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "could not read the version of --from %s: %v\n", from, err)
+			return true
+		}
+		if v != fromVersion {
+			fmt.Fprintf(os.Stderr, "--from %s is version %s, not --from-version %s: helm ignores --version for a path.\n", from, v, fromVersion)
+			return true
+		}
+		return false
+	}
+	if !helm.IsLocal(chart) {
 		return false
 	}
 	fmt.Fprintf(os.Stderr, "--from-version %s needs --from with a local chart: helm ignores --version for a path, so %s would be upgraded to itself.\nGive the earlier chart, e.g. --from ./old-chart or --from repo/chart.\n", fromVersion, chart)
 	return true
+}
+
+// localVersion reads the version of a chart on disk, outside the run's transcript.
+func localVersion(ref string) (string, error) {
+	h := &helm.Client{Runner: execx.NewSandboxRunner(), Timeout: time.Minute}
+	return h.ChartVersion(context.Background(), ref)
 }
 
 func without(list []scenario.Scenario, name string) []scenario.Scenario {
@@ -357,7 +382,7 @@ func scanCmd(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseFromVersion(chart, *from, *fromVersion) {
+	if refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
