@@ -37,3 +37,17 @@ func TestChartVersionMissing(t *testing.T) {
 		t.Errorf("ChartVersion = %q, want an error", v)
 	}
 }
+
+func TestReleaseVersion(t *testing.T) {
+	c := fakeHelm(t, `{"name":"hb","chart":"demo","version":"1.0.0","labels":{"version":"3"},"revision":3}`)
+	if v, err := c.ReleaseVersion(t.Context(), "hb", "ns"); err != nil || v != "1.0.0" {
+		t.Errorf("ReleaseVersion = %q, %v; want 1.0.0", v, err)
+	}
+}
+
+func TestReleaseVersionMissing(t *testing.T) {
+	c := fakeHelm(t, `{"name":"hb","revision":1}`)
+	if v, err := c.ReleaseVersion(t.Context(), "hb", "ns"); err == nil {
+		t.Errorf("ReleaseVersion = %q, want an error", v)
+	}
+}
