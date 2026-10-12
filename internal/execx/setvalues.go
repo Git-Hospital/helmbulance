@@ -1,29 +1,38 @@
 package execx
 
 import (
+	"encoding/json"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // splitAssignments splits a --set value into its assignments the way Helm does: a comma ends an
-// assignment unless it is escaped with a backslash or sits inside a {list}.
+// assignment unless it is escaped with a backslash or sits inside a {list}. Like Helm, only a '{'
+// right after the first '=' opens a list, and lists do not nest.
 func splitAssignments(s string) []string {
 	var parts []string
 	var cur strings.Builder
-	depth, escaped := 0, false
+	inList, escaped, sawEq, valueStart := false, false, false, false
 	for _, r := range s {
+		start := valueStart
+		valueStart = false
 		switch {
 		case escaped:
 			escaped = false
 		case r == '\\':
 			escaped = true
-		case r == '{':
-			depth++
-		case r == '}' && depth > 0:
-			depth--
-		case r == ',' && depth == 0:
+		case r == '=' && !sawEq:
+			sawEq, valueStart = true, true
+		case r == '{' && start:
+			inList = true
+		case r == '}' && inList:
+			inList = false
+		case r == ',' && !inList:
 			parts = append(parts, cur.String())
 			cur.Reset()
+			sawEq = false
 			continue
 		}
 		cur.WriteRune(r)
@@ -60,17 +69,38 @@ func SetKeys(sets []string) []string {
 	return keys
 }
 
-// minRedact is the shortest value Redact hides. Shorter values ("1", "true", "app") are rarely
-// secrets, and hiding them everywhere would make error text unreadable.
+// minRedact is the shortest value, in characters, that Redact hides. Shorter values ("1", "app")
+// are rarely secrets, and hiding them everywhere would make error text unreadable.
 const minRedact = 4
 
+// quoted lists the escaped forms a value takes in error text: Go %q (Kubernetes field errors,
+// printf "%q" in a chart's fail), JSON (fail with toJson), and Helm's single-quoted schema errors.
+func quoted(v string) []string {
+	q := strconv.Quote(v)
+	j, _ := json.Marshal(v)
+	single := strings.NewReplacer(`\`, `\\`, `'`, `\'`, "\n", `\n`, "\t", `\t`).Replace(v)
+	return []string{q[1 : len(q)-1], string(j[1 : len(j)-1]), single}
+}
+
 // SetValues returns the values of --set assignments as they may appear in a command's output:
-// as written, unescaped, and each item of a {list}.
+// as written, unescaped, each item of a {list}, and the quoted forms of each. true, false and null
+// are left out: Helm turns them into non-strings, and they are not secrets.
 func SetValues(sets []string) []string {
 	var values []string
 	add := func(v string) {
-		if len(v) >= minRedact && !slices.Contains(values, v) {
-			values = append(values, v)
+		if utf8.RuneCountInString(v) < minRedact || slices.Contains(values, v) {
+			return
+		}
+		switch strings.ToLower(v) {
+		case "true", "false", "null":
+			return
+		}
+		values = append(values, v)
+	}
+	addAll := func(v string) {
+		add(v)
+		for _, q := range quoted(v) {
+			add(q)
 		}
 	}
 	for _, s := range sets {
@@ -80,10 +110,10 @@ func SetValues(sets []string) []string {
 				continue
 			}
 			add(v)
-			add(unescape(v))
+			addAll(unescape(v))
 			if strings.HasPrefix(v, "{") && strings.HasSuffix(v, "}") {
 				for _, item := range splitAssignments(v[1 : len(v)-1]) {
-					add(unescape(item))
+					addAll(unescape(item))
 				}
 			}
 		}
