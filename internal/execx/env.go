@@ -1,6 +1,9 @@
 package execx
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 // envAllowed lists the variables helm, kind and kubectl may inherit from the caller. Everything
 // else is dropped: helm reads HELM_KUBEAPISERVER, HELM_KUBETOKEN, HELM_KUBECONTEXT, HELM_DRIVER
@@ -42,3 +45,8 @@ func SandboxEnv(environ []string) []string {
 	return append(env, "HELM_DRIVER=secret")
 }
 
+// NewSandboxRunner returns a Runner for commands that act on a sandbox cluster. Every command
+// builds its Runner here, so none can fall back to the caller's full environment.
+func NewSandboxRunner() *Runner {
+	return &Runner{Env: SandboxEnv(os.Environ())}
+}
