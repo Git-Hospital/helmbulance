@@ -54,6 +54,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "the earlier version did not install", err)
 	}
 	repro := []string{reproLine(env.Runner.Transcript()[mark].Line)}
+	if _, err := installedFrom(ctx, env, release, ns); err != nil {
+		return inconclusive(res, "could not confirm the earlier version", err)
+	}
 
 	snapshot := func() (oracle.SecretSnapshot, error) {
 		secrets, err := env.Kube.Secrets(ctx, ns)
