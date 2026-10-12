@@ -39,3 +39,10 @@ func TestParseTrafficClean(t *testing.T) {
 		t.Errorf("clean log reported failures: %+v", s)
 	}
 }
+
+func TestParseTrafficSince(t *testing.T) {
+	s := ParseTrafficSince("100 fail\n101 ok\n105 ok\n106 fail\n107 ok\n", 105)
+	if s.Total != 3 || s.Failed != 1 {
+		t.Fatalf("Total/Failed = %d/%d, want 3/1 (the failure at 100 is before since)", s.Total, s.Failed)
+	}
+}

@@ -29,6 +29,11 @@ func (s TrafficStats) FailedPercent() float64 {
 
 // ParseTraffic reads the traffic pod's log. Lines it does not recognise are ignored.
 func ParseTraffic(log string) TrafficStats {
+	return ParseTrafficSince(log, 0)
+}
+
+// ParseTrafficSince is ParseTraffic counting only requests sent at or after since (unix seconds).
+func ParseTrafficSince(log string, since int64) TrafficStats {
 	var s TrafficStats
 	var outageStart int64 = -1
 	var lastFail int64
@@ -47,7 +52,7 @@ func ParseTraffic(log string) TrafficStats {
 			continue
 		}
 		t, err := strconv.ParseInt(fields[0], 10, 64)
-		if err != nil {
+		if err != nil || t < since {
 			continue
 		}
 		switch fields[1] {
