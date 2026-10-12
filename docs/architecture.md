@@ -118,7 +118,8 @@ Each scenario goes through these phases:
 - **Treatment:** `helm upgrade --reset-values -f <files>`. This leaves out every install-time `--set`, which is what happens when someone upgrades months later from the values file in git. Keys that change or disappear here, and did not already change in the control, are values the chart does not keep once set.
 
 **`chart-upgrade`** (implemented).
-- Install the earlier version (`--from-version`), upgrade it to itself as the control, then upgrade to the chart under test with the same values.
+- Install the earlier version (`--from-version`), check that the release runs it, upgrade it to itself as the control, then upgrade to the chart under test with the same values. The report names both versions helm installed.
+- helm ignores `--version` for a chart on disk, so a local chart needs `--from` with the earlier chart, and a local `--from` must be the version `--from-version` names. Both are checked before anything runs (exit 2).
 - Report a failed upgrade with Helm's error, Secrets the new version changes or drops, and workloads that are not healthy afterwards.
 
 **`zero-downtime`** (implemented).
