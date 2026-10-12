@@ -29,7 +29,10 @@ It is not an application security scanner. A bug in the application's own code m
 - **Reproduced or not reported.** A finding exists only if the cluster reproduced it. Rules and optional AI analysis produce hypotheses, which become scenario parameters; they are never findings on their own.
 - **Control before treatment.** Every assertion is checked twice: on an untouched release or a neutral operation (the control), and after the action (the treatment). A difference that already shows in the control is reported as such, not blamed on the action.
 - **Three verdicts.** `PASS`, `FAIL`, or `INCONCLUSIVE`.
-  - A timeout, a failed install or a cluster that never settles is `INCONCLUSIVE`, never a finding.
+  - A timeout, a failed install or a cluster that never settles is `INCONCLUSIVE`, never a finding. Errors that come from the run rather than the chart (helm's `--wait` timing out, a killed process, an image pull or registry rate limit, a cluster that does not answer) are always `INCONCLUSIVE`. A `FAIL` comes from the chart: an API or render rejection, or a check that failed.
+  - `matrix` blames a Kubernetes version for a failed install only if the chart installed on another version.
+  - A scenario with nothing to test (no HTTP Service, no `--from-version`) is `SKIPPED`. It is not a verdict on the chart and counts for nothing: a run in which everything was skipped is `INCONCLUSIVE`.
+  - Exit codes: 0 `PASS`, 1 `FAIL`, 2 usage or setup error, 3 `INCONCLUSIVE`.
   - From v0.2, a `FAIL` is re-run on a fresh release, and only a failure that reproduces twice is reported.
 - **App-agnostic first.** Scenarios rely on what Kubernetes can observe. Knowledge of a specific application is an optional plug-in.
 - **The chart is untrusted code.** A chart can create privileged pods, mount host paths and run any image. Section 4 says how far each mode protects against that.
