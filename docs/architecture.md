@@ -123,7 +123,7 @@ Each scenario goes through these phases:
 
 **`zero-downtime`** (implemented).
 - A pod in the release namespace sends one request every 200 ms to the most HTTP-like Service port (`--traffic-target`, `--traffic-path` to choose). ExternalName, headless and `externalIPs` Services are never chosen, so the traffic stays on the release's pods.
-- Control: 20 s with no change, which must be clean. Treatment: the same traffic during the version upgrade (with `--from-version`), or during a rolling restart of every Deployment and StatefulSet.
+- Control: 20 s with no change, which must be clean; a control with failures runs once more before the run is inconclusive. Treatment: the same traffic during the version upgrade (with `--from-version`), or during a rolling restart of every Deployment and StatefulSet. Only failures from the start of the operation on count.
 - Reports failed requests, the longest outage, and the settings that explain it: Recreate, a single replica, no readiness probe, no preStop.
 - This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
 
