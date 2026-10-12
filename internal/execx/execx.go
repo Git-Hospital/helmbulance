@@ -55,10 +55,23 @@ func (r *Runner) RunCapture(ctx context.Context, name string, args ...string) ([
 	r.transcript = append(r.transcript, rec)
 	r.mu.Unlock()
 
+	errText := []byte(Redact(stderr.String(), r.Secrets))
 	if err != nil {
-		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("%s: %w: %s", rec.Line, err, Redact(strings.TrimSpace(stderr.String()), r.Secrets))
+		return stdout.Bytes(), errText, fmt.Errorf("%s: %w: %s", rec.Line, err, r.errorText(stderr.String()))
 	}
-	return stdout.Bytes(), stderr.Bytes(), nil
+	return stdout.Bytes(), errText, nil
+}
+
+// errorText keeps helm's last "Error: " line, or all of stderr when there is none, with the
+// secrets redacted. The "Error: " marker is cut off before redacting, so a value such as
+// logLevel=Error cannot hide it from the code that looks for it.
+func (r *Runner) errorText(stderr string) string {
+	const marker = "Error: "
+	stderr = strings.TrimSpace(stderr)
+	if i := strings.LastIndex(stderr, marker); i >= 0 && (i == 0 || stderr[i-1] == '\n') {
+		return marker + Redact(stderr[i+len(marker):], r.Secrets)
+	}
+	return Redact(stderr, r.Secrets)
 }
 
 // Transcript returns the commands run so far.
@@ -98,8 +111,19 @@ func isSetFlag(a string) bool {
 // maskValue turns "a=1,b.c=2" into "a=***,b.c=***". --set-literal and --set-json values are one
 // assignment whatever they contain, so everything after the first key is masked.
 func maskValue(flag, s string) string {
-	if flag == "--set-literal" || flag == "--set-json" {
+	switch flag {
+	case "--set-json":
+		// A value that starts with '{' is one JSON object, not key=value.
+		if strings.HasPrefix(strings.TrimSpace(s), "{") {
+			return "***"
+		}
 		if key, _, ok := cutAssignment(s); ok {
+			return key + "=***"
+		}
+		return "***"
+	case "--set-literal":
+		// Helm reads a --set-literal key up to the first '=', with no escapes.
+		if key, _, ok := strings.Cut(s, "="); ok {
 			return key + "=***"
 		}
 		return "***"
