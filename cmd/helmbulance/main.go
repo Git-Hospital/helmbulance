@@ -76,7 +76,7 @@ func test(args []string) int {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	var files, sets, only multiFlag
 	fs.Var(&files, "f", "values file (repeatable)")
-	fs.Var(&sets, "set", "install-time value, key=value (repeatable). Upgrades test what happens when it is left out.")
+	fs.Var(&sets, "set", "install-time value, key=value (repeatable). Values of four or more characters are hidden in reports. Upgrades test what happens when it is left out.")
 	fs.Var(&only, "scenario", "run only this scenario (repeatable)")
 	cluster := fs.String("cluster", "", "reuse a sandbox cluster created earlier by helmbulance")
 	keep := fs.Bool("keep-cluster", false, "keep the sandbox cluster after the run")
@@ -257,7 +257,7 @@ func matrixCmd(args []string) int {
 	fs := flag.NewFlagSet("matrix", flag.ContinueOnError)
 	var files, sets multiFlag
 	fs.Var(&files, "f", "values file (repeatable)")
-	fs.Var(&sets, "set", "value, key=value (repeatable)")
+	fs.Var(&sets, "set", "value, key=value (repeatable). Values of four or more characters are hidden in reports.")
 	versions := fs.String("k8s", strings.Join(matrix.Versions(), ","), "Kubernetes versions to test, comma-separated")
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install")
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
@@ -327,7 +327,7 @@ func scanCmd(args []string) int {
 	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
 	var files, sets multiFlag
 	fs.Var(&files, "f", "values file (repeatable)")
-	fs.Var(&sets, "set", "value, key=value (repeatable)")
+	fs.Var(&sets, "set", "value, key=value (repeatable). Values of four or more characters are hidden in reports.")
 	from := fs.String("from", "", "chart to compare against for immutable fields (repo/chart, oci://… or a path); defaults to the chart")
 	fromVersion := fs.String("from-version", "", "version users upgrade from; enables the immutable-field check")
 	strict := fs.Bool("strict", false, "exit 1 when there are candidates")
