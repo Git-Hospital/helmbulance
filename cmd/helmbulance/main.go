@@ -239,8 +239,12 @@ func refuseRemote(allow bool, refs ...string) bool {
 		if ref == "" || helm.IsLocal(ref) {
 			continue
 		}
+		if helm.IsPath(ref) {
+			fmt.Fprintf(os.Stderr, "path not found: %s\n", ref)
+			return true
+		}
 		if !allow {
-			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote.\n", ref)
+			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote (flags go before the chart).\n", ref)
 			return true
 		}
 		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", ref)
