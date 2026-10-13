@@ -164,6 +164,10 @@ type Pod struct {
 	Owner    string // kind/name of the controlling object
 	Ready    bool
 	Restarts int
+	Phase    string // Pending, Running or Failed; Succeeded pods are left out
+	// Revision is the pod template revision of a Deployment (pod-template-hash) or a StatefulSet
+	// or DaemonSet (controller-revision-hash); "" for other pods.
+	Revision string
 }
 
 // Pods returns the pods in ns with their readiness and restart counts. Finished pods and pods that
@@ -176,9 +180,10 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 	var list struct {
 		Items []struct {
 			Metadata struct {
-				Name              string  `json:"name"`
-				UID               string  `json:"uid"`
-				DeletionTimestamp *string `json:"deletionTimestamp"`
+				Name              string            `json:"name"`
+				UID               string            `json:"uid"`
+				DeletionTimestamp *string           `json:"deletionTimestamp"`
+				Labels            map[string]string `json:"labels"`
 				OwnerReferences   []struct {
 					Kind string `json:"kind"`
 					Name string `json:"name"`
@@ -207,7 +212,11 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 		if item.Metadata.DeletionTimestamp != nil { // on its way out, already replaced
 			continue
 		}
-		p := Pod{Name: item.Metadata.Name, UID: item.Metadata.UID}
+		p := Pod{Name: item.Metadata.Name, UID: item.Metadata.UID, Phase: item.Status.Phase}
+		p.Revision = item.Metadata.Labels["pod-template-hash"]
+		if p.Revision == "" {
+			p.Revision = item.Metadata.Labels["controller-revision-hash"]
+		}
 		if refs := item.Metadata.OwnerReferences; len(refs) > 0 {
 			p.Owner = refs[0].Kind + "/" + refs[0].Name
 		}

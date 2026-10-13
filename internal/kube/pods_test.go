@@ -1,0 +1,48 @@
+package kube
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	"github.com/egezamb/helmbulance/internal/execx"
+)
+
+// kubectlPrinting puts a kubectl that prints out first on PATH.
+func kubectlPrinting(t *testing.T, out string) *Client {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "out"), []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncat " + filepath.Join(bin, "out") + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return &Client{Runner: &execx.Runner{}}
+}
+
+func TestPodsReadPhaseAndRevision(t *testing.T) {
+	c := kubectlPrinting(t, `{"items":[
+		{"metadata":{"name":"web-1","uid":"a","labels":{"pod-template-hash":"7d9f8c6b5"},"ownerReferences":[{"kind":"ReplicaSet","name":"web-7d9f8c6b5"}]},
+		 "status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}},
+		{"metadata":{"name":"db-0","uid":"b","labels":{"controller-revision-hash":"db-5f6c"},"ownerReferences":[{"kind":"StatefulSet","name":"db"}]},
+		 "status":{"phase":"Running","containerStatuses":[{"restartCount":2}]}},
+		{"metadata":{"name":"migrate-x","uid":"c","ownerReferences":[{"kind":"Job","name":"migrate"}]},"status":{"phase":"Failed"}},
+		{"metadata":{"name":"migrate-y","uid":"d","ownerReferences":[{"kind":"Job","name":"migrate"}]},"status":{"phase":"Succeeded"}}
+	]}`)
+	got, err := c.Pods(t.Context(), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Pod{
+		{Name: "web-1", UID: "a", Owner: "ReplicaSet/web-7d9f8c6b5", Ready: true, Phase: "Running", Revision: "7d9f8c6b5"},
+		{Name: "db-0", UID: "b", Owner: "StatefulSet/db", Restarts: 2, Phase: "Running", Revision: "db-5f6c"},
+		{Name: "migrate-x", UID: "c", Owner: "Job/migrate", Phase: "Failed"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Pods =\n%+v\nwant\n%+v", got, want)
+	}
+}
