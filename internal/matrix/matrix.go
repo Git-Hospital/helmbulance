@@ -128,6 +128,8 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 // Attribute keeps a failed install (HB-K8S-001) as a finding only if the chart installed on
 // another version: otherwise the failure is not about a Kubernetes version, and the result is
 // INCONCLUSIVE. A version installed when its result is not an install failure or INCONCLUSIVE.
+// A failure that names a missing API stays a finding either way: the API was removed in a
+// Kubernetes version, perhaps one older than every version tested.
 func Attribute(results []scenario.Result) []scenario.Result {
 	for _, r := range results {
 		if r.Verdict != scenario.Inconclusive && !installFailure(r) {
@@ -136,7 +138,7 @@ func Attribute(results []scenario.Result) []scenario.Result {
 	}
 	out := make([]scenario.Result, len(results))
 	for i, r := range results {
-		if installFailure(r) {
+		if installFailure(r) && !missingAPI(r) {
 			r.Verdict = scenario.Inconclusive
 			r.Summary += "; it installed on no version tested, so the cause is not a Kubernetes version (run helmbulance test)"
 			r.Findings = nil
@@ -144,6 +146,17 @@ func Attribute(results []scenario.Result) []scenario.Result {
 		out[i] = r
 	}
 	return out
+}
+
+// missingAPI reports whether an install failure says the cluster does not serve a kind the chart
+// uses, which is how a removed API version fails.
+func missingAPI(r scenario.Result) bool {
+	for _, e := range r.Findings[0].Evidence {
+		if strings.Contains(e, "no matches for kind") || strings.Contains(e, "resource mapping not found") {
+			return true
+		}
+	}
+	return false
 }
 
 func installFailure(r scenario.Result) bool {
