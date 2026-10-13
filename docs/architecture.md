@@ -122,7 +122,7 @@ Each scenario goes through these phases:
 - Report a failed upgrade with Helm's error, Secrets the new version changes or drops, and workloads that are not healthy afterwards.
 
 **`zero-downtime`** (implemented).
-- A pod in the release namespace sends one request every 200 ms to the most HTTP-like Service port (`--traffic-target`, `--traffic-path` to choose).
+- A pod in the release namespace sends one request every 200 ms to the most HTTP-like Service port (`--traffic-target`, `--traffic-path` to choose). ExternalName, headless and `externalIPs` Services are never chosen, so the traffic stays on the release's pods.
 - Control: 20 s with no change, which must be clean. Treatment: the same traffic during the version upgrade (with `--from-version`), or during a rolling restart of every Deployment and StatefulSet.
 - Reports failed requests, the longest outage, and the settings that explain it: Recreate, a single replica, no readiness probe, no preStop.
 - This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
