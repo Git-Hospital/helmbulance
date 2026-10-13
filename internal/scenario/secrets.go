@@ -21,11 +21,12 @@ const (
 // agree. Secrets written by a Job, an operator or the app are left out: they change for reasons the
 // upgrade did not cause.
 func releaseSecrets(ctx context.Context, env *Env, release, ns string) (oracle.SecretSnapshot, error) {
+	// What the release renders does not change while the namespace settles, so it is read once.
+	owned, err := env.Helm.OwnedSecrets(ctx, release, ns)
+	if err != nil {
+		return nil, err
+	}
 	return oracle.Settle(ctx, func() (oracle.SecretSnapshot, error) {
-		owned, err := env.Helm.OwnedSecrets(ctx, release, ns)
-		if err != nil {
-			return nil, err
-		}
 		secrets, err := env.Kube.Secrets(ctx, ns)
 		if err != nil {
 			return nil, err
