@@ -144,8 +144,8 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	return res
 }
 
-// target picks the Service and port to send traffic to: --traffic-target when given, otherwise a
-// port named http or web, then a common HTTP port number, then any port with http in its name.
+// target picks the Service and port to send traffic to: --traffic-target when given, otherwise
+// pickTarget's choice among the release's Services.
 func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, error) {
 	if env.TrafficTarget != "" {
 		return env.TrafficTarget, nil
@@ -154,6 +154,14 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 	if err != nil {
 		return "", err
 	}
+	return pickTarget(services)
+}
+
+// pickTarget returns "service:port" for a port named http or web, then a common HTTP port number,
+// then any port with http in its name. Services whose traffic would not stay on the release's pods
+// are skipped: ExternalName (an outside host), headless (no port translation, so a request can
+// reach a pod that is not ready) and externalIPs.
+func pickTarget(services []kube.Service) (string, error) {
 	score := func(p kube.ServicePort) int {
 		switch {
 		case p.Protocol != "" && p.Protocol != "TCP":
@@ -173,7 +181,12 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 		score int
 	}
 	var cands []candidate
+	var skipped []string
 	for _, s := range services {
+		if why := leavesThePods(s); why != "" {
+			skipped = append(skipped, s.Name+" ("+why+")")
+			continue
+		}
 		for _, p := range s.Ports {
 			if sc := score(p); sc > 0 {
 				cands = append(cands, candidate{s.Name, p.Port, sc})
@@ -181,10 +194,27 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 		}
 	}
 	if len(cands) == 0 {
-		return "", fmt.Errorf("no Service port looks like HTTP; give --traffic-target service:port")
+		msg := "no Service port looks like HTTP"
+		if len(skipped) > 0 {
+			msg += "; skipped " + strings.Join(skipped, ", ")
+		}
+		return "", fmt.Errorf("%s; give --traffic-target service:port", msg)
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].score > cands[j].score })
 	return cands[0].name + ":" + strconv.Itoa(cands[0].port), nil
+}
+
+// leavesThePods says why traffic to s would not stay on the release's pods, or "" if it would.
+func leavesThePods(s kube.Service) string {
+	switch {
+	case s.Type == "ExternalName":
+		return "ExternalName"
+	case s.ClusterIP == "None":
+		return "headless"
+	case len(s.ExternalIPs) > 0:
+		return "externalIPs"
+	}
+	return ""
 }
 
 // measure runs a traffic pod for as long as during() takes and returns what it saw.
