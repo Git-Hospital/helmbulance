@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/egezamb/helmbulance/internal/execx"
@@ -68,5 +69,28 @@ func TestPVCs(t *testing.T) {
 	}
 	if want := []string{"cache", "data-db-0"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("PVCs = %v, want %v", got, want)
+	}
+}
+
+func TestRunWithPVC(t *testing.T) {
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	// Records every call; "logs" prints what the pod wrote.
+	script := "#!/bin/sh\necho \"$*\" >> " + calls + "\ncase \"$*\" in *\" logs \"*) echo sentinel=abc ;; esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	c := &Client{Runner: &execx.Runner{}}
+	out, err := c.RunWithPVC(t.Context(), "ns", "hb-sentinel", "busybox", "data-db-0", "cat /pvc/x", "1m")
+	if err != nil || out != "sentinel=abc\n" {
+		t.Fatalf("RunWithPVC = %q, %v", out, err)
+	}
+	log, _ := os.ReadFile(calls)
+	for _, want := range []string{`"claimName":"data-db-0"`, `"mountPath":"/pvc"`, `"automountServiceAccountToken":false`,
+		"wait --for=jsonpath={.status.phase}=Succeeded pod/hb-sentinel", "delete pod hb-sentinel"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("kubectl calls do not contain %q:\n%s", want, log)
+		}
 	}
 }

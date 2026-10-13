@@ -533,6 +533,38 @@ func (c *Client) PVCs(ctx context.Context, ns string) ([]string, error) {
 	return names, nil
 }
 
+// RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
+// returns what it printed. The pod runs as root so it can write into a volume whatever owner the
+// app gave its files, without a service account token; it is deleted afterwards.
+func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script, timeout string) (string, error) {
+	overrides, err := json.Marshal(map[string]any{"spec": map[string]any{
+		"restartPolicy":                "Never",
+		"automountServiceAccountToken": false,
+		"containers": []any{map[string]any{
+			"name": name, "image": image, "command": []string{"sh", "-c", script},
+			"volumeMounts": []any{map[string]any{"name": "pvc", "mountPath": "/pvc"}},
+		}},
+		"volumes": []any{map[string]any{"name": "pvc", "persistentVolumeClaim": map[string]any{"claimName": claim}}},
+	}})
+	if err != nil {
+		return "", err
+	}
+	base := []string{"--kubeconfig", c.Kubeconfig, "--namespace", ns}
+	defer func() {
+		_, _ = c.Runner.Run(ctx, "kubectl", append(base, "delete", "pod", name, "--ignore-not-found", "--wait=true")...)
+	}()
+	if _, err := c.Runner.Run(ctx, "kubectl", append(base, "run", name, "--image", image, "--restart", "Never",
+		"--overrides", string(overrides))...); err != nil {
+		return "", err
+	}
+	if _, err := c.Runner.Run(ctx, "kubectl", append(base, "wait", "--for=jsonpath={.status.phase}=Succeeded",
+		"pod/"+name, "--timeout", timeout)...); err != nil {
+		return "", err
+	}
+	out, err := c.Runner.Run(ctx, "kubectl", append(base, "logs", name)...)
+	return string(out), err
+}
+
 // DeletePod removes a pod without waiting for it to go.
 func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
 	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "delete", "pod", name, "--ignore-not-found", "--wait=false")
