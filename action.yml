@@ -15,8 +15,13 @@ inputs:
     description: Scenarios to run, one per line. Empty runs the default set (see `helmbulance list-scenarios`).
     default: ""
   from:
-    description: Chart that chart-upgrade and zero-downtime upgrade from (a path, repo/chart or oci://…). Empty means the chart under test.
+    description: Chart that chart-upgrade and zero-downtime upgrade from (a path; repo/chart or oci://… need allow-remote). Empty means the chart under test.
     default: ""
+  allow-remote:
+    description: >-
+      "true" lets chart and from name a chart from a repository, OCI registry or URL. Such a chart
+      runs without the third-party protections, which arrive in v0.3, so use it only for charts you trust.
+    default: "false"
   from-version:
     description: Chart version to upgrade from. Setting it enables chart-upgrade.
     default: ""
@@ -52,9 +57,14 @@ runs:
       env:
         RUNNER_ENVIRONMENT: ${{ runner.environment }}
         FAIL_ON: ${{ inputs.fail-on }}
+        ALLOW_REMOTE: ${{ inputs.allow-remote }}
       run: |
         if [ "$RUNNER_OS" != Linux ]; then
           echo "::error::Helmbulance needs a Linux runner with Docker (kind runs the sandbox cluster in containers)."
+          exit 1
+        fi
+        if ! docker info > /dev/null 2>&1; then
+          echo "::error::Helmbulance needs Docker on the runner (kind runs the sandbox cluster in containers), and 'docker info' failed."
           exit 1
         fi
         case "$RUNNER_ARCH" in
@@ -64,6 +74,10 @@ runs:
         case "$FAIL_ON" in
           findings | error | never) ;;
           *) echo "::error::fail-on must be findings, error or never, not '$FAIL_ON'"; exit 1 ;;
+        esac
+        case "$ALLOW_REMOTE" in
+          true | false) ;;
+          *) echo "::error::allow-remote must be true or false, not '$ALLOW_REMOTE'"; exit 1 ;;
         esac
         if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
           echo "::warning::Self-hosted runner. Helmbulance creates privileged kind containers on this machine and installs the chart into them. Use an ephemeral runner, and only with charts you trust."
@@ -116,6 +130,7 @@ runs:
         SCENARIOS: ${{ inputs.scenarios }}
         FROM: ${{ inputs.from }}
         FROM_VERSION: ${{ inputs.from-version }}
+        ALLOW_REMOTE: ${{ inputs.allow-remote }}
         TIMEOUT: ${{ inputs.timeout }}
         REPORT_DIR: ${{ inputs.report-dir }}
         FAIL_ON: ${{ inputs.fail-on }}
@@ -129,6 +144,7 @@ runs:
         done <<< "$SCENARIOS"
         if [ -n "$FROM" ]; then args+=(--from "$FROM"); fi
         if [ -n "$FROM_VERSION" ]; then args+=(--from-version "$FROM_VERSION"); fi
+        if [ "$ALLOW_REMOTE" = true ]; then args+=(--allow-remote); fi
 
         # Variables that point helm or kubectl at another cluster never reach Helmbulance.
         dropped=()
@@ -157,7 +173,7 @@ runs:
           echo "report-dir=$REPORT_DIR"
         } >> "$GITHUB_OUTPUT"
 
-        # The job summary is limited to 1 MiB per step.
+        # The job summary is limited to 1 MiB per step; the cut stays under it, with room for the note.
         report="$REPORT_DIR/report.md"
         if [ -f "$report" ]; then
           limit=1000000

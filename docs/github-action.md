@@ -41,7 +41,8 @@ Nothing is released yet, so pin the Action to a full commit SHA.
 | `chart` | `./chart` | Path to the chart directory, relative to the workspace. |
 | `values` | | Values files, one per line. |
 | `scenarios` | | Scenarios to run, one per line. Empty runs the default set. |
-| `from` | | Chart that `chart-upgrade` and `zero-downtime` upgrade from. |
+| `from` | | Chart that `chart-upgrade` and `zero-downtime` upgrade from: a path, or with `allow-remote` a `repo/chart`, `oci://…` or URL reference. |
+| `allow-remote` | `false` | `true` lets `chart` and `from` name a chart from a repository, OCI registry or URL. Without it such a reference ends the run with exit 2. |
 | `from-version` | | Version to upgrade from. Setting it enables `chart-upgrade`. |
 | `timeout` | `10m` | Timeout for each install or upgrade. |
 | `report-dir` | `helmbulance-report` | Where `report.md` and `report.json` are written. |
@@ -59,10 +60,10 @@ There is no input for `--set` on purpose. Values given on the command line end u
 
 ## Security notes
 
-- **Runners:** the Action needs a Linux runner with Docker, on x64 or arm64.
+- **Runners:** the Action needs a Linux runner with Docker, on x64 or arm64. It stops with an error before installing anything when the OS is not Linux or `docker info` fails.
   - On a self-hosted runner it prints a warning. kind runs privileged containers on that machine, so use an ephemeral runner.
 - **Go toolchain:** the Action installs Go, at the version in this repository's `go.mod`, with `actions/setup-go`. That Go stays on `PATH`, with `GOROOT` set, for the rest of your job. kind, kubectl and helm go into a private directory and do not change your `PATH`.
-- **Other clusters:** before Helmbulance starts, the Action drops the variables that could point helm or kubectl at another cluster: `HELM_KUBE*`, `HELM_DRIVER*`, `KUBECONFIG` and `HELM_NAMESPACE`. The log names the variables it dropped, never their values. The CLI itself still needs the same fix (#4).
-- **Chart trust:** run it on your own charts. Third-party charts are not isolated yet (#5).
+- **Other clusters:** before Helmbulance starts, the Action drops the variables that could point helm or kubectl at another cluster: `HELM_KUBE*`, `HELM_DRIVER*`, `KUBECONFIG` and `HELM_NAMESPACE`. The log names the variables it dropped, never their values. The CLI passes helm, kind and kubectl only an allowlist of variables as well, so this is a second layer.
+- **Chart trust:** run it on your own charts. Third-party charts are not isolated yet (#5), so `allow-remote` is off by default. Turn it on only for a chart you trust, for example your own published chart as `from`.
 - **Triggers:** use `pull_request`, not `pull_request_target`. Keep `contents: read`, and give the job no secrets.
 - **Report size:** the job summary holds up to 1 MiB per step. A longer report is truncated there, and the full report stays in `report-dir`.
