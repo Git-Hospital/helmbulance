@@ -143,10 +143,11 @@ Each scenario goes through these phases:
 - Reports a failed install, pods that never become ready (restarts alone are not counted, apps often restart once at first start), and warnings about deprecated APIs.
 - Known deprecations are also caught statically (`helm lint`, pluto); what the matrix adds is whether the chart actually runs on each version.
 
-**`reinstall`** (v0.1).
-- Write a sentinel file into each PVC.
-- Uninstall, install again, and check the sentinels, the Secrets and the health of the release.
-- Report which PVCs were deleted with the release, and say that the result depends on the StorageClass reclaim policy.
+**`reinstall`** (implemented).
+- Write a random sentinel file into each PVC, from a one-off pod that mounts it (busybox, pinned by digest, root so it can write whatever owner the app set, no service account token).
+- Uninstall, install again with the same values (`--wait` covers the release's health), and check the sentinels and the release's own Secrets.
+- Findings: HB-RI-001 when a volume kept its data but a Secret key changed (severity as in D5); HB-RI-002 when a kept volume lost its sentinel; HB-RI-003 when the second install fails for a reason other than a timeout.
+- PVCs deleted with the release are named in the summary, with a note that the result depends on the StorageClass reclaim policy. New credentials with no data left are a fresh install, not a finding.
 
 **`gitops-render`** (v0.1).
 - Find `lookup` statically.
