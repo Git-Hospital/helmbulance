@@ -1,0 +1,55 @@
+package scenario
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/egezamb/helmbulance/internal/oracle"
+)
+
+func TestReinstallFindings(t *testing.T) {
+	consumers := map[string][]string{"hb-reinstall-db/*": {"StatefulSet/hb-reinstall-db"}}
+	stateful := map[string]bool{"StatefulSet/hb-reinstall-db": true}
+	pw := []oracle.Change{{Ref: "hb-reinstall-db/password", Kind: oracle.Changed}}
+	kept := []volume{{claim: "data-hb-reinstall-db-0", state: "kept"}}
+
+	got := reinstallFindings(kept, pw, consumers, stateful, nil)
+	if len(got) != 1 || got[0].ID != "HB-RI-001" || got[0].Severity != "high" {
+		t.Fatalf("kept data and a new password: findings = %+v, want one high HB-RI-001", got)
+	}
+	if ev := strings.Join(got[0].Evidence, " "); !strings.Contains(ev, "data-hb-reinstall-db-0") || !strings.Contains(ev, "password` changed") {
+		t.Errorf("evidence %q does not name the volume and the key", ev)
+	}
+
+	// New credentials with no data left behind are a fresh install: nothing to report.
+	deleted := []volume{{claim: "data", state: "deleted"}}
+	if got := reinstallFindings(deleted, pw, consumers, stateful, nil); len(got) != 0 {
+		t.Errorf("deleted volume and a new password: findings = %+v, want none", got)
+	}
+	// Kept data and kept credentials: nothing to report.
+	if got := reinstallFindings(kept, nil, consumers, stateful, nil); len(got) != 0 {
+		t.Errorf("kept data and kept Secrets: findings = %+v, want none", got)
+	}
+	// A kept claim whose sentinel is gone.
+	emptied := []volume{{claim: "data", state: "missing"}, {claim: "logs", state: "replaced"}}
+	if got := reinstallFindings(emptied, nil, consumers, stateful, nil); len(got) != 1 || got[0].ID != "HB-RI-002" {
+		t.Errorf("emptied volumes: findings = %+v, want HB-RI-002", got)
+	}
+}
+
+func TestReinstallPassSummary(t *testing.T) {
+	for _, c := range []struct {
+		volumes []volume
+		changes []oracle.Change
+		want    string
+	}{
+		{nil, nil, "Secrets came back unchanged after uninstall and install; the release has no volumes"},
+		{[]volume{{claim: "a", state: "kept"}}, nil, "Secrets came back unchanged after uninstall and install; 1 volume(s) kept their data"},
+		{[]volume{{claim: "a", state: "deleted"}}, []oracle.Change{{Ref: "s/k", Kind: oracle.Changed}},
+			"no volume kept its data, so new Secrets are expected; deleted with the release (depends on the StorageClass reclaim policy): `a`"},
+	} {
+		if got := reinstallPassSummary(c.volumes, c.changes); got != c.want {
+			t.Errorf("reinstallPassSummary = %q, want %q", got, c.want)
+		}
+	}
+}
