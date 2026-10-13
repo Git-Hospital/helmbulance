@@ -27,7 +27,7 @@ const upgradeNamespace = "hb-upgrade-values"
 func (UpgradeValues) Name() string { return "upgrade-without-values" }
 
 func (UpgradeValues) Description() string {
-	return "Upgrades with reused values (control), then with the values files only, and compares every Secret."
+	return "Upgrades with reused values (control), then with the values files only, and compares the Secrets the release renders."
 }
 
 func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {

@@ -30,7 +30,8 @@ var skippedSecretTypes = map[string]bool{
 	"kubernetes.io/service-account-token": true,
 }
 
-// Secrets returns every Secret in ns that belongs to the chart, sorted by name.
+// Secrets returns the Secrets in ns, sorted by name, without Helm's release records and service
+// account tokens. It does not know which ones the chart renders; see helm.Client.OwnedSecrets.
 func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "secrets", "-o", "json")
 	if err != nil {
