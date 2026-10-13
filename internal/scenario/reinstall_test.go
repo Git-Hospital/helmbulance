@@ -12,8 +12,9 @@ func TestReinstallFindings(t *testing.T) {
 	stateful := map[string]bool{"StatefulSet/hb-reinstall-db": true}
 	pw := []oracle.Change{{Ref: "hb-reinstall-db/password", Kind: oracle.Changed}}
 	kept := []volume{{claim: "data-hb-reinstall-db-0", state: "kept"}}
+	users := map[string][]string{"data-hb-reinstall-db-0": {"StatefulSet/hb-reinstall-db"}}
 
-	got := reinstallFindings(kept, pw, consumers, stateful, nil)
+	got, _ := reinstallFindings(kept, pw, consumers, stateful, users, nil)
 	if len(got) != 1 || got[0].ID != "HB-RI-001" || got[0].Severity != "high" {
 		t.Fatalf("kept data and a new password: findings = %+v, want one high HB-RI-001", got)
 	}
@@ -23,17 +24,29 @@ func TestReinstallFindings(t *testing.T) {
 
 	// New credentials with no data left behind are a fresh install: nothing to report.
 	deleted := []volume{{claim: "data", state: "deleted"}}
-	if got := reinstallFindings(deleted, pw, consumers, stateful, nil); len(got) != 0 {
+	if got, _ := reinstallFindings(deleted, pw, consumers, stateful, users, nil); len(got) != 0 {
 		t.Errorf("deleted volume and a new password: findings = %+v, want none", got)
 	}
 	// Kept data and kept credentials: nothing to report.
-	if got := reinstallFindings(kept, nil, consumers, stateful, nil); len(got) != 0 {
+	if got, _ := reinstallFindings(kept, nil, consumers, stateful, users, nil); len(got) != 0 {
 		t.Errorf("kept data and kept Secrets: findings = %+v, want none", got)
 	}
 	// A kept claim whose sentinel is gone.
 	emptied := []volume{{claim: "data", state: "missing"}, {claim: "logs", state: "replaced"}}
-	if got := reinstallFindings(emptied, nil, consumers, stateful, nil); len(got) != 1 || got[0].ID != "HB-RI-002" {
+	if got, _ := reinstallFindings(emptied, nil, consumers, stateful, users, nil); len(got) != 1 || got[0].ID != "HB-RI-002" {
 		t.Errorf("emptied volumes: findings = %+v, want HB-RI-002", got)
+	}
+}
+
+// A key that changed but is read only by a workload without a kept volume is not tied to the data.
+func TestReinstallFindingsIgnoreUnrelatedKeys(t *testing.T) {
+	consumers := map[string][]string{"webhook-tls/*": {"Deployment/webhook"}}
+	kept := []volume{{claim: "data-redis-0", state: "kept"}}
+	users := map[string][]string{"data-redis-0": {"StatefulSet/redis"}}
+	cert := []oracle.Change{{Ref: "webhook-tls/tls.crt", Kind: oracle.Changed}}
+	got, unrelated := reinstallFindings(kept, cert, consumers, nil, users, nil)
+	if len(got) != 0 || len(unrelated) != 1 {
+		t.Errorf("findings = %+v, unrelated = %v; want no finding and the certificate set apart", got, unrelated)
 	}
 }
 

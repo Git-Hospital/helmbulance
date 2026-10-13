@@ -102,7 +102,18 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "Secrets changed, and no sentinel could be written to "+strings.Join(unknown, ", "),
 			fmt.Errorf("without one it is unknown whether those volumes kept data written with the old values"))
 	}
-	res.Findings = reinstallFindings(volumes, changes, consumers, stateful, repro)
+	var keptClaims []string
+	for _, v := range volumes {
+		if v.state == "kept" {
+			keptClaims = append(keptClaims, v.claim)
+		}
+	}
+	claimUsers, err := env.Kube.ClaimUsers(ctx, ns, keptClaims)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not map claims to workloads: %v\n", err)
+	}
+	var unrelated []oracle.Change
+	res.Findings, unrelated = reinstallFindings(volumes, changes, consumers, stateful, claimUsers, repro)
 
 	if len(res.Findings) > 0 {
 		res.Verdict = Fail
@@ -113,6 +124,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	res.Summary = withNotes(res.Summary,
 		note("keys added by the reinstall, not a finding", describe(added, consumers)),
+		note("changed, but read by no workload whose volume kept its data", describe(unrelated, consumers)),
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
 		note("no sentinel could be written to", claimsIn(volumes, "unwritable")),
 		note("not bound, so not checked", claimsIn(volumes, "unbound")),
@@ -209,12 +221,40 @@ func (Reinstall) installFailed(ctx context.Context, res Result, err error, repro
 	return res
 }
 
-// reinstallFindings turns the volumes and the Secret changes into findings.
+// reinstallFindings turns the volumes and the Secret changes into findings. A changed key matters
+// only when a workload that mounts a volume which kept its data reads it; the other changes are
+// returned apart, to be named in the summary.
 func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[string][]string,
-	stateful map[string]bool, repro []string) []Finding {
-	var findings []Finding
-	kept := claimsIn(volumes, "kept")
-	if len(kept) > 0 && len(changes) > 0 {
+	stateful map[string]bool, claimUsers map[string][]string, repro []string) (findings []Finding, unrelated []oracle.Change) {
+	keepers := map[string]bool{}
+	var kept []string
+	for _, v := range volumes {
+		if v.state != "kept" {
+			continue
+		}
+		line := "`" + v.claim + "`"
+		if users := claimUsers[v.claim]; len(users) > 0 {
+			line += " (mounted by " + strings.Join(users, ", ") + ")"
+		}
+		kept = append(kept, line)
+		for _, w := range claimUsers[v.claim] {
+			keepers[w] = true
+		}
+	}
+	var related []oracle.Change
+	for _, c := range changes {
+		reads := false
+		for _, w := range readers(c, consumers) {
+			reads = reads || keepers[w]
+		}
+		if reads {
+			related = append(related, c)
+		} else {
+			unrelated = append(unrelated, c)
+		}
+	}
+	if len(related) > 0 {
+		changes := related
 		evidence := []string{"Volumes that kept their data: " + strings.Join(kept, ", ") + "."}
 		findings = append(findings, Finding{
 			ID:       "HB-RI-001",
@@ -242,7 +282,7 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 			Reproduce: repro,
 		})
 	}
-	return findings
+	return findings, unrelated
 }
 
 // reinstallPassSummary says what was checked, including volumes deleted with the release, which
