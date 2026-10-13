@@ -1,11 +1,8 @@
 package helm
 
 import (
-	"bytes"
 	"context"
-	"errors"
-	"fmt"
-	"io"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,39 +17,41 @@ func (c *Client) OwnedSecrets(ctx context.Context, release, ns string) (map[stri
 		if err != nil {
 			return nil, err
 		}
-		names, err := secretNames(out, ns)
-		if err != nil {
-			return nil, fmt.Errorf("helm get %s: %w", what, err)
-		}
-		for _, n := range names {
+		for _, n := range secretNames(out, ns) {
 			owned[n] = true
 		}
 	}
 	return owned, nil
 }
 
+// docSeparator is the line between documents in helm's output.
+var docSeparator = regexp.MustCompile(`(?m)^---.*$`)
+
 // secretNames lists the Secrets in a multi-document manifest that land in ns: those with no
-// namespace (Helm puts them in the release namespace) or with ns itself.
-func secretNames(manifest []byte, ns string) ([]string, error) {
-	dec := yaml.NewDecoder(bytes.NewReader(manifest))
+// namespace (Helm puts them in the release namespace) or with ns itself, including the items of a
+// List. Each document is decoded on its own, so one that does not parse (Helm installs some YAML
+// that a strict decoder rejects, such as a repeated key) only hides itself.
+func secretNames(manifest []byte, ns string) []string {
 	var names []string
-	for {
-		var doc struct {
-			Kind     string `yaml:"kind"`
-			Metadata struct {
-				Name      string `yaml:"name"`
-				Namespace string `yaml:"namespace"`
-			} `yaml:"metadata"`
+	for _, text := range docSeparator.Split(string(manifest), -1) {
+		var doc object
+		if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+			continue
 		}
-		err := dec.Decode(&doc)
-		if errors.Is(err, io.EOF) {
-			return names, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		if doc.Kind == "Secret" && doc.Metadata.Name != "" && (doc.Metadata.Namespace == "" || doc.Metadata.Namespace == ns) {
-			names = append(names, doc.Metadata.Name)
+		for _, o := range append([]object{doc}, doc.Items...) {
+			if o.Kind == "Secret" && o.Metadata.Name != "" && (o.Metadata.Namespace == "" || o.Metadata.Namespace == ns) {
+				names = append(names, o.Metadata.Name)
+			}
 		}
 	}
+	return names
+}
+
+type object struct {
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Name      string `yaml:"name"`
+		Namespace string `yaml:"namespace"`
+	} `yaml:"metadata"`
+	Items []object `yaml:"items"`
 }
