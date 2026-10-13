@@ -25,3 +25,16 @@ func TestNotReadyIgnoresJobAttempts(t *testing.T) {
 		t.Errorf("notReady = %q, want none", got)
 	}
 }
+
+func TestRestartedSince(t *testing.T) {
+	first := map[string]int{"w1": 1}
+	pods := []kube.Pod{
+		{Name: "web-1", UID: "w1", Ready: true, Restarts: 3},
+		{Name: "web-2", UID: "w2", Ready: true},
+		{Name: "migrate", UID: "m1", Owner: "Job/migrate", Restarts: 2},
+	}
+	got := restartedSince(pods, first)
+	if len(got) != 1 || got[0] != "pod `web-1` restarted 2 time(s) while Helmbulance watched it" {
+		t.Errorf("restartedSince = %q, want web-1 only", got)
+	}
+}

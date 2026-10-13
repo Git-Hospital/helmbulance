@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/egezamb/helmbulance/internal/kube"
 	"github.com/egezamb/helmbulance/internal/oracle"
@@ -168,9 +167,7 @@ func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod, jobsBefore
 	for _, p := range before {
 		restartsBefore[p.UID] = p.Restarts
 	}
-	var problems []string
-	deadline := time.Now().Add(90 * time.Second)
-	for {
+	return Settle(ctx, func() []string {
 		pods, err := env.Kube.Pods(ctx, chartUpgradeNamespace)
 		if err != nil {
 			return []string{"could not read pods: " + err.Error()}
@@ -179,16 +176,8 @@ func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod, jobsBefore
 		if err != nil {
 			return []string{"could not read Jobs: " + err.Error()}
 		}
-		problems = append(podProblems(pods, restartsBefore), newlyFailed(jobs, jobsBefore)...)
-		if len(problems) == 0 || time.Now().After(deadline) {
-			return problems
-		}
-		select {
-		case <-ctx.Done():
-			return problems
-		case <-time.After(10 * time.Second):
-		}
-	}
+		return append(podProblems(pods, restartsBefore), newlyFailed(jobs, jobsBefore)...)
+	})
 }
 
 // podProblems lists pods that are not ready and pods that restarted more than before, by pod UID:
