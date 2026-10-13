@@ -15,3 +15,13 @@ func TestNotReady(t *testing.T) {
 		t.Errorf("notReady = %q, want web-2 only", got)
 	}
 }
+
+func TestNotReadyIgnoresJobAttempts(t *testing.T) {
+	pods := []kube.Pod{
+		{Name: "web-1", Owner: "ReplicaSet/web-7d9f8c6b5", Ready: true, Phase: "Running"},
+		{Name: "migrate-x", Owner: "Job/migrate", Phase: "Failed"},
+	}
+	if got := notReady(pods); len(got) != 0 {
+		t.Errorf("notReady = %q, want none", got)
+	}
+}

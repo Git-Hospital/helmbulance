@@ -22,3 +22,15 @@ func TestPodProblems(t *testing.T) {
 		t.Errorf("podProblems =\n%q\nwant\n%q", got, want)
 	}
 }
+
+// A Job's failed first attempt is not an unhealthy app (issue #9).
+func TestPodProblemsIgnoresJobAttempts(t *testing.T) {
+	pods := []kube.Pod{
+		{Name: "web-1", UID: "w1", Owner: "ReplicaSet/web-7d9f8c6b5", Ready: true, Phase: "Running"},
+		{Name: "migrate-x", UID: "m1", Owner: "Job/migrate", Phase: "Failed", Restarts: 1},
+		{Name: "migrate-y", UID: "m2", Owner: "Job/migrate", Phase: "Running"},
+	}
+	if got := podProblems(pods, map[string]int{}); len(got) != 0 {
+		t.Errorf("podProblems = %q, want none", got)
+	}
+}

@@ -179,7 +179,7 @@ func unhealthy(ctx context.Context, k *kube.Client, ns string) []string {
 func notReady(pods []kube.Pod) []string {
 	var bad []string
 	for _, p := range pods {
-		if !p.Ready {
+		if !p.Ready && !p.FromJob() {
 			bad = append(bad, fmt.Sprintf("pod `%s` is not ready (%d restart(s))", p.Name, p.Restarts))
 		}
 	}

@@ -170,6 +170,10 @@ type Pod struct {
 	Revision string
 }
 
+// FromJob reports whether p is an attempt of a Job. Such a pod ends by design, and a failed
+// attempt may be retried, so its readiness says nothing about the app; the Job's own status does.
+func (p Pod) FromJob() bool { return strings.HasPrefix(p.Owner, "Job/") }
+
 // Pods returns the pods in ns with their readiness and restart counts. Finished pods and pods that
 // are terminating are left out.
 func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {

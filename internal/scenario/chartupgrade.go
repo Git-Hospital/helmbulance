@@ -189,6 +189,9 @@ func podProblems(pods []kube.Pod, restartsBefore map[string]int) []string {
 	var problems []string
 	restarts := map[string]int{}
 	for _, p := range pods {
+		if p.FromJob() {
+			continue
+		}
 		restarts[p.Owner] += p.Restarts
 		if !p.Ready {
 			problems = append(problems, fmt.Sprintf("pod `%s` (%s) is not ready", p.Name, p.Owner))
