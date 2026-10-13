@@ -22,3 +22,10 @@ func TestSentinelState(t *testing.T) {
 		}
 	}
 }
+
+func TestSentinelPodNamesDiffer(t *testing.T) {
+	a, b := sentinelPod("w", 0), sentinelPod("w", 0)
+	if a == b || len(a) > 63 {
+		t.Errorf("sentinelPod gave %q and %q; want two different valid names", a, b)
+	}
+}

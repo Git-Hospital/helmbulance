@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/egezamb/helmbulance/internal/execx"
 )
@@ -544,15 +545,26 @@ func (c *Client) PVCs(ctx context.Context, ns string) ([]PVC, error) {
 }
 
 // RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
-// returns what it printed. The pod runs as root so it can write into a volume whatever owner the
-// app gave its files, without a service account token; it is deleted afterwards.
-func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script, timeout string) (string, error) {
+// returns what it printed. The pod runs as root with only the capabilities it needs to write into a
+// volume whatever owner the app gave its files (CHOWN, DAC_OVERRIDE, FOWNER), no service account
+// token, small resource limits, and is deleted afterwards, even when ctx is cancelled. It returns
+// as soon as the pod fails, and gives up after timeout.
+func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script string, timeout time.Duration) (string, error) {
 	overrides, err := json.Marshal(map[string]any{"spec": map[string]any{
 		"restartPolicy":                "Never",
 		"automountServiceAccountToken": false,
+		"securityContext":              map[string]any{"seccompProfile": map[string]any{"type": "RuntimeDefault"}},
 		"containers": []any{map[string]any{
 			"name": name, "image": image, "command": []string{"sh", "-c", script},
 			"volumeMounts": []any{map[string]any{"name": "pvc", "mountPath": "/pvc"}},
+			"securityContext": map[string]any{
+				"runAsUser": 0, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
+				"capabilities": map[string]any{"drop": []string{"ALL"}, "add": []string{"CHOWN", "DAC_OVERRIDE", "FOWNER"}},
+			},
+			"resources": map[string]any{
+				"requests": map[string]string{"cpu": "10m", "memory": "16Mi"},
+				"limits":   map[string]string{"cpu": "100m", "memory": "32Mi"},
+			},
 		}},
 		"volumes": []any{map[string]any{"name": "pvc", "persistentVolumeClaim": map[string]any{"claimName": claim}}},
 	}})
@@ -561,15 +573,30 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script,
 	}
 	base := []string{"--kubeconfig", c.Kubeconfig, "--namespace", ns}
 	defer func() {
-		_, _ = c.Runner.Run(ctx, "kubectl", append(base, "delete", "pod", name, "--ignore-not-found", "--wait=true")...)
+		_, _ = c.Runner.Run(context.WithoutCancel(ctx), "kubectl", append(base, "delete", "pod", name, "--ignore-not-found", "--wait=true")...)
 	}()
 	if _, err := c.Runner.Run(ctx, "kubectl", append(base, "run", name, "--image", image, "--restart", "Never",
 		"--overrides", string(overrides))...); err != nil {
 		return "", err
 	}
-	if _, err := c.Runner.Run(ctx, "kubectl", append(base, "wait", "--for=jsonpath={.status.phase}=Succeeded",
-		"pod/"+name, "--timeout", timeout)...); err != nil {
-		return "", err
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := c.Runner.Run(ctx, "kubectl", append(base, "get", "pod", name, "-o", "jsonpath={.status.phase}")...)
+		if err != nil {
+			return "", err
+		}
+		phase := strings.TrimSpace(string(out))
+		if phase == "Succeeded" {
+			break
+		}
+		if phase == "Failed" || time.Now().After(deadline) {
+			return "", fmt.Errorf("pod %s is %s after %s (mounting %s)", name, phase, timeout, claim)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
 	out, err := c.Runner.Run(ctx, "kubectl", append(base, "logs", name)...)
 	return string(out), err

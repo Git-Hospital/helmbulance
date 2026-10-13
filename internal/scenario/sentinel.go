@@ -3,7 +3,9 @@ package scenario
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strings"
+	"time"
 )
 
 // sentinelImage writes and reads the sentinel files. Pinned by digest.
@@ -22,14 +24,34 @@ func newSentinel() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// writeSentinelScript writes value into the volume and prints "written", or "write-failed" when
-// the volume is read-only or full.
-func writeSentinelScript(value string) string {
-	return "if printf %s " + value + " > " + sentinelFile + "; then echo written; else echo write-failed; fi"
+// sentinelTimeout bounds each sentinel pod; it only pulls a small image and mounts a volume.
+const sentinelTimeout = 2 * time.Minute
+
+// sentinelPod names a sentinel pod uniquely, so a pod left behind by an earlier run in a reused
+// cluster cannot clash with it.
+func sentinelPod(step string, i int) string {
+	b := make([]byte, 3)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("hb-sentinel-%s%d-%s", step, i, hex.EncodeToString(b))
 }
 
-// readSentinelScript prints the sentinel, or "missing".
-const readSentinelScript = "cat " + sentinelFile + " 2>/dev/null || echo missing"
+// writeSentinelScript writes value into the volume, gives the file the volume's owner so an app
+// that checks ownership is not upset by it, and prints "written", or "write-failed" when the
+// volume is read-only or full.
+func writeSentinelScript(value string) string {
+	return "if printf %s " + value + " > " + sentinelFile + "; then chown $(stat -c %u:%g /pvc) " + sentinelFile +
+		" 2>/dev/null; echo written; else echo write-failed; fi"
+}
+
+// readSentinelScript prints the sentinel, or "missing". The control read before the uninstall
+// leaves the file; the last read removes it, so nothing of Helmbulance stays in the data.
+func readSentinelScript(remove bool) string {
+	s := "cat " + sentinelFile + " 2>/dev/null || echo missing"
+	if remove {
+		s += "; rm -f " + sentinelFile
+	}
+	return s
+}
 
 // sentinelState compares what the read pod printed with the value written.
 func sentinelState(out, want string) string {

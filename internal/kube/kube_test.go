@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egezamb/helmbulance/internal/execx"
 )
@@ -78,19 +79,20 @@ func TestRunWithPVC(t *testing.T) {
 	bin := t.TempDir()
 	calls := filepath.Join(bin, "calls")
 	// Records every call; "logs" prints what the pod wrote.
-	script := "#!/bin/sh\necho \"$*\" >> " + calls + "\ncase \"$*\" in *\" logs \"*) echo sentinel=abc ;; esac\n"
+	script := "#!/bin/sh\necho \"$*\" >> " + calls + "\ncase \"$*\" in *\" logs \"*) echo sentinel=abc ;; *jsonpath=*) printf Succeeded ;; esac\n"
 	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	c := &Client{Runner: &execx.Runner{}}
-	out, err := c.RunWithPVC(t.Context(), "ns", "hb-sentinel", "busybox", "data-db-0", "cat /pvc/x", "1m")
+	out, err := c.RunWithPVC(t.Context(), "ns", "hb-sentinel", "busybox", "data-db-0", "cat /pvc/x", time.Minute)
 	if err != nil || out != "sentinel=abc\n" {
 		t.Fatalf("RunWithPVC = %q, %v", out, err)
 	}
 	log, _ := os.ReadFile(calls)
 	for _, want := range []string{`"claimName":"data-db-0"`, `"mountPath":"/pvc"`, `"automountServiceAccountToken":false`,
-		"wait --for=jsonpath={.status.phase}=Succeeded pod/hb-sentinel", "delete pod hb-sentinel"} {
+		`"drop":["ALL"]`, `"add":["CHOWN","DAC_OVERRIDE","FOWNER"]`, `"readOnlyRootFilesystem":true`,
+		"get pod hb-sentinel -o jsonpath={.status.phase}", "delete pod hb-sentinel"} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("kubectl calls do not contain %q:\n%s", want, log)
 		}
@@ -110,5 +112,20 @@ func TestClaimUsers(t *testing.T) {
 	want := map[string][]string{"data-db-0": {"StatefulSet/db"}, "app-data": {"Deployment/app"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ClaimUsers = %v, want %v", got, want)
+	}
+}
+
+func TestRunWithPVCStopsOnAFailedPod(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\ncase \"$*\" in *jsonpath=*) printf Failed ;; esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	c := &Client{Runner: &execx.Runner{}}
+	start := time.Now()
+	_, err := c.RunWithPVC(t.Context(), "ns", "hb-sentinel", "busybox", "data", "true", time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "is Failed") || time.Since(start) > 10*time.Second {
+		t.Errorf("RunWithPVC on a failed pod = %v after %s; want a quick error naming the phase", err, time.Since(start))
 	}
 }

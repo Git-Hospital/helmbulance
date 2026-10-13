@@ -63,7 +63,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	// Control: read every sentinel back before anything changes, so a read path that does not work
 	// cannot later look like lost data.
-	if err := s.readSentinels(ctx, env, ns, volumes); err != nil {
+	if err := s.readSentinels(ctx, env, ns, volumes, false); err != nil {
 		return inconclusive(res, "could not read the sentinels back before the uninstall", err)
 	}
 	if lost := append(claimsIn(volumes, "missing"), claimsIn(volumes, "replaced")...); len(lost) > 0 {
@@ -84,7 +84,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return secretsInconclusive(res, "after the reinstall", err)
 	}
-	if err := s.readSentinels(ctx, env, ns, volumes); err != nil {
+	if err := s.readSentinels(ctx, env, ns, volumes, true); err != nil {
 		return inconclusive(res, "could not read the sentinels", err)
 	}
 
@@ -149,8 +149,8 @@ func (Reinstall) writeSentinels(ctx context.Context, env *Env, ns string) ([]vol
 		if err != nil {
 			return nil, err
 		}
-		out, err := env.Kube.RunWithPVC(ctx, ns, fmt.Sprintf("hb-sentinel-w%d", i), sentinelImage, claim.Name,
-			writeSentinelScript(value), env.Helm.Timeout.String())
+		out, err := env.Kube.RunWithPVC(ctx, ns, sentinelPod("w", i), sentinelImage, claim.Name,
+			writeSentinelScript(value), sentinelTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -163,8 +163,9 @@ func (Reinstall) writeSentinels(ctx context.Context, env *Env, ns string) ([]vol
 	return volumes, nil
 }
 
-// readSentinels sets each written volume's state after the reinstall.
-func (Reinstall) readSentinels(ctx context.Context, env *Env, ns string, volumes []volume) error {
+// readSentinels sets each written volume's state from what its sentinel reads back; remove deletes
+// the sentinel after reading it.
+func (Reinstall) readSentinels(ctx context.Context, env *Env, ns string, volumes []volume, remove bool) error {
 	claims, err := env.Kube.PVCs(ctx, ns)
 	if err != nil {
 		return err
@@ -187,8 +188,8 @@ func (Reinstall) readSentinels(ctx context.Context, env *Env, ns string, volumes
 			v.state = "recreated"
 			continue
 		}
-		out, err := env.Kube.RunWithPVC(ctx, ns, fmt.Sprintf("hb-sentinel-r%d", i), sentinelImage, v.claim,
-			readSentinelScript, env.Helm.Timeout.String())
+		out, err := env.Kube.RunWithPVC(ctx, ns, sentinelPod("r", i), sentinelImage, v.claim,
+			readSentinelScript(remove), sentinelTimeout)
 		if err != nil {
 			return err
 		}
