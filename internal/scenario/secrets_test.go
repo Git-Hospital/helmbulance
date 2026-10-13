@@ -1,7 +1,10 @@
 package scenario
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/egezamb/helmbulance/internal/kube"
@@ -31,12 +34,23 @@ func TestSplitAdded(t *testing.T) {
 	}
 }
 
-func TestNoteAdded(t *testing.T) {
-	if got := noteAdded("ok", nil); got != "ok" {
-		t.Errorf("noteAdded with nothing added = %q, want the summary unchanged", got)
+func TestNotes(t *testing.T) {
+	if got := withNotes("ok", note("added", nil), ""); got != "ok" {
+		t.Errorf("withNotes with nothing to say = %q, want the summary unchanged", got)
 	}
-	got := noteAdded("ok", []oracle.Change{{Ref: "a/x", Kind: oracle.Added}, {Ref: "b/y", Kind: oracle.Added}})
-	if want := "ok; keys added by an upgrade (not a finding): `a/x`, `b/y`"; got != want {
-		t.Errorf("noteAdded = %q, want %q", got, want)
+	added := describe([]oracle.Change{{Ref: "a/x", Kind: oracle.Added}}, map[string][]string{"a/x": {"Deployment/web"}})
+	got := withNotes("ok", note("keys added", added), note("not compared", []string{"`late`"}))
+	if want := "ok; keys added: `a/x` added (read by Deployment/web); not compared: `late`"; got != want {
+		t.Errorf("withNotes = %q, want %q", got, want)
+	}
+}
+
+func TestSecretsInconclusive(t *testing.T) {
+	notSettled := fmt.Errorf("%w after 10 reads", oracle.ErrNotSettled)
+	if got := secretsInconclusive(Result{}, "after install", notSettled).Summary; !strings.HasPrefix(got, "the release's Secrets kept changing after install") {
+		t.Errorf("summary for unsettled Secrets = %q", got)
+	}
+	if got := secretsInconclusive(Result{}, "after install", errors.New("boom")).Summary; !strings.HasPrefix(got, "could not read Secrets after install") {
+		t.Errorf("summary for a read error = %q", got)
 	}
 }

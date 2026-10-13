@@ -60,10 +60,11 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "could not confirm the earlier version", err)
 	}
 
-	snapshot := func() (oracle.SecretSnapshot, error) { return releaseSecrets(ctx, env, release, ns) }
+	secrets := newSecretReader(ctx, env, release, ns)
+	snapshot := secrets.snapshot
 	installed, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after install", err)
+		return secretsInconclusive(res, "after install", err)
 	}
 
 	// Control: same version again.
@@ -72,7 +73,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	control, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after the control upgrade", err)
+		return secretsInconclusive(res, "after the control upgrade", err)
 	}
 	podsBefore, err := env.Kube.Pods(ctx, ns)
 	if err != nil {
@@ -104,7 +105,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 
 	upgraded, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after the upgrade", err)
+		return secretsInconclusive(res, "after the upgrade", err)
 	}
 	consumers, err := env.Kube.SecretConsumers(ctx, ns)
 	if err != nil {
@@ -113,7 +114,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 
 	regenerated := oracle.Diff(installed, control)
 	// A new version adding keys is normal; only changed and removed keys break existing data.
-	changes, added := splitAdded(withoutRefs(oracle.Diff(control, upgraded), regenerated))
+	// A renamed Secret whose value is carried over loses nothing either.
+	rest, moved := oracle.Moved(control, upgraded, withoutRefs(oracle.Diff(control, upgraded), regenerated))
+	changes, added := splitAdded(rest)
 	if len(changes) > 0 {
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-CU-002",
@@ -150,7 +153,10 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		res.Verdict = Pass
 		res.Summary = "upgraded from " + fromV + toVersion(ctx, env, release, ns) + " with Secrets kept and workloads healthy"
 	}
-	res.Summary = noteAdded(res.Summary, added)
+	res.Summary = withNotes(res.Summary,
+		note("keys added by the new version, not a finding", describe(added, consumers)),
+		note("values moved to another key, not a finding", describe(moved, consumers)),
+		secrets.notComparedNote())
 	return res
 }
 
