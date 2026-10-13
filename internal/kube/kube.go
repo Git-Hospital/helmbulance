@@ -229,6 +229,11 @@ type Service struct {
 	Name     string
 	Selector map[string]string
 	Ports    []ServicePort
+	// Type is ClusterIP, NodePort, LoadBalancer or ExternalName. ClusterIP is "None" for a
+	// headless Service.
+	Type        string
+	ClusterIP   string
+	ExternalIPs []string
 }
 
 // ServicePort is one port of a Service.
@@ -250,8 +255,11 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 				Name string `json:"name"`
 			} `json:"metadata"`
 			Spec struct {
-				Selector map[string]string `json:"selector"`
-				Ports    []struct {
+				Type        string            `json:"type"`
+				ClusterIP   string            `json:"clusterIP"`
+				ExternalIPs []string          `json:"externalIPs"`
+				Selector    map[string]string `json:"selector"`
+				Ports       []struct {
 					Name     string `json:"name"`
 					Port     int    `json:"port"`
 					Protocol string `json:"protocol"`
@@ -267,7 +275,13 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 		if len(item.Spec.Selector) == 0 {
 			continue
 		}
-		s := Service{Name: item.Metadata.Name, Selector: item.Spec.Selector}
+		s := Service{
+			Name:        item.Metadata.Name,
+			Selector:    item.Spec.Selector,
+			Type:        item.Spec.Type,
+			ClusterIP:   item.Spec.ClusterIP,
+			ExternalIPs: item.Spec.ExternalIPs,
+		}
 		for _, p := range item.Spec.Ports {
 			s.Ports = append(s.Ports, ServicePort{Name: p.Name, Port: p.Port, Protocol: p.Protocol})
 		}
