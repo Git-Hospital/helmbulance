@@ -74,8 +74,9 @@ func usage() {
 
 func test(args []string) int {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	var files, sets, only multiFlag
+	var files, sets, only, rotations multiFlag
 	fs.Var(&files, "f", "values file (repeatable)")
+	fs.Var(&rotations, "expected-rotation", "Secret key the chart changes on purpose, as secret/key with * globs, e.g. '*-webhook-tls/*' (repeatable); it is named in the summary, not reported")
 	fs.Var(&sets, "set", "install-time value, key=value (repeatable). Values of four or more characters are hidden in reports. Upgrades test what happens when it is left out.")
 	fs.Var(&only, "scenario", "run only this scenario (repeatable)")
 	cluster := fs.String("cluster", "", "reuse a sandbox cluster created earlier by helmbulance")
@@ -165,6 +166,8 @@ func test(args []string) int {
 		FromVersion:   *fromVersion,
 		TrafficTarget: *trafficTarget,
 		TrafficPath:   *trafficPath,
+
+		ExpectedRotation: rotations,
 	}
 
 	rep := &report.Report{
