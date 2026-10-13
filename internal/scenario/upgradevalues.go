@@ -232,9 +232,10 @@ func describe(changes []oracle.Change, consumers map[string][]string) []string {
 	var lines []string
 	for _, c := range changes {
 		line := fmt.Sprintf("`%s` %s", c.Ref, c.Kind)
-		secret, _, _ := strings.Cut(c.Ref, "/")
-		users := append(append([]string{}, consumers[c.Ref]...), consumers[secret+"/*"]...)
-		if len(users) > 0 {
+		if class := keyClass(c); class != oracle.ClassOther && c.Kind != oracle.MovedKind {
+			line += ", " + class
+		}
+		if users := readers(c, consumers); len(users) > 0 {
 			line += " (read by " + strings.Join(users, ", ") + ")"
 		}
 		lines = append(lines, line)

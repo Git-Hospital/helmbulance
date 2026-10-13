@@ -38,3 +38,21 @@ func TestWorstSeverityAndOnlyTLS(t *testing.T) {
 		t.Errorf("mixed: worst = %s, onlyTLS = %v; want high, false", got, onlyTLS(mixed))
 	}
 }
+
+func TestDescribeNamesTheClass(t *testing.T) {
+	got := describe([]oracle.Change{
+		{Ref: "db/password", Kind: oracle.Changed},
+		{Ref: "ca/tls.crt", Kind: oracle.Removed},
+		{Ref: "db/username", Kind: oracle.Changed},
+	}, map[string][]string{"db/*": {"StatefulSet/db"}})
+	want := []string{
+		"`db/password` changed, credential (read by StatefulSet/db)",
+		"`ca/tls.crt` removed, tls",
+		"`db/username` changed (read by StatefulSet/db)",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("describe[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
