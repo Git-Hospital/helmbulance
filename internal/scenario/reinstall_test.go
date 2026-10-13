@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -64,6 +65,27 @@ func TestReinstallPassSummary(t *testing.T) {
 	} {
 		if got := reinstallPassSummary(c.volumes, c.changes); got != c.want {
 			t.Errorf("reinstallPassSummary = %q, want %q", got, c.want)
+		}
+	}
+}
+
+func TestReinstallInstallFailed(t *testing.T) {
+	for _, c := range []struct {
+		err, verdict string
+	}{
+		{"Error: INSTALLATION FAILED: execution error at (demo/templates/secret.yaml:3:4): set auth.existingSecret to reinstall over kept data", Pass},
+		{"Error: INSTALLATION FAILED: context deadline exceeded", Inconclusive},
+		{"helm install hb-reinstall ./chart: signal: killed", Inconclusive},
+		{"Failed to pull image: toomanyrequests: rate limit", Inconclusive},
+		{`Error: INSTALLATION FAILED: Internal error occurred: failed calling webhook "v.example.io": context deadline exceeded`, Fail},
+		{`Error: INSTALLATION FAILED: Secret "hb-reinstall-db" exists and cannot be imported into the current release: invalid ownership metadata`, Fail},
+	} {
+		res := Reinstall{}.installFailed(t.Context(), Result{}, errors.New(c.err), nil)
+		if res.Verdict != c.verdict {
+			t.Errorf("%q: verdict = %s (%s), want %s", c.err, res.Verdict, res.Summary, c.verdict)
+		}
+		if c.verdict == Fail && (len(res.Findings) != 1 || res.Findings[0].ID != "HB-RI-003") {
+			t.Errorf("%q: findings = %+v, want HB-RI-003", c.err, res.Findings)
 		}
 	}
 }
