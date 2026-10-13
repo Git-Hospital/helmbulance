@@ -87,6 +87,7 @@ func test(args []string) int {
 	fromVersion := fs.String("from-version", "", "chart version to upgrade from; enables the chart-upgrade scenario")
 	trafficTarget := fs.String("traffic-target", "", "Service and port that zero-downtime sends requests to (service:port); default: the most HTTP-like Service port")
 	trafficPath := fs.String("traffic-path", "/", "path that zero-downtime requests; it must answer 2xx")
+	allowRemote := fs.Bool("allow-remote", false, "run a chart from a repository, OCI registry or URL; it runs without the third-party protections, which arrive in v0.3")
 
 	// Accept the chart path before or after the flags.
 	var chart string
@@ -103,6 +104,9 @@ func test(args []string) int {
 		usage()
 		return exitError
 	}
+	if refuseRemote(*allowRemote, chart, *from) {
+		return exitError
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -116,7 +120,7 @@ func test(args []string) int {
 		selected = without(selected, "chart-upgrade")
 	}
 
-	runner := &execx.Runner{Env: os.Environ()}
+	runner := execx.NewSandboxRunner()
 	started := time.Now()
 
 	var c *sandbox.Cluster
@@ -226,6 +230,28 @@ func keysOf(sets []string) []string {
 	return keys
 }
 
+// refuseRemote stops a run on a chart that is not on disk unless --allow-remote was given. A chart
+// from a repository, OCI registry or URL is someone else's, and the protections for third-party
+// charts (architecture §4) do not exist yet: a privileged pod in the sandbox is root on the Docker
+// host. This guards against running one by accident; it is not a protection.
+func refuseRemote(allow bool, refs ...string) bool {
+	for _, ref := range refs {
+		if ref == "" || helm.IsLocal(ref) {
+			continue
+		}
+		if helm.IsPath(ref) {
+			fmt.Fprintf(os.Stderr, "path not found: %s\n", ref)
+			return true
+		}
+		if !allow {
+			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote (flags go before the chart).\n", ref)
+			return true
+		}
+		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", ref)
+	}
+	return false
+}
+
 func without(list []scenario.Scenario, name string) []scenario.Scenario {
 	var out []scenario.Scenario
 	for _, s := range list {
@@ -245,6 +271,7 @@ func matrixCmd(args []string) int {
 	versions := fs.String("k8s", strings.Join(matrix.Versions(), ","), "Kubernetes versions to test, comma-separated")
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install")
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
+	allowRemote := fs.Bool("allow-remote", false, "run a chart from a repository, OCI registry or URL; it runs without the third-party protections, which arrive in v0.3")
 	var chart string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		chart, args = args[0], args[1:]
@@ -259,10 +286,13 @@ func matrixCmd(args []string) int {
 		usage()
 		return exitError
 	}
+	if refuseRemote(*allowRemote, chart) {
+		return exitError
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	runner := &execx.Runner{Env: os.Environ()}
+	runner := execx.NewSandboxRunner()
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
@@ -327,7 +357,7 @@ func scanCmd(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	runner := &execx.Runner{Env: os.Environ()}
+	runner := execx.NewSandboxRunner()
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
