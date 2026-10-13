@@ -162,6 +162,10 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", err)
 	}
+	stateful, err := env.Kube.StatefulWorkloads(ctx, upgradeNamespace)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not find stateful workloads: %v\n", err)
+	}
 
 	var repro []string
 	for _, c := range installCmd {
@@ -175,7 +179,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-UV-001",
 			Title:    "Secrets change on every upgrade, even with the same values",
-			Severity: "high",
+			Severity: worstSeverity(regenerated, consumers, stateful),
 			Evidence: describe(regenerated, consumers),
 			Impact: "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
 				"its first start stop matching, and anything encrypted or signed with the old value " +
@@ -203,7 +207,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-UV-002",
 			Title:    title,
-			Severity: "high",
+			Severity: worstSeverity(changes, consumers, stateful),
 			Evidence: describe(changes, consumers),
 			Impact: "Upgrading from the values file in git, without repeating every --set used at " +
 				"install, silently replaces or removes these values. For an encryption key this " +

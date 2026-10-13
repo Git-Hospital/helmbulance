@@ -114,6 +114,10 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", err)
 	}
+	stateful, err := env.Kube.StatefulWorkloads(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not find stateful workloads: %v\n", err)
+	}
 
 	regenerated := oracle.Diff(installed, control)
 	// A new version adding keys is normal; only changed and removed keys break existing data.
@@ -125,7 +129,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-CU-002",
 			Title:    "The new version changes or drops Secret values of an existing release",
-			Severity: "high",
+			Severity: worstSeverity(changes, consumers, stateful),
 			Evidence: describe(changes, consumers),
 			Impact: "After the upgrade the application gets different credentials or keys than the " +
 				"ones its data was created with, or loses them.",
