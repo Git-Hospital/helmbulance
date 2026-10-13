@@ -44,6 +44,7 @@ func TestReinstallPassSummary(t *testing.T) {
 		want    string
 	}{
 		{nil, nil, "Secrets came back unchanged after uninstall and install; the release has no volumes"},
+		{nil, []oracle.Change{{Ref: "s/k", Kind: oracle.Changed}}, "the release has no volumes, so new Secrets after a reinstall lose nothing"},
 		{[]volume{{claim: "a", state: "kept"}}, nil, "Secrets came back unchanged after uninstall and install; 1 volume(s) kept their data"},
 		{[]volume{{claim: "a", state: "deleted"}}, []oracle.Change{{Ref: "s/k", Kind: oracle.Changed}},
 			"no volume kept its data, so new Secrets are expected; deleted with the release (depends on the StorageClass reclaim policy): `a`"},

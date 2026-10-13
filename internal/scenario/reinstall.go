@@ -224,7 +224,10 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 // depend on the StorageClass and the chart and are not a finding on their own.
 func reinstallPassSummary(volumes []volume, changes []oracle.Change) string {
 	summary := "Secrets came back unchanged after uninstall and install"
-	if len(changes) > 0 {
+	switch {
+	case len(volumes) == 0 && len(changes) > 0:
+		return "the release has no volumes, so new Secrets after a reinstall lose nothing"
+	case len(changes) > 0:
 		summary = "no volume kept its data, so new Secrets are expected"
 	}
 	if kept := claimsIn(volumes, "kept"); len(kept) > 0 {
