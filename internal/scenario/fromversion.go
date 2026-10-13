@@ -3,6 +3,7 @@ package scenario
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -21,9 +22,13 @@ func installedFrom(ctx context.Context, env *Env, release, ns string) (string, e
 	return v, nil
 }
 
-// isExactVersion reports whether v names one version rather than a range.
+// exactVersion is a full MAJOR.MINOR.PATCH, with an optional v, pre-release and build part.
+var exactVersion = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
+
+// isExactVersion reports whether v names one version rather than a range. helm reads a partial
+// version such as 1.2 as a range and installs the newest match (1.2.7), so it is not exact.
 func isExactVersion(v string) bool {
-	return v != "" && !strings.ContainsAny(v, "^~<>=*xX ,|")
+	return exactVersion.MatchString(v)
 }
 
 // toVersion is " to <version>" for the version release runs after an upgrade, or "" if helm cannot

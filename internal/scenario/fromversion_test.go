@@ -36,6 +36,12 @@ func TestInstalledFrom(t *testing.T) {
 		{"~1.2", "1.2.5", true},
 		{">=1.0.0 <2.0.0", "1.9.0", true},
 		{"1.x", "1.4.0", true},
+		// helm reads a partial version as a range: 1.2 installs 1.2.7.
+		{"1.2", "1.2.7", true},
+		{"1", "1.3.0", true},
+		// A pre-release is one version, so a different one is caught.
+		{"2.0.0-next.1", "2.0.0-next.1", true},
+		{"1.0.0-experimental", "1.0.0", false},
 	}
 	for _, c := range cases {
 		env := envWithRelease(t, c.fromVersion, c.runs)
@@ -43,8 +49,19 @@ func TestInstalledFrom(t *testing.T) {
 		if v != c.runs || (err == nil) != c.ok {
 			t.Errorf("--from-version %s, runs %s: installedFrom = %q, %v; want ok=%v", c.fromVersion, c.runs, v, err, c.ok)
 		}
-		if err != nil && !strings.Contains(err.Error(), "runs 2.0.0, not --from-version 1.2.3") {
+		if err != nil && !strings.Contains(err.Error(), "runs "+c.runs+", not --from-version "+c.fromVersion) {
 			t.Errorf("error %q does not name both versions", err)
+		}
+	}
+}
+
+func TestIsExactVersion(t *testing.T) {
+	for v, want := range map[string]bool{
+		"1.2.7": true, "v1.2.7": true, "2.0.0-next.1": true, "1.0.0+build.5": true,
+		"1.2": false, "1": false, "~1.2": false, "1.x": false, ">=1.0.0": false, "": false,
+	} {
+		if got := isExactVersion(v); got != want {
+			t.Errorf("isExactVersion(%q) = %v, want %v", v, got, want)
 		}
 	}
 }
