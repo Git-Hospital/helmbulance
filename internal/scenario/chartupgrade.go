@@ -172,21 +172,8 @@ func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod) []string {
 		if err != nil {
 			return []string{"could not read pods: " + err.Error()}
 		}
-		problems = problems[:0]
-		restarts := map[string]int{}
-		for _, p := range pods {
-			restarts[p.Owner] += p.Restarts
-			if !p.Ready {
-				problems = append(problems, fmt.Sprintf("pod `%s` (%s) is not ready", p.Name, p.Owner))
-			}
-		}
-		for owner, n := range restarts {
-			if n > restartsBefore[owner] && !strings.HasPrefix(owner, "ReplicaSet/") {
-				problems = append(problems, fmt.Sprintf("`%s` restarted %d more time(s) after the upgrade", owner, n-restartsBefore[owner]))
-			}
-		}
+		problems = podProblems(pods, restartsBefore)
 		if len(problems) == 0 || time.Now().After(deadline) {
-			sort.Strings(problems)
 			return problems
 		}
 		select {
@@ -195,6 +182,25 @@ func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod) []string {
 		case <-time.After(10 * time.Second):
 		}
 	}
+}
+
+// podProblems lists pods that are not ready and owners whose pods restarted more than before.
+func podProblems(pods []kube.Pod, restartsBefore map[string]int) []string {
+	var problems []string
+	restarts := map[string]int{}
+	for _, p := range pods {
+		restarts[p.Owner] += p.Restarts
+		if !p.Ready {
+			problems = append(problems, fmt.Sprintf("pod `%s` (%s) is not ready", p.Name, p.Owner))
+		}
+	}
+	for owner, n := range restarts {
+		if n > restartsBefore[owner] && !strings.HasPrefix(owner, "ReplicaSet/") {
+			problems = append(problems, fmt.Sprintf("`%s` restarted %d more time(s) after the upgrade", owner, n-restartsBefore[owner]))
+		}
+	}
+	sort.Strings(problems)
+	return problems
 }
 
 // helmMessage keeps the part of a helm error that explains it, without the command line.

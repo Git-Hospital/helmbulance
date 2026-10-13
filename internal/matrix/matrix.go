@@ -163,12 +163,7 @@ func unhealthy(ctx context.Context, k *kube.Client, ns string) []string {
 		if err != nil {
 			return []string{"could not read pods: " + err.Error()}
 		}
-		var bad []string
-		for _, p := range pods {
-			if !p.Ready {
-				bad = append(bad, fmt.Sprintf("pod `%s` is not ready (%d restart(s))", p.Name, p.Restarts))
-			}
-		}
+		bad := notReady(pods)
 		if len(bad) == 0 || time.Now().After(deadline) {
 			return bad
 		}
@@ -178,6 +173,17 @@ func unhealthy(ctx context.Context, k *kube.Client, ns string) []string {
 		case <-time.After(10 * time.Second):
 		}
 	}
+}
+
+// notReady lists the pods that are not ready.
+func notReady(pods []kube.Pod) []string {
+	var bad []string
+	for _, p := range pods {
+		if !p.Ready {
+			bad = append(bad, fmt.Sprintf("pod `%s` is not ready (%d restart(s))", p.Name, p.Restarts))
+		}
+	}
+	return bad
 }
 
 func reproLine(line string) string {
