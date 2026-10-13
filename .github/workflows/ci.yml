@@ -137,7 +137,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - run: scripts/mutation.sh "$RUNNER_TEMP/mutation" >> "$GITHUB_STEP_SUMMARY"
+      # tee: the report is in the job log as well as in the summary.
+      - run: scripts/mutation.sh "$RUNNER_TEMP/mutation" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The composite Action (action.yml) on one fixture pair. The fixed twin runs with variables that
   # would point helm at another cluster; the Action must drop them, or helm fails to connect.
