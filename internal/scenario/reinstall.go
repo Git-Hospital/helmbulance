@@ -118,6 +118,9 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	var unrelated []oracle.Change
 	res.Findings, unrelated = reinstallFindings(volumes, changes, consumers, stateful, claimUsers, repro)
+	if len(keptClaims) == 0 {
+		unrelated = nil // the summary already says new Secrets are expected
+	}
 
 	if len(res.Findings) > 0 {
 		res.Verdict = Fail
