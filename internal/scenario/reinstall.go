@@ -24,9 +24,10 @@ func (Reinstall) Description() string {
 
 // volume is one PersistentVolumeClaim and what happened to its sentinel.
 type volume struct {
-	claim, value string
-	// state is "kept", "missing" or "replaced" after the reinstall, "deleted" when the claim went
-	// away with the release, and "unwritable" when no sentinel could be written.
+	claim, uid, value string
+	// state is "kept", "missing" or "replaced" after the reinstall; "deleted" when the claim went
+	// away with the release, and "recreated" when the reinstall made a new claim with the same
+	// name; "unwritable" when no sentinel could be written.
 	state string
 }
 
@@ -117,12 +118,12 @@ func (Reinstall) writeSentinels(ctx context.Context, env *Env, ns string) ([]vol
 		if err != nil {
 			return nil, err
 		}
-		out, err := env.Kube.RunWithPVC(ctx, ns, fmt.Sprintf("hb-sentinel-w%d", i), sentinelImage, claim,
+		out, err := env.Kube.RunWithPVC(ctx, ns, fmt.Sprintf("hb-sentinel-w%d", i), sentinelImage, claim.Name,
 			writeSentinelScript(value), env.Helm.Timeout.String())
 		if err != nil {
 			return nil, err
 		}
-		v := volume{claim: claim, value: value}
+		v := volume{claim: claim.Name, uid: claim.UID, value: value}
 		if strings.TrimSpace(out) != "written" {
 			v.state = "unwritable"
 		}
@@ -137,17 +138,22 @@ func (Reinstall) readSentinels(ctx context.Context, env *Env, ns string, volumes
 	if err != nil {
 		return err
 	}
-	present := map[string]bool{}
+	uids := map[string]string{}
 	for _, c := range claims {
-		present[c] = true
+		uids[c.Name] = c.UID
 	}
 	for i := range volumes {
 		v := &volumes[i]
+		uid, present := uids[v.claim]
 		switch {
 		case v.state == "unwritable":
 			continue
-		case !present[v.claim]:
+		case !present:
 			v.state = "deleted"
+			continue
+		case uid != v.uid:
+			// helm uninstall deleted the claim and the reinstall made a new, empty one.
+			v.state = "recreated"
 			continue
 		}
 		out, err := env.Kube.RunWithPVC(ctx, ns, fmt.Sprintf("hb-sentinel-r%d", i), sentinelImage, v.claim,
@@ -233,7 +239,7 @@ func reinstallPassSummary(volumes []volume, changes []oracle.Change) string {
 	if kept := claimsIn(volumes, "kept"); len(kept) > 0 {
 		summary += fmt.Sprintf("; %d volume(s) kept their data", len(kept))
 	}
-	if deleted := claimsIn(volumes, "deleted"); len(deleted) > 0 {
+	if deleted := append(claimsIn(volumes, "deleted"), claimsIn(volumes, "recreated")...); len(deleted) > 0 {
 		summary += "; deleted with the release (depends on the StorageClass reclaim policy): " + strings.Join(deleted, ", ")
 	}
 	if len(volumes) == 0 {

@@ -62,12 +62,14 @@ func TestStatefulWorkloads(t *testing.T) {
 }
 
 func TestPVCs(t *testing.T) {
-	c := fakeKubectl(t, `{"items":[{"metadata":{"name":"data-db-0"}},{"metadata":{"name":"cache"}}]}`)
+	c := fakeKubectl(t, `{"items":[
+		{"metadata":{"name":"data-db-0","uid":"u1"},"status":{"phase":"Bound"}},
+		{"metadata":{"name":"cache","uid":"u2"},"status":{"phase":"Pending"}}]}`)
 	got, err := c.PVCs(t.Context(), "ns")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"cache", "data-db-0"}; !reflect.DeepEqual(got, want) {
+	if want := []PVC{{Name: "cache", UID: "u2", Phase: "Pending"}, {Name: "data-db-0", UID: "u1", Phase: "Bound"}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("PVCs = %v, want %v", got, want)
 	}
 }

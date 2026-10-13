@@ -509,8 +509,14 @@ func (c *Client) LastLogLine(ctx context.Context, ns, name string) (string, erro
 	return strings.TrimSpace(string(out)), err
 }
 
-// PVCs returns the names of the PersistentVolumeClaims in ns, sorted.
-func (c *Client) PVCs(ctx context.Context, ns string) ([]string, error) {
+// PVC is one PersistentVolumeClaim. The UID tells a claim that survived from one that was deleted
+// and created again under the same name.
+type PVC struct {
+	Name, UID, Phase string
+}
+
+// PVCs returns the PersistentVolumeClaims in ns, sorted by name.
+func (c *Client) PVCs(ctx context.Context, ns string) ([]PVC, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pvc", "-o", "json")
 	if err != nil {
 		return nil, err
@@ -519,18 +525,22 @@ func (c *Client) PVCs(ctx context.Context, ns string) ([]string, error) {
 		Items []struct {
 			Metadata struct {
 				Name string `json:"name"`
+				UID  string `json:"uid"`
 			} `json:"metadata"`
+			Status struct {
+				Phase string `json:"phase"`
+			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
 		return nil, fmt.Errorf("parse pvcs: %w", err)
 	}
-	var names []string
+	var pvcs []PVC
 	for _, item := range list.Items {
-		names = append(names, item.Metadata.Name)
+		pvcs = append(pvcs, PVC{Name: item.Metadata.Name, UID: item.Metadata.UID, Phase: item.Status.Phase})
 	}
-	sort.Strings(names)
-	return names, nil
+	sort.Slice(pvcs, func(i, j int) bool { return pvcs[i].Name < pvcs[j].Name })
+	return pvcs, nil
 }
 
 // RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
