@@ -76,7 +76,7 @@ func test(args []string) int {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	var files, sets, only multiFlag
 	fs.Var(&files, "f", "values file (repeatable)")
-	fs.Var(&sets, "set", "install-time value, key=value (repeatable). Upgrades test what happens when it is left out.")
+	fs.Var(&sets, "set", "install-time value, key=value (repeatable). Values of four or more characters are hidden in reports. Upgrades test what happens when it is left out.")
 	fs.Var(&only, "scenario", "run only this scenario (repeatable)")
 	cluster := fs.String("cluster", "", "reuse a sandbox cluster created earlier by helmbulance")
 	keep := fs.Bool("keep-cluster", false, "keep the sandbox cluster after the run")
@@ -121,6 +121,7 @@ func test(args []string) int {
 	}
 
 	runner := execx.NewSandboxRunner()
+	runner.Secrets = execx.SetValues(sets)
 	started := time.Now()
 
 	var c *sandbox.Cluster
@@ -170,7 +171,7 @@ func test(args []string) int {
 		SchemaVersion: report.SchemaVersion,
 		Chart:         chart,
 		ValuesFiles:   files,
-		SetKeys:       keysOf(sets),
+		SetKeys:       execx.SetKeys(sets),
 		HelmVersion:   h.Version(ctx),
 		Cluster:       c.Name,
 		Started:       started,
@@ -219,17 +220,6 @@ func pick(names []string) ([]scenario.Scenario, error) {
 	return out, nil
 }
 
-func keysOf(sets []string) []string {
-	var keys []string
-	for _, s := range sets {
-		for _, part := range strings.Split(s, ",") {
-			k, _, _ := strings.Cut(part, "=")
-			keys = append(keys, k)
-		}
-	}
-	return keys
-}
-
 // refuseRemote stops a run on a chart that is not on disk unless --allow-remote was given. A chart
 // from a repository, OCI registry or URL is someone else's, and the protections for third-party
 // charts (architecture §4) do not exist yet: a privileged pod in the sandbox is root on the Docker
@@ -267,7 +257,7 @@ func matrixCmd(args []string) int {
 	fs := flag.NewFlagSet("matrix", flag.ContinueOnError)
 	var files, sets multiFlag
 	fs.Var(&files, "f", "values file (repeatable)")
-	fs.Var(&sets, "set", "value, key=value (repeatable)")
+	fs.Var(&sets, "set", "value, key=value (repeatable). Values of four or more characters are hidden in reports.")
 	versions := fs.String("k8s", strings.Join(matrix.Versions(), ","), "Kubernetes versions to test, comma-separated")
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install")
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
@@ -293,12 +283,13 @@ func matrixCmd(args []string) int {
 	defer stop()
 
 	runner := execx.NewSandboxRunner()
+	runner.Secrets = execx.SetValues(sets)
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
 		Chart:         chart,
 		ValuesFiles:   files,
-		SetKeys:       keysOf(sets),
+		SetKeys:       execx.SetKeys(sets),
 		HelmVersion:   (&helm.Client{Runner: runner}).Version(ctx),
 		Cluster:       "one per Kubernetes version",
 		Started:       started,
@@ -336,7 +327,7 @@ func scanCmd(args []string) int {
 	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
 	var files, sets multiFlag
 	fs.Var(&files, "f", "values file (repeatable)")
-	fs.Var(&sets, "set", "value, key=value (repeatable)")
+	fs.Var(&sets, "set", "value, key=value (repeatable). Values of four or more characters are hidden in reports.")
 	from := fs.String("from", "", "chart to compare against for immutable fields (repo/chart, oci://… or a path); defaults to the chart")
 	fromVersion := fs.String("from-version", "", "version users upgrade from; enables the immutable-field check")
 	strict := fs.Bool("strict", false, "exit 1 when there are candidates")
@@ -358,12 +349,13 @@ func scanCmd(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	runner := execx.NewSandboxRunner()
+	runner.Secrets = execx.SetValues(sets)
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
 		Chart:         chart,
 		ValuesFiles:   files,
-		SetKeys:       keysOf(sets),
+		SetKeys:       execx.SetKeys(sets),
 		HelmVersion:   (&helm.Client{Runner: runner}).Version(ctx),
 		Cluster:       "none (static scan)",
 		Started:       started,
