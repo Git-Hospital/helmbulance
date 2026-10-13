@@ -176,13 +176,14 @@ func test(args []string) int {
 	}
 
 	rep := &report.Report{
-		SchemaVersion: report.SchemaVersion,
-		Chart:         chart,
-		ValuesFiles:   files,
-		SetKeys:       execx.SetKeys(sets),
-		HelmVersion:   h.Version(ctx),
-		Cluster:       c.Name,
-		Started:       started,
+		SchemaVersion:    report.SchemaVersion,
+		Chart:            chart,
+		ValuesFiles:      files,
+		SetKeys:          execx.SetKeys(sets),
+		ExpectedRotation: rotations,
+		HelmVersion:      h.Version(ctx),
+		Cluster:          c.Name,
+		Started:          started,
 	}
 	for _, s := range selected {
 		fmt.Printf("▶ %s\n", s.Name())
