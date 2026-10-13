@@ -79,3 +79,30 @@ func TestSettleGivesUp(t *testing.T) {
 		t.Errorf("Settle on values that keep changing: err = %v, want ErrNotSettled", err)
 	}
 }
+
+func TestMoved(t *testing.T) {
+	h, _ := NewHasher()
+	before := h.Snapshot([]kube.Secret{
+		{Name: "old", Data: map[string][]byte{"password": []byte("kept"), "token": []byte("dropped")}},
+	})
+	after := h.Snapshot([]kube.Secret{
+		{Name: "new", Data: map[string][]byte{"password": []byte("kept"), "token": []byte("fresh")}},
+	})
+	rest, moved := Moved(before, after, Diff(before, after))
+	if want := []Change{{Ref: "old/password -> new/password", Kind: MovedKind}}; !reflect.DeepEqual(moved, want) {
+		t.Errorf("moved = %v, want %v", moved, want)
+	}
+	want := []Change{{Ref: "new/token", Kind: Added}, {Ref: "old/token", Kind: Removed}}
+	if !reflect.DeepEqual(rest, want) {
+		t.Errorf("rest = %v, want %v", rest, want)
+	}
+}
+
+func TestMovedLeavesAmbiguousPairs(t *testing.T) {
+	h, _ := NewHasher()
+	before := h.Snapshot([]kube.Secret{{Name: "old", Data: map[string][]byte{"a": []byte("same"), "b": []byte("same")}}})
+	after := h.Snapshot([]kube.Secret{{Name: "new", Data: map[string][]byte{"a": []byte("same")}}})
+	if _, moved := Moved(before, after, Diff(before, after)); len(moved) != 0 {
+		t.Errorf("two removed keys share the value, so no pair is certain; got %v", moved)
+	}
+}
