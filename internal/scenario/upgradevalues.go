@@ -174,6 +174,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 
 	control := oracle.Diff(installed, reused)
 	regenerated, added := splitAdded(control)
+	regenerated, rotated := splitExpected(regenerated, env.ExpectedRotation)
 	if len(regenerated) > 0 {
 		steps := concat(repro, reproLine(reuseCmd[0].Line))
 		impact := "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
@@ -207,6 +208,8 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		var more []oracle.Change
 		changes, more = splitAdded(withoutRefs(oracle.Diff(reused, filesOnly), control))
 		added = append(added, more...)
+		changes, more = splitExpected(changes, env.ExpectedRotation)
+		rotated = append(rotated, more...)
 	}
 	if len(changes) > 0 {
 		steps := concat(repro, reproLine(filesCmd[0].Line))
@@ -239,7 +242,10 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 			res.Summary = noSecretsTested
 		}
 	}
-	return res, []string{note("keys added by an upgrade, not a finding", describe(added, consumers))}
+	return res, []string{
+		note("keys added by an upgrade, not a finding", describe(added, consumers)),
+		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
+	}
 }
 
 func describe(changes []oracle.Change, consumers map[string][]string) []string {
