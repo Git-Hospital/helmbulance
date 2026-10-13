@@ -259,7 +259,8 @@ func refuseFromVersion(chart, from, fromVersion string, versionOf func(string) (
 			fmt.Fprintf(os.Stderr, "could not read the version of --from %s: %v\n", from, err)
 			return true
 		}
-		if v != fromVersion {
+		// helm accepts a leading v on --version, so v1.0.0 and 1.0.0 name the same chart.
+		if strings.TrimPrefix(v, "v") != strings.TrimPrefix(fromVersion, "v") {
 			fmt.Fprintf(os.Stderr, "--from %s is version %s, not --from-version %s: helm ignores --version for a path.\n", from, v, fromVersion)
 			return true
 		}

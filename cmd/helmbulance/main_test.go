@@ -89,6 +89,9 @@ func TestRefuseFromVersionThatALocalFromIsNot(t *testing.T) {
 	if !refused || !strings.Contains(out, "could not read the version") {
 		t.Errorf("refused = %v, %q; want a refusal when the version cannot be read", refused, out)
 	}
+	if refuseFromVersion("./chart", v1, "v1.0.0", version1) {
+		t.Error("--from-version v1.0.0 was refused for a chart at 1.0.0; helm treats them as the same")
+	}
 	if refuseFromVersion("./chart", "repo/chart", "1.2.3", version1) {
 		t.Error("a remote --from was refused; helm honours --version there")
 	}
