@@ -35,6 +35,16 @@ func ParseTraffic(log string) TrafficStats {
 	return ParseTrafficSince(log, 0)
 }
 
+// TrafficSecond returns the unix second of a traffic log line, in the traffic pod's own clock.
+func TrafficSecond(line string) (int64, bool) {
+	fields := strings.Fields(line)
+	if len(fields) != 2 {
+		return 0, false
+	}
+	t, err := strconv.ParseInt(fields[0], 10, 64)
+	return t, err == nil
+}
+
 // ParseTrafficSince is ParseTraffic counting only requests sent at or after since (unix seconds).
 func ParseTrafficSince(log string, since int64) TrafficStats {
 	var s TrafficStats
