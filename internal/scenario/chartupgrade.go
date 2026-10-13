@@ -162,12 +162,11 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 }
 
 // unhealthyAfter waits for the release to settle and lists pods that are not ready or restarted
-// more than before the upgrade. Pods of a Deployment get a new ReplicaSet on upgrade, so restarts
-// are only compared for owners that keep their name (StatefulSets, DaemonSets).
+// more than before the upgrade, and Jobs that gave up since.
 func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod, jobsBefore []string) []string {
 	restartsBefore := map[string]int{}
 	for _, p := range before {
-		restartsBefore[p.Owner] += p.Restarts
+		restartsBefore[p.UID] = p.Restarts
 	}
 	var problems []string
 	deadline := time.Now().Add(90 * time.Second)
@@ -192,22 +191,20 @@ func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod, jobsBefore
 	}
 }
 
-// podProblems lists pods that are not ready and owners whose pods restarted more than before.
+// podProblems lists pods that are not ready and pods that restarted more than before, by pod UID:
+// a pod the rollout created starts from zero, so a Deployment's new pods are checked too. Job
+// pods are left to the Jobs' own status.
 func podProblems(pods []kube.Pod, restartsBefore map[string]int) []string {
 	var problems []string
-	restarts := map[string]int{}
 	for _, p := range pods {
 		if p.FromJob() {
 			continue
 		}
-		restarts[p.Owner] += p.Restarts
 		if !p.Ready {
 			problems = append(problems, fmt.Sprintf("pod `%s` (%s) is not ready", p.Name, p.Owner))
 		}
-	}
-	for owner, n := range restarts {
-		if n > restartsBefore[owner] && !strings.HasPrefix(owner, "ReplicaSet/") {
-			problems = append(problems, fmt.Sprintf("`%s` restarted %d more time(s) after the upgrade", owner, n-restartsBefore[owner]))
+		if n := p.Restarts - restartsBefore[p.UID]; n > 0 {
+			problems = append(problems, fmt.Sprintf("pod `%s` (%s) restarted %d more time(s) after the upgrade", p.Name, p.Owner, n))
 		}
 	}
 	sort.Strings(problems)
