@@ -144,10 +144,14 @@ Each scenario goes through these phases:
 - Known deprecations are also caught statically (`helm lint`, pluto); what the matrix adds is whether the chart actually runs on each version.
 
 **`reinstall`** (implemented).
-- Write a random sentinel file into each PVC, from a one-off pod that mounts it (busybox, pinned by digest, root so it can write whatever owner the app set, no service account token).
-- Uninstall, install again with the same values (`--wait` covers the release's health), and check the sentinels and the release's own Secrets.
-- Findings: HB-RI-001 when a volume kept its data but a Secret key changed (severity as in D5); HB-RI-002 when a kept volume lost its sentinel; HB-RI-003 when the second install fails for a reason other than a timeout.
+- Write a random sentinel file into each bound PVC from a one-off pod that mounts it, and read it back once (the control). Unbound claims are skipped: mounting one would bind it.
+- Uninstall, install again with the same values (`--wait` covers the release's health), and check the sentinels and the release's own Secrets. A claim with the same name but a new UID was deleted with the release and made again: it is named, not a finding.
+- Findings:
+  - HB-RI-001: a volume kept its data, and a Secret key that a workload mounting it reads changed (severity as in D5). Other changed keys are named in the summary.
+  - HB-RI-002: a kept volume lost its sentinel.
+  - HB-RI-003: the second install fails. A render-time refusal (`fail`, `required`) is a PASS that "refuses safely" (D4); a timeout, a killed helm or a pull error is `INCONCLUSIVE`, but a failing call to the chart's own webhook stays a finding.
 - PVCs deleted with the release are named in the summary, with a note that the result depends on the StorageClass reclaim policy. New credentials with no data left are a fresh install, not a finding.
+- The sandbox has one node, so the sentinel pod can mount a ReadWriteOnce claim next to the app. On several nodes it would need the app's node.
 
 **`gitops-render`** (v0.1).
 - Find `lookup` statically.
@@ -184,7 +188,7 @@ Each scenario goes through these phases:
 | Oracle | How | False positives | False negatives | Guard |
 |---|---|---|---|---|
 | Secret drift (implemented) | HMAC-SHA256 of every key of the Secrets the release has rendered in any revision of the run (`helm get manifest` and `helm get hooks`), so a "generate once" Secret kept with `resource-policy: keep` stays compared, with a random per-run key that is never stored, read once two reads in a row agree. Changed and removed keys are findings, rated by key class (D5): high for a credential that a workload with a PersistentVolumeClaim reads, low for TLS material, medium otherwise. Added keys, values moved to another key, keys listed with `--expected-rotation` and Secrets the release never rendered are named in the summary. A move whose old key a workload still reads is a removed key. When no key was compared, the summary says Secret drift was not tested. | Rotation scenarios, where change is expected; a Secret the chart renders and the app then rewrites once, later than the settle window | Generated values kept in ConfigMaps; keys removed from `stringData`, which stay in the Secret; Secrets the release does not render, such as passwords a hook Job writes with `kubectl create secret`; a new key that a workload switches to | Only the release's own Secrets, after a settle window (done); expected-change set per scenario; ConfigMaps scanned too (v0.2) |
-| Data survival | Sentinel file written into each PVC by an ephemeral container running as the target's user and group | Reclaim policy Delete in the sandbox | App re-initialised its data even though the file survived; data on `emptyDir` | Combine with the health and credential oracles; report `emptyDir` data paths; `INCONCLUSIVE` if the sentinel cannot be written |
+| Data survival (implemented) | Random sentinel file written into each bound PVC by a one-off pod (root with only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, owner set to the volume's, removed after the last read), read back once before the uninstall as a control; claims tracked by UID | A cache volume the app empties on purpose at start (HB-RI-002) | App re-initialised its data even though the file survived; data on `emptyDir`; unbound claims (skipped) | Combined with the credential oracle (HB-RI-001 only for keys a workload with a kept volume reads); `INCONCLUSIVE` if a sentinel cannot be written while Secrets changed; report `emptyDir` data paths (later) |
 | Health | Ready conditions, restart counts and termination reasons, compared with the control | Start-up crash loops that also happen in the control | A dead process stays "Ready" when there is no liveness probe | Compare deltas, not absolute counts; settle window |
 | Credential errors | Log patterns per known component, within a time window | Errors caused by Helmbulance's own probes | Apps that do not log auth failures; logs lost on restart | Evidence only, never a verdict on its own; probe pod IPs excluded; `--previous` logs read |
 | Rollout coverage | Pods that read a changed Secret got new UIDs | Apps that hot-reload mounted Secrets | A restart that does not fix the mismatch (database keeps the old password) | Always combined with health and credentials |
