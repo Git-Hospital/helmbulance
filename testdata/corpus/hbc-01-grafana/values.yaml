@@ -1,0 +1,3 @@
+# grafana 6.9.x renders two PodSecurityPolicy objects by default; Kubernetes removed that API in 1.25.
+rbac:
+  pspEnabled: false
