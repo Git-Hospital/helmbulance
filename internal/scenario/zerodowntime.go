@@ -61,6 +61,11 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	if err := env.Helm.Install(ctx, release, ns, installChart, env.Values, installExtra...); err != nil {
 		return inconclusive(res, "the chart did not install", err)
 	}
+	if env.FromVersion != "" {
+		if _, err := installedFrom(ctx, env, release, ns); err != nil {
+			return inconclusive(res, "could not confirm the earlier version", err)
+		}
+	}
 
 	target, err := s.target(ctx, env, ns)
 	if err != nil {

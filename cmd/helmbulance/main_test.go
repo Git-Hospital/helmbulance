@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -46,5 +47,52 @@ func TestRefuseRemote(t *testing.T) {
 		if c.says == "" && out != "" {
 			t.Errorf("refuseRemote(%v, %q) printed %q, want nothing", c.allow, c.refs, out)
 		}
+	}
+}
+
+// version1 stands in for helm show chart: every chart is version 1.0.0.
+func version1(string) (string, error) { return "1.0.0", nil }
+
+func TestRefuseFromVersionWithoutFrom(t *testing.T) {
+	const local = "../../testdata/charts/upgrade-v2-ok"
+	cases := []struct {
+		chart, from, fromVersion string
+		refused                  bool
+	}{
+		{local, "", "", false},
+		{local, "", "1.0.0", true},
+		{local, "../../testdata/charts/upgrade-v1", "1.0.0", false},
+		{"repo/chart", "", "1.0.0", false},
+	}
+	for _, c := range cases {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseFromVersion(c.chart, c.from, c.fromVersion, version1) })
+		if refused != c.refused {
+			t.Errorf("refuseFromVersion(%q, %q, %q) = %v, want %v", c.chart, c.from, c.fromVersion, refused, c.refused)
+		}
+		if refused && !strings.Contains(out, "needs --from") {
+			t.Errorf("message %q does not say --from is needed", out)
+		}
+	}
+}
+
+func TestRefuseFromVersionThatALocalFromIsNot(t *testing.T) {
+	const v1 = "../../testdata/charts/upgrade-v1"
+	var refused bool
+	out := stderrOf(t, func() { refused = refuseFromVersion("./chart", v1, "1.2.3", version1) })
+	if !refused || !strings.Contains(out, "is version 1.0.0, not --from-version 1.2.3") {
+		t.Errorf("refused = %v, %q; want a refusal naming both versions", refused, out)
+	}
+	out = stderrOf(t, func() {
+		refused = refuseFromVersion("./chart", v1, "1.0.0", func(string) (string, error) { return "", errors.New("boom") })
+	})
+	if !refused || !strings.Contains(out, "could not read the version") {
+		t.Errorf("refused = %v, %q; want a refusal when the version cannot be read", refused, out)
+	}
+	if refuseFromVersion("./chart", v1, "v1.0.0", version1) {
+		t.Error("--from-version v1.0.0 was refused for a chart at 1.0.0; helm treats them as the same")
+	}
+	if refuseFromVersion("./chart", "repo/chart", "1.2.3", version1) {
+		t.Error("a remote --from was refused; helm honours --version there")
 	}
 }
