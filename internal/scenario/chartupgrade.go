@@ -60,13 +60,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "could not confirm the earlier version", err)
 	}
 
-	snapshot := func() (oracle.SecretSnapshot, error) {
-		secrets, err := env.Kube.Secrets(ctx, ns)
-		if err != nil {
-			return nil, err
-		}
-		return env.Hasher.Snapshot(secrets), nil
-	}
+	snapshot := func() (oracle.SecretSnapshot, error) { return releaseSecrets(ctx, env, release, ns) }
 	installed, err := snapshot()
 	if err != nil {
 		return inconclusive(res, "could not read Secrets after install", err)
@@ -118,7 +112,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	}
 
 	regenerated := oracle.Diff(installed, control)
-	if changes := withoutRefs(oracle.Diff(control, upgraded), regenerated); len(changes) > 0 {
+	// A new version adding keys is normal; only changed and removed keys break existing data.
+	changes, added := splitAdded(withoutRefs(oracle.Diff(control, upgraded), regenerated))
+	if len(changes) > 0 {
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-CU-002",
 			Title:    "The new version changes or drops Secret values of an existing release",
@@ -154,6 +150,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		res.Verdict = Pass
 		res.Summary = "upgraded from " + fromV + toVersion(ctx, env, release, ns) + " with Secrets kept and workloads healthy"
 	}
+	res.Summary = noteAdded(res.Summary, added)
 	return res
 }
 

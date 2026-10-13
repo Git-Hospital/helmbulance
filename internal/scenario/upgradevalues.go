@@ -48,13 +48,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	installCmd := env.Runner.Transcript()[start:]
 
-	snapshot := func() (oracle.SecretSnapshot, error) {
-		secrets, err := env.Kube.Secrets(ctx, ns)
-		if err != nil {
-			return nil, err
-		}
-		return env.Hasher.Snapshot(secrets), nil
-	}
+	snapshot := func() (oracle.SecretSnapshot, error) { return releaseSecrets(ctx, env, release, ns) }
 
 	installed, err := snapshot()
 	if err != nil {
@@ -170,13 +164,14 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	}
 
 	control := oracle.Diff(installed, reused)
-	if len(control) > 0 {
+	regenerated, added := splitAdded(control)
+	if len(regenerated) > 0 {
 		steps := concat(repro, reproLine(reuseCmd[0].Line))
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-UV-001",
 			Title:    "Secrets change on every upgrade, even with the same values",
 			Severity: "high",
-			Evidence: describe(control, consumers),
+			Evidence: describe(regenerated, consumers),
 			Impact: "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
 				"its first start stop matching, and anything encrypted or signed with the old value " +
 				"can no longer be read.",
@@ -190,7 +185,9 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	// Keys that already changed in the control are reported there, not again here.
 	var changes []oracle.Change
 	if filesOnly != nil {
-		changes = withoutRefs(oracle.Diff(reused, filesOnly), control)
+		var more []oracle.Change
+		changes, more = splitAdded(withoutRefs(oracle.Diff(reused, filesOnly), control))
+		added = append(added, more...)
 	}
 	if len(changes) > 0 {
 		steps := concat(repro, reproLine(filesCmd[0].Line))
@@ -220,6 +217,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		res.Verdict = Pass
 		res.Summary = "Secrets stayed the same through both upgrades"
 	}
+	res.Summary = noteAdded(res.Summary, added)
 	return res
 }
 
