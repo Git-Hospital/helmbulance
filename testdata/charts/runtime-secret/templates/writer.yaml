@@ -1,0 +1,64 @@
+# Stands in for an operator or an app that writes its own Secret: it rewrites <release>-runtime
+# twice a second. The chart does not render that Secret, so its changes are not the upgrade's.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-writer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-writer
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ printf "%s-runtime" .Release.Name | quote }}]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-writer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-writer
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-writer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-writer
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-writer}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-writer}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-writer
+      securityContext: {runAsNonRoot: true, runAsUser: 65535}
+      containers:
+        - name: writer
+          image: alpine/k8s:1.34.1
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          env:
+            - {name: HOME, value: /tmp}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          command: [sh, -c]
+          args:
+            - |
+              name={{ .Release.Name }}-runtime
+              while true; do
+                kubectl create secret generic "$name" --from-literal=token="$(date +%s%N)" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+                sleep 0.5
+              done
+      volumes:
+        - {name: tmp, emptyDir: {}}

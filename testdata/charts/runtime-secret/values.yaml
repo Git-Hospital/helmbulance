@@ -1,0 +1,2 @@
+# Empty on purpose: a values file makes upgrade-without-values run its treatment step too.
+{}
