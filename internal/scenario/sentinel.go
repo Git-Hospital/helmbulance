@@ -8,8 +8,12 @@ import (
 	"time"
 )
 
-// sentinelImage writes and reads the sentinel files. Pinned by digest.
-const sentinelImage = "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+// busyboxImage runs Helmbulance's own helper pods (traffic, sentinels). Pinned by the digest of
+// the multi-architecture index, so amd64 and arm64 hosts get the same image.
+const busyboxImage = "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+
+// sentinelImage writes and reads the sentinel files.
+const sentinelImage = busyboxImage
 
 // sentinelFile is where the sentinel goes inside each volume. The name says who wrote it, in case
 // someone finds it in their own data.
