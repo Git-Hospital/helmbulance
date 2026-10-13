@@ -81,4 +81,4 @@ It is a report and not a gate: the job has no threshold and is not a required ch
 - **Evidence is checked for what it must contain, not for what it must not.** A defect case whose finding also lists an object that is fine still passes.
 - **One case covers incomplete runs.** Other ways a run can fail to finish (an admission webhook that rejects, a cluster that does not start) have none.
 - **The matrix cases run on one Kubernetes version.**
-- **The mutation report only counts unit tests.** `internal/scan`, `internal/matrix`, `internal/kube`, `internal/report` and `internal/sandbox` have none, so for them the table is the only check.
+- **The mutation report only counts unit tests.** A package without any is listed as such. Today that includes `internal/scan` and `internal/matrix`: for the findings they produce, the table is the only check.
