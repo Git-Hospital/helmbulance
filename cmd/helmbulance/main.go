@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"time"
 
@@ -106,6 +107,10 @@ func test(args []string) int {
 		return exitError
 	}
 	if refuseRemote(*allowRemote, chart, *from) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+		return exitError
+	}
+	if err := checkRotations(rotations); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return exitError
 	}
 
@@ -425,4 +430,19 @@ func scanCmd(args []string) int {
 		return exitFindings
 	}
 	return exitClean
+}
+
+// checkRotations rejects --expected-rotation patterns that could never match a "secret/key"
+// reference, so a typo does not silently report a rotation the user meant to allow.
+func checkRotations(patterns []string) error {
+	for _, p := range patterns {
+		secret, key, ok := strings.Cut(p, "/")
+		if !ok || secret == "" || key == "" || strings.Contains(key, "/") {
+			return fmt.Errorf("--expected-rotation %q: want secret/key, e.g. '*-webhook-tls/tls.crt' or '*-webhook-tls/*'", p)
+		}
+		if _, err := path.Match(p, ""); err != nil {
+			return fmt.Errorf("--expected-rotation %q: %v", p, err)
+		}
+	}
+	return nil
 }
