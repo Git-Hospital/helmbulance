@@ -46,3 +46,16 @@ func TestPodsReadPhaseAndRevision(t *testing.T) {
 		t.Errorf("Pods =\n%+v\nwant\n%+v", got, want)
 	}
 }
+
+func TestFailedJobs(t *testing.T) {
+	c := kubectlPrinting(t, `{"items":[
+		{"metadata":{"name":"seed"},"status":{"conditions":[{"type":"Complete","status":"True"}]}},
+		{"metadata":{"name":"migrate"},"status":{"conditions":[{"type":"Failed","status":"True","reason":"BackoffLimitExceeded","message":"Job has reached the specified backoff limit"}]}},
+		{"metadata":{"name":"running"},"status":{}}
+	]}`)
+	got, err := c.FailedJobs(t.Context(), "ns")
+	want := []string{"Job/migrate: BackoffLimitExceeded Job has reached the specified backoff limit"}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("FailedJobs = %q, %v; want %q", got, err, want)
+	}
+}

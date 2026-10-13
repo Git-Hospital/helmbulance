@@ -237,6 +237,42 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 	return pods, nil
 }
 
+// FailedJobs returns the Jobs in ns that gave up (condition Failed), as "Job/<name>: <message>".
+func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "jobs", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				Conditions []struct {
+					Type    string `json:"type"`
+					Status  string `json:"status"`
+					Reason  string `json:"reason"`
+					Message string `json:"message"`
+				} `json:"conditions"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse jobs: %w", err)
+	}
+	var failed []string
+	for _, item := range list.Items {
+		for _, cond := range item.Status.Conditions {
+			if cond.Type == "Failed" && cond.Status == "True" {
+				failed = append(failed, "Job/"+item.Metadata.Name+": "+strings.TrimSpace(cond.Reason+" "+cond.Message))
+			}
+		}
+	}
+	sort.Strings(failed)
+	return failed, nil
+}
+
 // Service is one Service of the release and the ports it exposes.
 type Service struct {
 	Name     string
