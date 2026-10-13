@@ -176,17 +176,27 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	regenerated, added := splitAdded(control)
 	if len(regenerated) > 0 {
 		steps := concat(repro, reproLine(reuseCmd[0].Line))
+		impact := "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
+			"its first start stop matching, and anything encrypted or signed with the old value " +
+			"can no longer be read."
+		fix := "Generate the value only when it does not exist yet: read the current Secret with " +
+			"`lookup` and reuse its value, and add `helm.sh/resource-policy: keep`. `lookup` " +
+			"returns nothing under `helm template` (Argo CD), so also support an existingSecret."
+		if onlyTLS(regenerated) {
+			impact = "Every `helm upgrade` issues new certificates. Anything that trusts the old CA (a " +
+				"webhook's caBundle, a client that pins the CA, a sidecar that cached it) fails until " +
+				"it gets the new one."
+			fix = "If the rotation is not meant to happen on every upgrade, keep the certificate with " +
+				"`lookup` like any generated value, or let cert-manager issue it. If it is on purpose, " +
+				"make sure every consumer is updated in the same upgrade."
+		}
 		res.Findings = append(res.Findings, Finding{
-			ID:       "HB-UV-001",
-			Title:    "Secrets change on every upgrade, even with the same values",
-			Severity: worstSeverity(regenerated, consumers, stateful),
-			Evidence: describe(regenerated, consumers),
-			Impact: "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
-				"its first start stop matching, and anything encrypted or signed with the old value " +
-				"can no longer be read.",
-			Fix: "Generate the value only when it does not exist yet: read the current Secret with " +
-				"`lookup` and reuse its value, and add `helm.sh/resource-policy: keep`. `lookup` " +
-				"returns nothing under `helm template` (Argo CD), so also support an existingSecret.",
+			ID:        "HB-UV-001",
+			Title:     "Secrets change on every upgrade, even with the same values",
+			Severity:  worstSeverity(regenerated, consumers, stateful),
+			Evidence:  describe(regenerated, consumers),
+			Impact:    impact,
+			Fix:       fix,
 			Reproduce: steps,
 		})
 	}
