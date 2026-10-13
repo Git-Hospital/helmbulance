@@ -102,29 +102,40 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	return withRestarts(res, restarted, installCmd, reuseCmd)
 }
 
-// replacedPods lists the workloads whose pods were replaced, by pod UID, between two readings.
+// replacedPods lists the workloads that rolled out a new pod template between two readings: an
+// owner with a pod whose revision it did not have before. Pods without a revision (Jobs, bare
+// pods) and pods that went away without a new revision (finished, scaled down, deleted and
+// recreated from the same template) are not restarts.
 func replacedPods(before, after []kube.Pod) []string {
-	uids := map[string]bool{}
-	for _, p := range after {
-		uids[p.UID] = true
+	had := map[string]bool{}
+	for _, p := range before {
+		if p.Revision != "" {
+			had[workload(p.Owner)+"@"+p.Revision] = true
+		}
 	}
 	seen := map[string]bool{}
 	var owners []string
-	for _, p := range before {
-		owner := p.Owner
-		if strings.HasPrefix(owner, "ReplicaSet/") {
-			// Name the Deployment, not the ReplicaSet: <deployment>-<hash>.
-			if i := strings.LastIndex(owner, "-"); i > len("ReplicaSet/") {
-				owner = "Deployment/" + owner[len("ReplicaSet/"):i]
-			}
+	for _, p := range after {
+		owner := workload(p.Owner)
+		if p.Revision == "" || had[owner+"@"+p.Revision] || seen[owner] {
+			continue
 		}
-		if !uids[p.UID] && !seen[owner] {
-			seen[owner] = true
-			owners = append(owners, owner)
-		}
+		seen[owner] = true
+		owners = append(owners, owner)
 	}
 	sort.Strings(owners)
 	return owners
+}
+
+// workload names a Deployment rather than its ReplicaSet (<deployment>-<hash>), so that two
+// revisions of one Deployment have one name.
+func workload(owner string) string {
+	if strings.HasPrefix(owner, "ReplicaSet/") {
+		if i := strings.LastIndex(owner, "-"); i > len("ReplicaSet/") {
+			return "Deployment/" + owner[len("ReplicaSet/"):i]
+		}
+	}
+	return owner
 }
 
 // withRestarts adds HB-UV-003 when an upgrade that changed nothing replaced pods.
