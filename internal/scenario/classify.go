@@ -31,6 +31,11 @@ func IsEnvironmentError(ctx context.Context, err error) bool {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
+	// A webhook the chart registers before the pod behind it is ready fails with the same network
+	// words, but it is the chart's fault, one of the most common upgrade failures.
+	if strings.Contains(msg, "failed calling webhook") {
+		return false
+	}
 	for _, s := range notTheChart {
 		if strings.Contains(msg, s) {
 			return true
