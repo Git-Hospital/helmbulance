@@ -34,3 +34,11 @@ func TestPodProblemsIgnoresJobAttempts(t *testing.T) {
 		t.Errorf("podProblems = %q, want none", got)
 	}
 }
+
+func TestNewlyFailed(t *testing.T) {
+	before := []string{"Job/old: BackoffLimitExceeded"}
+	now := []string{"Job/migrate: BackoffLimitExceeded", "Job/old: BackoffLimitExceeded"}
+	if got := newlyFailed(now, before); !reflect.DeepEqual(got, []string{"Job/migrate: BackoffLimitExceeded"}) {
+		t.Errorf("newlyFailed = %q, want only Job/migrate", got)
+	}
+}

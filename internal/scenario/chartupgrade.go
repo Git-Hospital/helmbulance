@@ -84,6 +84,10 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not read pods", err)
 	}
+	jobsBefore, err := env.Kube.FailedJobs(ctx, ns)
+	if err != nil {
+		return inconclusive(res, "could not read Jobs", err)
+	}
 
 	// Treatment: the version under test.
 	mark = len(env.Runner.Transcript())
@@ -132,7 +136,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		})
 	}
 
-	if unhealthy := unhealthyAfter(ctx, env, podsBefore); len(unhealthy) > 0 {
+	if unhealthy := unhealthyAfter(ctx, env, podsBefore, jobsBefore); len(unhealthy) > 0 {
 		res.Findings = append(res.Findings, Finding{
 			ID:        "HB-CU-003",
 			Title:     "Workloads are not healthy after the upgrade",
@@ -160,7 +164,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 // unhealthyAfter waits for the release to settle and lists pods that are not ready or restarted
 // more than before the upgrade. Pods of a Deployment get a new ReplicaSet on upgrade, so restarts
 // are only compared for owners that keep their name (StatefulSets, DaemonSets).
-func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod) []string {
+func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod, jobsBefore []string) []string {
 	restartsBefore := map[string]int{}
 	for _, p := range before {
 		restartsBefore[p.Owner] += p.Restarts
@@ -172,7 +176,11 @@ func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod) []string {
 		if err != nil {
 			return []string{"could not read pods: " + err.Error()}
 		}
-		problems = podProblems(pods, restartsBefore)
+		jobs, err := env.Kube.FailedJobs(ctx, chartUpgradeNamespace)
+		if err != nil {
+			return []string{"could not read Jobs: " + err.Error()}
+		}
+		problems = append(podProblems(pods, restartsBefore), newlyFailed(jobs, jobsBefore)...)
 		if len(problems) == 0 || time.Now().After(deadline) {
 			return problems
 		}
@@ -204,6 +212,21 @@ func podProblems(pods []kube.Pod, restartsBefore map[string]int) []string {
 	}
 	sort.Strings(problems)
 	return problems
+}
+
+// newlyFailed lists the Jobs in now that had not failed before.
+func newlyFailed(now, before []string) []string {
+	had := map[string]bool{}
+	for _, j := range before {
+		had[j] = true
+	}
+	var out []string
+	for _, j := range now {
+		if !had[j] {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // helmMessage keeps the part of a helm error that explains it, without the command line.

@@ -163,7 +163,11 @@ func unhealthy(ctx context.Context, k *kube.Client, ns string) []string {
 		if err != nil {
 			return []string{"could not read pods: " + err.Error()}
 		}
-		bad := notReady(pods)
+		jobs, err := k.FailedJobs(ctx, ns)
+		if err != nil {
+			return []string{"could not read Jobs: " + err.Error()}
+		}
+		bad := append(notReady(pods), jobs...)
 		if len(bad) == 0 || time.Now().After(deadline) {
 			return bad
 		}
