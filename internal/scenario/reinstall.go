@@ -80,7 +80,9 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	if err := env.Helm.Install(ctx, release, ns, env.Chart, env.Values); err != nil {
 		return s.installFailed(ctx, res, err, concat(repro, transcriptRepro(env, mark)...))
 	}
+	repro = concat(repro, sentinelRepro("write a marker into each volume before the uninstall", "echo marker > /pvc/marker")...)
 	repro = concat(repro, transcriptRepro(env, mark)...)
+	repro = concat(repro, sentinelRepro("read it back after the reinstall", "cat /pvc/marker")...)
 
 	after, err := secrets.snapshot()
 	if err != nil {
@@ -351,4 +353,13 @@ func transcriptRepro(env *Env, mark int) []string {
 		lines = append(lines, reproLine(c.Line))
 	}
 	return lines
+}
+
+// sentinelRepro is the reproduction step for a sentinel: a one-off pod that mounts the claim. The
+// claim is named per volume in the evidence.
+func sentinelRepro(why, cmd string) []string {
+	return []string{
+		"# " + why + " (replace CLAIM with each claim named above):",
+		`kubectl -n ` + reinstallNamespace + ` run marker --rm -i --restart Never --image busybox --overrides '{"spec":{"containers":[{"name":"marker","image":"busybox","command":["sh","-c","` + cmd + `"],"volumeMounts":[{"name":"v","mountPath":"/pvc"}]}],"volumes":[{"name":"v","persistentVolumeClaim":{"claimName":"CLAIM"}}]}}'`,
+	}
 }

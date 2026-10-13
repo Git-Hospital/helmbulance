@@ -89,3 +89,12 @@ func TestReinstallInstallFailed(t *testing.T) {
 		}
 	}
 }
+
+func TestSentinelRepro(t *testing.T) {
+	got := strings.Join(sentinelRepro("write", "echo marker > /pvc/marker"), "\n")
+	for _, want := range []string{"# write", "kubectl -n hb-reinstall run marker", `"claimName":"CLAIM"`, "echo marker > /pvc/marker"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("sentinelRepro does not contain %q:\n%s", want, got)
+		}
+	}
+}
