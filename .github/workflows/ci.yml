@@ -95,39 +95,15 @@ jobs:
 
       - run: go build -o bin/helmbulance ./cmd/helmbulance
 
-      # fixtures.sh writes its logs and reports under mktemp -d; TMPDIR keeps them in one place for
-      # the artifact below.
-      - name: Fixture pairs (test)
+      # fixtures.sh checks the exit code and the finding IDs of every pair: test, scan and matrix. It
+      # writes its logs and reports under mktemp -d; TMPDIR keeps them in one place for the artifact
+      # below.
+      - name: Fixture pairs
         env:
           TMPDIR: ${{ runner.temp }}/fixtures
         run: |
           mkdir -p "$TMPDIR"
           scripts/fixtures.sh | tee "$RUNNER_TEMP/fixtures.txt"
-
-      - name: Fixture pairs (matrix)
-        if: ${{ !cancelled() }}
-        env:
-          OUT: ${{ runner.temp }}/fixtures/matrix
-        run: |
-          mkdir -p "$OUT"
-          failed=0
-          # No pipe around the calls: a piped group runs in a subshell and would lose $failed.
-          run() {
-            local name=$1 want=$2 line
-            shift 2
-            local got=0
-            ./bin/helmbulance matrix "$@" --k8s 1.37 >"$OUT/$name.log" 2>&1 || got=$?
-            if [ "$got" = "$want" ]; then
-              line="ok    $name (exit $got)"
-            else
-              line="FAIL  $name (exit $got, want $want)  log: $OUT/$name.log"
-              failed=1
-            fi
-            echo "$line" | tee -a "$RUNNER_TEMP/fixtures.txt"
-          }
-          run deprecated-api 1 testdata/charts/deprecated-api
-          run current-api    0 testdata/charts/current-api
-          exit "$failed"
 
       - name: Job summary
         if: always()
