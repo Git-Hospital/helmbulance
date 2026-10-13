@@ -59,3 +59,14 @@ func TestStatefulWorkloads(t *testing.T) {
 		t.Errorf("StatefulWorkloads = %v, want %v", got, want)
 	}
 }
+
+func TestPVCs(t *testing.T) {
+	c := fakeKubectl(t, `{"items":[{"metadata":{"name":"data-db-0"}},{"metadata":{"name":"cache"}}]}`)
+	got, err := c.PVCs(t.Context(), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"cache", "data-db-0"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("PVCs = %v, want %v", got, want)
+	}
+}

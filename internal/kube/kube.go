@@ -509,6 +509,30 @@ func (c *Client) LastLogLine(ctx context.Context, ns, name string) (string, erro
 	return strings.TrimSpace(string(out)), err
 }
 
+// PVCs returns the names of the PersistentVolumeClaims in ns, sorted.
+func (c *Client) PVCs(ctx context.Context, ns string) ([]string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pvc", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse pvcs: %w", err)
+	}
+	var names []string
+	for _, item := range list.Items {
+		names = append(names, item.Metadata.Name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // DeletePod removes a pod without waiting for it to go.
 func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
 	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "delete", "pod", name, "--ignore-not-found", "--wait=false")
