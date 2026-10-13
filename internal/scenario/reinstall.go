@@ -61,6 +61,15 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not write the sentinels", err)
 	}
+	// Control: read every sentinel back before anything changes, so a read path that does not work
+	// cannot later look like lost data.
+	if err := s.readSentinels(ctx, env, ns, volumes); err != nil {
+		return inconclusive(res, "could not read the sentinels back before the uninstall", err)
+	}
+	if lost := append(claimsIn(volumes, "missing"), claimsIn(volumes, "replaced")...); len(lost) > 0 {
+		return inconclusive(res, "a sentinel did not read back before the uninstall",
+			fmt.Errorf("check %s: something rewrites the volume while the release runs", strings.Join(lost, ", ")))
+	}
 
 	mark = len(env.Runner.Transcript())
 	if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
@@ -89,6 +98,10 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	changes, added := splitAdded(oracle.Diff(before, after))
 	changes, rotated := splitExpected(changes, env.ExpectedRotation)
+	if unknown := append(claimsIn(volumes, "unwritable"), claimsIn(volumes, "unbound")...); len(unknown) > 0 && len(changes) > 0 {
+		return inconclusive(res, "Secrets changed, and no sentinel could be written to "+strings.Join(unknown, ", "),
+			fmt.Errorf("without one it is unknown whether those volumes kept data written with the old values"))
+	}
 	res.Findings = reinstallFindings(volumes, changes, consumers, stateful, repro)
 
 	if len(res.Findings) > 0 {
@@ -102,6 +115,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 		note("keys added by the reinstall, not a finding", describe(added, consumers)),
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
 		note("no sentinel could be written to", claimsIn(volumes, "unwritable")),
+		note("not bound, so not checked", claimsIn(volumes, "unbound")),
 		secrets.notComparedNote())
 	return res
 }
@@ -114,6 +128,11 @@ func (Reinstall) writeSentinels(ctx context.Context, env *Env, ns string) ([]vol
 	}
 	var volumes []volume
 	for i, claim := range claims {
+		if claim.Phase != "Bound" {
+			// Mounting an unbound claim would bind it: the check would change what it measures.
+			volumes = append(volumes, volume{claim: claim.Name, uid: claim.UID, state: "unbound"})
+			continue
+		}
 		value, err := newSentinel()
 		if err != nil {
 			return nil, err
@@ -146,7 +165,7 @@ func (Reinstall) readSentinels(ctx context.Context, env *Env, ns string, volumes
 		v := &volumes[i]
 		uid, present := uids[v.claim]
 		switch {
-		case v.state == "unwritable":
+		case v.state == "unwritable" || v.state == "unbound":
 			continue
 		case !present:
 			v.state = "deleted"
