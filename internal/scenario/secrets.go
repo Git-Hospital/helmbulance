@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -149,4 +150,27 @@ func noKeys(snapshots ...oracle.SecretSnapshot) bool {
 		}
 	}
 	return true
+}
+
+// splitExpected separates the changes that match an --expected-rotation pattern ("secret/key",
+// with path.Match globs such as "*-webhook-tls/*"), so rotations the chart makes on purpose are
+// named in the summary instead of becoming findings.
+func splitExpected(changes []oracle.Change, patterns []string) (rest, expected []oracle.Change) {
+	for _, c := range changes {
+		if matchesAny(c.Ref, patterns) {
+			expected = append(expected, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	return rest, expected
+}
+
+func matchesAny(ref string, patterns []string) bool {
+	for _, p := range patterns {
+		if ok, _ := path.Match(p, ref); ok {
+			return true
+		}
+	}
+	return false
 }
