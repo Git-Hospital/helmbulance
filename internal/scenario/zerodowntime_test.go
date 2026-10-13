@@ -13,12 +13,14 @@ import (
 	"github.com/egezamb/helmbulance/internal/kube"
 )
 
-// fakeKubectl answers the calls zero-downtime makes. "logs <pod>" prints $FAKE_LOGS/<pod>.
+// fakeKubectl answers the calls zero-downtime makes. "logs <pod>" prints $FAKE_LOGS/<pod>, and
+// "logs --tail=1 <pod>", read just before the operation, prints the last line of $FAKE_LOGS/<pod>.before.
 const fakeKubectl = `#!/bin/sh
 for a in "$@"; do last="$a"; done
 case "$*" in
   *"get services"*) echo '{"items":[{"metadata":{"name":"web"},"spec":{"selector":{"app":"web"},"ports":[{"name":"http","port":80}]}}]}' ;;
   *"get deployments,statefulsets"*) echo '{"items":[]}' ;;
+  *" logs --tail=1 "*) [ -f "$FAKE_LOGS/$last.before" ] && tail -n 1 "$FAKE_LOGS/$last.before" ;;
   *" logs "*) cat "$FAKE_LOGS/$last" ;;
 esac
 exit 0
@@ -79,19 +81,59 @@ func TestZeroDowntimeTwoFailedControls(t *testing.T) {
 func TestZeroDowntimeCountsFailuresDuringTheOperation(t *testing.T) {
 	res := runZeroDowntime(t, map[string]string{
 		"hb-traffic-control": "100 ok\n",
-		"hb-traffic":         "9999999998 ok\n9999999999 fail\n",
+		"hb-traffic.before":  "300 ok\n",
+		"hb-traffic":         "300 ok\n301 ok\n302 fail\n",
 	})
-	if res.Verdict != Fail || !strings.HasPrefix(res.Summary, "1 of 2 requests failed") {
-		t.Errorf("verdict = %s (%s), want FAIL with 1 of 2", res.Verdict, res.Summary)
+	if res.Verdict != Fail || !strings.HasPrefix(res.Summary, "1 of 3 requests failed") {
+		t.Errorf("verdict = %s (%s), want FAIL with 1 of 3", res.Verdict, res.Summary)
 	}
 }
 
 func TestZeroDowntimeIgnoresFailuresBeforeTheOperation(t *testing.T) {
 	res := runZeroDowntime(t, map[string]string{
 		"hb-traffic-control": "100 ok\n",
-		"hb-traffic":         "300 fail\n9999999999 ok\n",
+		"hb-traffic.before":  "298 fail\n299 ok\n",
+		"hb-traffic":         "298 fail\n299 ok\n300 ok\n301 ok\n",
 	})
 	if res.Verdict != Pass {
 		t.Errorf("verdict = %s (%s), want PASS", res.Verdict, res.Summary)
+	}
+}
+
+// The window comes from the traffic pod's clock, so a node clock far behind this machine's does
+// not hide the failures. Timestamps near 40 would all be "before" this machine's clock.
+func TestZeroDowntimeUsesThePodsClock(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "40 ok\n",
+		"hb-traffic":         "40 ok\n41 fail\n42 fail\n43 ok\n",
+	})
+	if res.Verdict != Fail || !strings.HasPrefix(res.Summary, "2 of 4 requests failed") {
+		t.Errorf("verdict = %s (%s), want FAIL with 2 of 4", res.Verdict, res.Summary)
+	}
+}
+
+func TestZeroDowntimeEmptyWindowIsInconclusive(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "500 ok\n",
+		"hb-traffic":         "400 ok\n",
+	})
+	if res.Verdict != Inconclusive || !strings.HasPrefix(res.Summary, "no requests were sent during") {
+		t.Errorf("verdict = %s (%s), want INCONCLUSIVE for an empty window", res.Verdict, res.Summary)
+	}
+}
+
+func TestZeroDowntimeReportsANoisyFirstControl(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control":   "100 fail\n100 fail\n101 ok\n",
+		"hb-traffic-control-2": "200 ok\n",
+		"hb-traffic":           "300 ok\n301 fail\n",
+	})
+	if res.Verdict != Fail || len(res.Findings) != 1 {
+		t.Fatalf("verdict = %s (%s), want FAIL", res.Verdict, res.Summary)
+	}
+	if ev := strings.Join(res.Findings[0].Evidence, " "); !strings.Contains(ev, "The first control lost 2 of 3 requests") {
+		t.Errorf("evidence %q does not mention the noisy first control", ev)
 	}
 }

@@ -80,8 +80,8 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	url := "http://" + target + path
 
-	var control oracle.TrafficStats
-	for _, pod := range []string{"hb-traffic-control", "hb-traffic-control-2"} {
+	var control, firstControl oracle.TrafficStats
+	for i, pod := range []string{"hb-traffic-control", "hb-traffic-control-2"} {
 		log, err := s.measure(ctx, env, ns, pod, url, func() error {
 			return sleep(ctx, controlDuration)
 		})
@@ -91,6 +91,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		control = oracle.ParseTraffic(log)
 		if control.Total == 0 {
 			return inconclusive(res, "the control traffic sent no requests", fmt.Errorf("check that %s can be pulled", trafficImage))
+		}
+		if i == 0 {
+			firstControl = control
 		}
 		if control.Failed == 0 {
 			break
@@ -124,9 +127,14 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		if err := sleep(ctx, trafficLead); err != nil {
 			return err
 		}
-		// The traffic pod stamps its requests with the node's clock. A second of margin covers a
-		// node clock slightly behind this machine's.
-		actStart = time.Now().Unix() - 1
+		// The traffic pod stamps its requests with the node's clock, which can differ from this
+		// machine's (a VM after sleep, a remote DOCKER_HOST). So the operation starts at the pod's
+		// last request, in its own clock. Without one, every request counts.
+		last, err := env.Kube.LastLogLine(ctx, ns, "hb-traffic")
+		if err != nil {
+			return err
+		}
+		actStart, _ = oracle.TrafficSecond(last)
 		actErr = act()
 		return sleep(ctx, trafficTail)
 	})
@@ -136,6 +144,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	treatment := oracle.ParseTrafficSince(log, actStart)
 	if actErr != nil {
 		return inconclusive(res, operation+" failed", actErr)
+	}
+	if treatment.Total == 0 {
+		return inconclusive(res, "no requests were sent during "+operation, fmt.Errorf("the traffic pod logged nothing after the operation started"))
 	}
 
 	if treatment.Failed == 0 {
@@ -149,6 +160,10 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		fmt.Sprintf("%d of %d requests to `%s` failed (%.1f%%) during %s; none failed in the %s control.",
 			treatment.Failed, treatment.Total, url, treatment.FailedPercent(), operation, controlDuration),
 		"Longest outage: " + outageText(treatment.LongestOutage) + ".",
+	}
+	if firstControl.Failed > 0 {
+		evidence = append(evidence, fmt.Sprintf("The first control lost %d of %d requests with nothing changing and was repeated; the cluster itself dropped requests before the operation.",
+			firstControl.Failed, firstControl.Total))
 	}
 	res.Findings = append(res.Findings, Finding{
 		ID:       "HB-ZD-001",
