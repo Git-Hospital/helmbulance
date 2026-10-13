@@ -90,7 +90,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	mark = len(env.Runner.Transcript())
 	// --reset-values: without any values flag Helm would reuse the install values, --set included.
 	if err := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{Files: env.Values.Files}, "--reset-values"); err != nil {
-		return inconclusive(res, "the upgrade with the values files failed", err)
+		return withRestarts(inconclusive(res, "the upgrade with the values files failed", err), restarted, installCmd, reuseCmd)
 	}
 	filesCmd := env.Runner.Transcript()[mark:]
 	filesOnly, err := snapshot()
@@ -138,10 +138,15 @@ func workload(owner string) string {
 	return owner
 }
 
-// withRestarts adds HB-UV-003 when an upgrade that changed nothing replaced pods.
+// withRestarts adds HB-UV-003 when an upgrade that changed nothing replaced pods. The control
+// showed it, so it stands even when the treatment could not run; the summary then says why.
 func withRestarts(res Result, restarted []string, installCmd, reuseCmd []execx.Command) Result {
-	if len(restarted) == 0 || res.Verdict == Inconclusive {
+	if len(restarted) == 0 {
 		return res
+	}
+	incomplete := ""
+	if res.Verdict == Inconclusive {
+		incomplete = "; the rest did not run: " + res.Summary
 	}
 	var repro []string
 	for _, c := range installCmd {
@@ -164,7 +169,7 @@ func withRestarts(res Result, restarted []string, installCmd, reuseCmd []execx.C
 		Reproduce: concat(repro, reproLine(reuseCmd[0].Line)),
 	})
 	res.Verdict = Fail
-	res.Summary = fmt.Sprintf("%d problem(s) across upgrades", len(res.Findings))
+	res.Summary = fmt.Sprintf("%d problem(s) across upgrades", len(res.Findings)) + incomplete
 	return res
 }
 
