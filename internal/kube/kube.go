@@ -429,6 +429,12 @@ func (c *Client) Logs(ctx context.Context, ns, name string) (string, error) {
 	return string(out), err
 }
 
+// LastLogLine returns the last line a pod has written so far.
+func (c *Client) LastLogLine(ctx context.Context, ns, name string) (string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "logs", "--tail=1", name)
+	return strings.TrimSpace(string(out)), err
+}
+
 // DeletePod removes a pod without waiting for it to go.
 func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
 	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "delete", "pod", name, "--ignore-not-found", "--wait=false")

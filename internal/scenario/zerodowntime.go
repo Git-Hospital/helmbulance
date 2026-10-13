@@ -16,17 +16,22 @@ import (
 //
 // A small pod in the release namespace sends one HTTP request every 200 ms to the release's
 // Service, from inside the cluster, as other workloads would. Control: 20 s with no change, which
-// must be clean. Treatment: the same traffic while the release is upgraded from --from-version, or,
+// must be clean, and is run once more if it is not, so one slow request on a busy machine does not
+// end the run. Treatment: the same traffic while the release is upgraded from --from-version, or,
 // without it, while every Deployment and StatefulSet is restarted (what any upgrade that changes
-// the pods does). Failed requests in the treatment are the downtime users see.
+// the pods does). Failed requests from the start of the operation on are the downtime users see.
 type ZeroDowntime struct{}
 
 const (
 	zeroDowntimeNamespace = "hb-zero-downtime"
 	trafficImage          = "busybox:1.36.1"
-	controlDuration       = 20 * time.Second
-	trafficLead           = 5 * time.Second
-	trafficTail           = 10 * time.Second
+)
+
+// Variables, not constants, so tests can shorten them.
+var (
+	controlDuration = 20 * time.Second
+	trafficLead     = 5 * time.Second
+	trafficTail     = 10 * time.Second
 )
 
 func (ZeroDowntime) Name() string { return "zero-downtime" }
@@ -40,6 +45,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	const release, ns = "hb-zd", zeroDowntimeNamespace
 	defer func() {
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control")
+		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control-2")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic")
 		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
 			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
@@ -79,17 +85,30 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	url := "http://" + target + path
 
-	control, err := s.measure(ctx, env, ns, "hb-traffic-control", url, func() error {
-		return sleep(ctx, controlDuration)
-	})
-	if err != nil {
-		return inconclusive(res, "the control traffic could not run", err)
-	}
-	if control.Total == 0 {
-		return inconclusive(res, "the control traffic sent no requests", fmt.Errorf("check that %s can be pulled", trafficImage))
+	var control, firstControl oracle.TrafficStats
+	for i, pod := range []string{"hb-traffic-control", "hb-traffic-control-2"} {
+		log, err := s.measure(ctx, env, ns, pod, url, func() error {
+			return sleep(ctx, controlDuration)
+		})
+		if err != nil {
+			return inconclusive(res, "the control traffic could not run", err)
+		}
+		control = oracle.ParseTraffic(log)
+		if control.Total == 0 {
+			return inconclusive(res, "the control traffic sent no requests", fmt.Errorf("check that %s can be pulled", trafficImage))
+		}
+		if i == 0 {
+			firstControl = control
+		}
+		if control.Failed == 0 {
+			break
+		}
+		fmt.Fprintf(env.Log, "  control: %d of %d requests failed (at second %s); running it once more\n",
+			control.Failed, control.Total, seconds(control.FailedAt))
 	}
 	if control.Failed > 0 {
-		return inconclusive(res, fmt.Sprintf("%d of %d requests to %s failed with nothing changing", control.Failed, control.Total, url),
+		return inconclusive(res, fmt.Sprintf("%d of %d requests to %s failed with nothing changing, in two controls (the second failed at second %s)",
+			control.Failed, control.Total, url, seconds(control.FailedAt)),
 			fmt.Errorf("set --traffic-path to a URL that answers 2xx, or check NetworkPolicies that block the traffic pod"))
 	}
 
@@ -108,18 +127,31 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		act = func() error { return env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values) }
 	}
 	var actErr error
-	treatment, err := s.measure(ctx, env, ns, "hb-traffic", url, func() error {
+	var actStart int64
+	log, err := s.measure(ctx, env, ns, "hb-traffic", url, func() error {
 		if err := sleep(ctx, trafficLead); err != nil {
 			return err
 		}
+		// The traffic pod stamps its requests with the node's clock, which can differ from this
+		// machine's (a VM after sleep, a remote DOCKER_HOST). So the operation starts at the pod's
+		// last request, in its own clock. Without one, every request counts.
+		last, err := env.Kube.LastLogLine(ctx, ns, "hb-traffic")
+		if err != nil {
+			return err
+		}
+		actStart, _ = oracle.TrafficSecond(last)
 		actErr = act()
 		return sleep(ctx, trafficTail)
 	})
 	if err != nil {
 		return inconclusive(res, "the traffic during the operation could not run", err)
 	}
+	treatment := oracle.ParseTrafficSince(log, actStart)
 	if actErr != nil {
 		return inconclusive(res, operation+" failed", actErr)
+	}
+	if treatment.Total == 0 {
+		return inconclusive(res, "no requests were sent during "+operation, fmt.Errorf("the traffic pod logged nothing after the operation started"))
 	}
 
 	if treatment.Failed == 0 {
@@ -133,6 +165,10 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		fmt.Sprintf("%d of %d requests to `%s` failed (%.1f%%) during %s; none failed in the %s control.",
 			treatment.Failed, treatment.Total, url, treatment.FailedPercent(), operation, controlDuration),
 		"Longest outage: " + outageText(treatment.LongestOutage) + ".",
+	}
+	if firstControl.Failed > 0 {
+		evidence = append(evidence, fmt.Sprintf("The first control lost %d of %d requests with nothing changing and was repeated; the cluster itself dropped requests before the operation.",
+			firstControl.Failed, firstControl.Total))
 	}
 	res.Findings = append(res.Findings, Finding{
 		ID:       "HB-ZD-001",
@@ -222,25 +258,25 @@ func leavesThePods(s kube.Service) string {
 	return ""
 }
 
-// measure runs a traffic pod for as long as during() takes and returns what it saw.
-func (ZeroDowntime) measure(ctx context.Context, env *Env, ns, pod, url string, during func() error) (oracle.TrafficStats, error) {
+// measure runs a traffic pod for as long as during() takes and returns its log.
+func (ZeroDowntime) measure(ctx context.Context, env *Env, ns, pod, url string, during func() error) (string, error) {
 	script := "URL=" + shellQuote(url) + "; " + oracle.TrafficScript
 	labels := map[string]string{"app.kubernetes.io/name": "helmbulance-traffic"}
 	if err := env.Kube.StartPod(ctx, ns, pod, trafficImage, script, labels); err != nil {
-		return oracle.TrafficStats{}, err
+		return "", err
 	}
 	if err := env.Kube.WaitPodRunning(ctx, ns, pod, "3m"); err != nil {
-		return oracle.TrafficStats{}, err
+		return "", err
 	}
 	if err := during(); err != nil {
-		return oracle.TrafficStats{}, err
+		return "", err
 	}
 	log, err := env.Kube.Logs(ctx, ns, pod)
 	if err != nil {
-		return oracle.TrafficStats{}, err
+		return "", err
 	}
 	_ = env.Kube.DeletePod(ctx, ns, pod)
-	return oracle.ParseTraffic(log), nil
+	return log, nil
 }
 
 // causes lists settings of the release's workloads that explain a gap during a rollout.
@@ -262,6 +298,15 @@ func causes(workloads []kube.Workload) []string {
 		}
 	}
 	return out
+}
+
+// seconds lists failure times for a summary: "0, 1, 14".
+func seconds(at []int64) string {
+	out := make([]string, len(at))
+	for i, t := range at {
+		out[i] = strconv.FormatInt(t, 10)
+	}
+	return strings.Join(out, ", ")
 }
 
 func sleep(ctx context.Context, d time.Duration) error {
