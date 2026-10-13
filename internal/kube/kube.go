@@ -575,6 +575,61 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script,
 	return string(out), err
 }
 
+// ClaimUsers maps each of the given claims to the workloads (kind/name) that mount it: through a
+// persistentVolumeClaim volume, or as a StatefulSet's claim from a volume claim template
+// (<template>-<statefulset>-<ordinal>).
+func (c *Client) ClaimUsers(ctx context.Context, ns string, claims []string) (map[string][]string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
+		"get", "deployments,statefulsets,daemonsets", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				VolumeClaimTemplates []struct {
+					Metadata struct {
+						Name string `json:"name"`
+					} `json:"metadata"`
+				} `json:"volumeClaimTemplates"`
+				Template struct {
+					Spec struct {
+						Volumes []struct {
+							PersistentVolumeClaim struct {
+								ClaimName string `json:"claimName"`
+							} `json:"persistentVolumeClaim"`
+						} `json:"volumes"`
+					} `json:"spec"`
+				} `json:"template"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse workloads: %w", err)
+	}
+	users := map[string][]string{}
+	for _, item := range list.Items {
+		w := item.Kind + "/" + item.Metadata.Name
+		for _, claim := range claims {
+			uses := false
+			for _, v := range item.Spec.Template.Spec.Volumes {
+				uses = uses || v.PersistentVolumeClaim.ClaimName == claim
+			}
+			for _, t := range item.Spec.VolumeClaimTemplates {
+				uses = uses || strings.HasPrefix(claim, t.Metadata.Name+"-"+item.Metadata.Name+"-")
+			}
+			if uses {
+				users[claim] = append(users[claim], w)
+			}
+		}
+	}
+	return users, nil
+}
+
 // DeletePod removes a pod without waiting for it to go.
 func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
 	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "delete", "pod", name, "--ignore-not-found", "--wait=false")

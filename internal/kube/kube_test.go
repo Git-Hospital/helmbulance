@@ -96,3 +96,19 @@ func TestRunWithPVC(t *testing.T) {
 		}
 	}
 }
+
+func TestClaimUsers(t *testing.T) {
+	c := fakeKubectl(t, `{"items":[
+		{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"volumeClaimTemplates":[{"metadata":{"name":"data"}}]}},
+		{"kind":"Deployment","metadata":{"name":"app"},"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}}},
+		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"volumes":[{"name":"c","emptyDir":{}}]}}}}
+	]}`)
+	got, err := c.ClaimUsers(t.Context(), "ns", []string{"data-db-0", "app-data", "orphan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"data-db-0": {"StatefulSet/db"}, "app-data": {"Deployment/app"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ClaimUsers = %v, want %v", got, want)
+	}
+}
