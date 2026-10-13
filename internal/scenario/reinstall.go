@@ -35,10 +35,12 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	res.Scenario = s.Name()
 	const release, ns = "hb-reinstall", reinstallNamespace
 	defer func() {
-		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
+		// Clean up even after a cancel, so a reused cluster does not keep the release (#11).
+		cleanup := context.WithoutCancel(ctx)
+		if err := env.Helm.Uninstall(cleanup, release, ns); err != nil {
 			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
 		}
-		if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
+		if err := env.Kube.DeleteNamespace(cleanup, ns); err != nil {
 			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
 		}
 	}()
