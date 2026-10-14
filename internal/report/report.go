@@ -84,7 +84,7 @@ func (r *Report) Markdown() string {
 			fmt.Fprintf(&b, "**Severity:** %s · **Scenario:** `%s`\n\n", f.Severity, res.Scenario)
 			b.WriteString("**Evidence**\n\n")
 			for _, e := range f.Evidence {
-				fmt.Fprintf(&b, "- %s\n", e)
+				fmt.Fprintf(&b, "- %s\n", escape(e))
 			}
 			fmt.Fprintf(&b, "\n**Impact.** %s\n\n**Fix.** %s\n\n**Reproduce**\n\n```sh\n", f.Impact, f.Fix)
 			for _, c := range f.Reproduce {
