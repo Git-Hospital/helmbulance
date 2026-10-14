@@ -108,7 +108,7 @@ func test(args []string) int {
 		return exitError
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := interruptContext()
 	defer stop()
 
 	selected, err := pick(only)
@@ -316,7 +316,7 @@ func matrixCmd(args []string) int {
 	if refuseRemote(*allowRemote, chart) {
 		return exitError
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := interruptContext()
 	defer stop()
 
 	runner := execx.NewSandboxRunner()
@@ -386,7 +386,7 @@ func scanCmd(args []string) int {
 	if refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := interruptContext()
 	defer stop()
 	runner := execx.NewSandboxRunner()
 	runner.Secrets = execx.SetValues(sets)
@@ -415,4 +415,23 @@ func scanCmd(args []string) int {
 		return exitFindings
 	}
 	return exitClean
+}
+
+// interruptContext is cancelled by the first Ctrl-C, so the run stops and cleans up. Cleanup can
+// take minutes, so a second Ctrl-C quits at once, leaving the cluster as it is.
+func interruptContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	go func() {
+		defer signal.Stop(sig)
+		select {
+		case <-sig:
+			signal.Stop(sig)
+			fmt.Fprintln(os.Stderr, "\nInterrupted: cleaning up. Press Ctrl-C again to quit at once.")
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
