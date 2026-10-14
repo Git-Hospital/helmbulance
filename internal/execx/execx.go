@@ -6,7 +6,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"os/exec"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +28,9 @@ type Runner struct {
 	// Secrets are values (from --set) that are replaced with *** in error text, since helm can
 	// quote them in schema errors and chart fail messages.
 	Secrets []string
+	// Paths are local paths replaced in the transcript and in error text, as path → placeholder:
+	// $HOME holds the user name, and the state dir holds the sandbox kubeconfig.
+	Paths map[string]string
 
 	mu         sync.Mutex
 	transcript []Command
@@ -47,7 +53,7 @@ func (r *Runner) RunCapture(ctx context.Context, name string, args ...string) ([
 
 	start := time.Now()
 	err := cmd.Run()
-	rec := Command{Line: Mask(name, args), Duration: time.Since(start).Round(time.Millisecond)}
+	rec := Command{Line: r.HidePaths(Mask(name, args)), Duration: time.Since(start).Round(time.Millisecond)}
 	if cmd.ProcessState != nil {
 		rec.ExitCode = cmd.ProcessState.ExitCode()
 	}
@@ -76,7 +82,22 @@ func (r *Runner) errorText(stderr string) string {
 
 // hide removes the secrets and URL credentials from text that goes into a report.
 func (r *Runner) hide(text string) string {
-	return RedactURLs(Redact(text, r.Secrets))
+	return r.HidePaths(RedactURLs(Redact(text, r.Secrets)))
+}
+
+// HidePaths replaces r.Paths, longest first. A path counts only when it ends there or a '/'
+// follows, so /home/eger is not taken for /home/ege.
+func (r *Runner) HidePaths(text string) string {
+	paths := slices.Collect(maps.Keys(r.Paths))
+	slices.SortFunc(paths, func(a, b string) int { return len(b) - len(a) })
+	for _, p := range paths {
+		if p == "" || p == "/" {
+			continue
+		}
+		re := regexp.MustCompile(regexp.QuoteMeta(p) + `(/|[^\w.-]|$)`)
+		text = re.ReplaceAllString(text, strings.ReplaceAll(r.Paths[p], "$", "$$")+"${1}")
+	}
+	return text
 }
 
 // Transcript returns the commands run so far.
