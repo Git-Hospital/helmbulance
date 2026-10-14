@@ -137,3 +137,9 @@ func TestZeroDowntimeReportsANoisyFirstControl(t *testing.T) {
 		t.Errorf("evidence %q does not mention the noisy first control", ev)
 	}
 }
+
+func TestTrafficImageIsPinnedByDigest(t *testing.T) {
+	if _, digest, ok := strings.Cut(trafficImage, "@sha256:"); !ok || len(digest) != 64 {
+		t.Errorf("trafficImage = %q, want it pinned by a sha256 digest", trafficImage)
+	}
+}
