@@ -82,9 +82,9 @@ Requires Go, Docker, kind and helm.
 ```sh
 go build -o bin/helmbulance ./cmd/helmbulance
 ./bin/helmbulance test ./path/to/chart -f values.yaml --set some.secret=value
-./bin/helmbulance test ./path/to/chart --scenario chart-upgrade --from-version 1.2.3
+./bin/helmbulance test ./path/to/chart --scenario chart-upgrade --from ./old/chart --from-version 1.2.3
 ./bin/helmbulance matrix ./path/to/chart -f values.yaml --k8s 1.34,1.37
-./bin/helmbulance scan ./path/to/chart --from-version 1.2.3     # no cluster needed
+./bin/helmbulance scan ./path/to/chart --from ./old/chart --from-version 1.2.3     # no cluster needed
 ```
 
 The fixtures in `testdata/charts/` show what it finds: each defect has a fixed twin that must pass.

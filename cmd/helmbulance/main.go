@@ -84,7 +84,7 @@ func test(args []string) int {
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install or upgrade")
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
 	from := fs.String("from", "", "chart to upgrade from in chart-upgrade (repo/chart, oci://… or a path); defaults to the chart under test")
-	fromVersion := fs.String("from-version", "", "chart version to upgrade from; enables the chart-upgrade scenario")
+	fromVersion := fs.String("from-version", "", "chart version to upgrade from; enables the chart-upgrade scenario. A local chart also needs --from")
 	trafficTarget := fs.String("traffic-target", "", "Service and port that zero-downtime sends requests to (service:port); default: the most HTTP-like Service port")
 	trafficPath := fs.String("traffic-path", "/", "path that zero-downtime requests; it must answer 2xx")
 	allowRemote := fs.Bool("allow-remote", false, "run a chart from a repository, OCI registry or URL; it runs without the third-party protections, which arrive in v0.3")
@@ -104,7 +104,7 @@ func test(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart, *from) {
+	if refuseRemote(*allowRemote, chart, *from) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 
@@ -242,6 +242,43 @@ func refuseRemote(allow bool, refs ...string) bool {
 	return false
 }
 
+// refuseFromVersion stops a run whose --from-version cannot take effect. helm ignores --version for
+// a chart on disk, so without --from a local chart would be upgraded to itself and the upgrade
+// would pass without testing anything, and a local --from installs the version in its Chart.yaml
+// whatever --from-version says. versionOf reads that version.
+func refuseFromVersion(chart, from, fromVersion string, versionOf func(string) (string, error)) bool {
+	if fromVersion == "" {
+		return false
+	}
+	if from != "" {
+		if !helm.IsLocal(from) {
+			return false
+		}
+		v, err := versionOf(from)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "could not read the version of --from %s: %v\n", from, err)
+			return true
+		}
+		// helm accepts a leading v on --version, so v1.0.0 and 1.0.0 name the same chart.
+		if strings.TrimPrefix(v, "v") != strings.TrimPrefix(fromVersion, "v") {
+			fmt.Fprintf(os.Stderr, "--from %s is version %s, not --from-version %s: helm ignores --version for a path.\n", from, v, fromVersion)
+			return true
+		}
+		return false
+	}
+	if !helm.IsLocal(chart) {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "--from-version %s needs --from with a local chart: helm ignores --version for a path, so %s would be upgraded to itself.\nGive the earlier chart, e.g. --from ./old-chart or --from repo/chart.\n", fromVersion, chart)
+	return true
+}
+
+// localVersion reads the version of a chart on disk, outside the run's transcript.
+func localVersion(ref string) (string, error) {
+	h := &helm.Client{Runner: execx.NewSandboxRunner(), Timeout: time.Minute}
+	return h.ChartVersion(context.Background(), ref)
+}
+
 func without(list []scenario.Scenario, name string) []scenario.Scenario {
 	var out []scenario.Scenario
 	for _, s := range list {
@@ -329,7 +366,7 @@ func scanCmd(args []string) int {
 	fs.Var(&files, "f", "values file (repeatable)")
 	fs.Var(&sets, "set", "value, key=value (repeatable). Values of four or more characters are hidden in reports.")
 	from := fs.String("from", "", "chart to compare against for immutable fields (repo/chart, oci://… or a path); defaults to the chart")
-	fromVersion := fs.String("from-version", "", "version users upgrade from; enables the immutable-field check")
+	fromVersion := fs.String("from-version", "", "version users upgrade from; enables the immutable-field check. A local chart also needs --from")
 	strict := fs.Bool("strict", false, "exit 1 when there are candidates")
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
 	var chart string
@@ -344,6 +381,9 @@ func scanCmd(args []string) int {
 	}
 	if chart == "" {
 		usage()
+		return exitError
+	}
+	if refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

@@ -17,6 +17,9 @@ type TrafficStats struct {
 	// LongestOutage is the longest stretch of consecutive failures, from the first failed request
 	// to the next successful one, at one-second resolution.
 	LongestOutage time.Duration
+	// FailedAt is the second of each failure, counted from the first request, so a report can say
+	// whether the failures came at the start or later.
+	FailedAt []int64
 }
 
 // FailedPercent is the share of failed requests.
@@ -29,7 +32,23 @@ func (s TrafficStats) FailedPercent() float64 {
 
 // ParseTraffic reads the traffic pod's log. Lines it does not recognise are ignored.
 func ParseTraffic(log string) TrafficStats {
+	return ParseTrafficSince(log, 0)
+}
+
+// TrafficSecond returns the unix second of a traffic log line, in the traffic pod's own clock.
+func TrafficSecond(line string) (int64, bool) {
+	fields := strings.Fields(line)
+	if len(fields) != 2 {
+		return 0, false
+	}
+	t, err := strconv.ParseInt(fields[0], 10, 64)
+	return t, err == nil
+}
+
+// ParseTrafficSince is ParseTraffic counting only requests sent at or after since (unix seconds).
+func ParseTrafficSince(log string, since int64) TrafficStats {
 	var s TrafficStats
+	var first int64 = -1
 	var outageStart int64 = -1
 	var lastFail int64
 	closeOutage := func(end int64) {
@@ -47,8 +66,11 @@ func ParseTraffic(log string) TrafficStats {
 			continue
 		}
 		t, err := strconv.ParseInt(fields[0], 10, 64)
-		if err != nil {
+		if err != nil || t < since {
 			continue
+		}
+		if first < 0 {
+			first = t
 		}
 		switch fields[1] {
 		case "ok":
@@ -57,6 +79,7 @@ func ParseTraffic(log string) TrafficStats {
 		case "fail":
 			s.Total++
 			s.Failed++
+			s.FailedAt = append(s.FailedAt, t-first)
 			lastFail = t
 			if outageStart < 0 {
 				outageStart = t
