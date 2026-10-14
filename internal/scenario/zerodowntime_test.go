@@ -145,3 +145,19 @@ func TestZeroDowntimeReportsANoisyFirstControl(t *testing.T) {
 	}
 }
 
+// A --traffic-path can carry a token; the summary and evidence go into shared reports.
+func TestZeroDowntimeHidesTheTrafficPathQuery(t *testing.T) {
+	for name, logs := range map[string]map[string]string{
+		"failed controls":  {"hb-traffic-control": "100 fail\n", "hb-traffic-control-2": "200 fail\n"},
+		"failed treatment": {"hb-traffic-control": "100 ok\n", "hb-traffic": "300 ok\n301 fail\n"},
+	} {
+		res := runZeroDowntimePath(t, logs, "/health?token=hunter2")
+		text := res.Summary
+		for _, f := range res.Findings {
+			text += strings.Join(f.Evidence, " ") + strings.Join(f.Reproduce, " ")
+		}
+		if !strings.Contains(text, "token=***") || strings.Contains(text, "hunter2") {
+			t.Errorf("%s: want the token hidden, got: %s", name, text)
+		}
+	}
+}
