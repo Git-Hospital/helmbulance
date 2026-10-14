@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"time"
 
@@ -122,6 +123,7 @@ func test(args []string) int {
 
 	runner := execx.NewSandboxRunner()
 	runner.Secrets = execx.SetValues(sets)
+	runner.Paths = localPaths()
 	started := time.Now()
 
 	var c *sandbox.Cluster
@@ -169,8 +171,8 @@ func test(args []string) int {
 
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
-		Chart:         chart,
-		ValuesFiles:   files,
+		Chart:         runner.HidePaths(chart),
+		ValuesFiles:   hidePaths(runner, files),
 		SetKeys:       execx.SetKeys(sets),
 		HelmVersion:   h.Version(ctx),
 		Cluster:       c.Name,
@@ -321,11 +323,12 @@ func matrixCmd(args []string) int {
 
 	runner := execx.NewSandboxRunner()
 	runner.Secrets = execx.SetValues(sets)
+	runner.Paths = localPaths()
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
-		Chart:         chart,
-		ValuesFiles:   files,
+		Chart:         runner.HidePaths(chart),
+		ValuesFiles:   hidePaths(runner, files),
 		SetKeys:       execx.SetKeys(sets),
 		HelmVersion:   (&helm.Client{Runner: runner}).Version(ctx),
 		Cluster:       "one per Kubernetes version",
@@ -390,11 +393,12 @@ func scanCmd(args []string) int {
 	defer stop()
 	runner := execx.NewSandboxRunner()
 	runner.Secrets = execx.SetValues(sets)
+	runner.Paths = localPaths()
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
-		Chart:         chart,
-		ValuesFiles:   files,
+		Chart:         runner.HidePaths(chart),
+		ValuesFiles:   hidePaths(runner, files),
 		SetKeys:       execx.SetKeys(sets),
 		HelmVersion:   (&helm.Client{Runner: runner}).Version(ctx),
 		Cluster:       "none (static scan)",
@@ -415,4 +419,26 @@ func scanCmd(args []string) int {
 		return exitFindings
 	}
 	return exitClean
+}
+
+// localPaths are the paths hidden in reports and transcripts: $HOME, which holds the user name,
+// and the state dir when it is somewhere else.
+func localPaths() map[string]string {
+	paths := map[string]string{}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		paths[home] = "~"
+	}
+	if dir, err := sandbox.StateDir(); err == nil && (home == "" || !strings.HasPrefix(dir+"/", home+"/")) {
+		paths[dir] = "$HELMBULANCE_STATE_DIR"
+	}
+	return paths
+}
+
+func hidePaths(r *execx.Runner, paths []string) []string {
+	out := slices.Clone(paths)
+	for i, p := range out {
+		out[i] = r.HidePaths(p)
+	}
+	return out
 }
