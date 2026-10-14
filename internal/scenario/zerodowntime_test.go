@@ -29,6 +29,12 @@ exit 0
 // runZeroDowntime runs the scenario against fake kubectl and helm, with the given traffic logs.
 func runZeroDowntime(t *testing.T, logs map[string]string) Result {
 	t.Helper()
+	return runZeroDowntimePath(t, logs, "")
+}
+
+// runZeroDowntimePath is runZeroDowntime with a --traffic-path.
+func runZeroDowntimePath(t *testing.T, logs map[string]string, path string) Result {
+	t.Helper()
 	c, l, tl := controlDuration, trafficLead, trafficTail
 	t.Cleanup(func() { controlDuration, trafficLead, trafficTail = c, l, tl })
 	controlDuration, trafficLead, trafficTail = time.Millisecond, time.Millisecond, time.Millisecond
@@ -47,11 +53,12 @@ func runZeroDowntime(t *testing.T, logs map[string]string) Result {
 	t.Setenv("FAKE_LOGS", logDir)
 	runner := &execx.Runner{}
 	env := &Env{
-		Runner: runner,
-		Helm:   &helm.Client{Runner: runner, Timeout: time.Minute},
-		Kube:   &kube.Client{Runner: runner},
-		Chart:  "./chart",
-		Log:    io.Discard,
+		Runner:      runner,
+		Helm:        &helm.Client{Runner: runner, Timeout: time.Minute},
+		Kube:        &kube.Client{Runner: runner},
+		Chart:       "./chart",
+		TrafficPath: path,
+		Log:         io.Discard,
 	}
 	return ZeroDowntime{}.Run(t.Context(), env)
 }
@@ -137,3 +144,4 @@ func TestZeroDowntimeReportsANoisyFirstControl(t *testing.T) {
 		t.Errorf("evidence %q does not mention the noisy first control", ev)
 	}
 }
+
