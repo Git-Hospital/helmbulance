@@ -143,3 +143,19 @@ func TestTrafficImageIsPinnedByDigest(t *testing.T) {
 		t.Errorf("trafficImage = %q, want it pinned by a sha256 digest", trafficImage)
 	}
 }
+
+// A PodDisruptionBudget gates evictions, not rollouts, so the fix must not offer it as a fix for
+// the rollout gap this scenario measures.
+func TestZeroDowntimeFixSaysWhatAPDBDoes(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic":         "300 ok\n301 fail\n",
+	})
+	if len(res.Findings) != 1 {
+		t.Fatalf("verdict = %s (%s), want one finding", res.Verdict, res.Summary)
+	}
+	fix := res.Findings[0].Fix
+	if strings.Contains(fix, "PodDisruptionBudget") && !strings.Contains(fix, "evictions, not rollouts") {
+		t.Errorf("fix offers a PodDisruptionBudget for a rollout gap: %s", fix)
+	}
+}
