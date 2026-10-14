@@ -55,7 +55,7 @@ func (r *Runner) RunCapture(ctx context.Context, name string, args ...string) ([
 	r.transcript = append(r.transcript, rec)
 	r.mu.Unlock()
 
-	errText := []byte(Redact(stderr.String(), r.Secrets))
+	errText := []byte(RedactURLs(Redact(stderr.String(), r.Secrets)))
 	if err != nil {
 		return stdout.Bytes(), errText, fmt.Errorf("%s: %w: %s", rec.Line, err, r.errorText(stderr.String()))
 	}
@@ -69,9 +69,9 @@ func (r *Runner) errorText(stderr string) string {
 	const marker = "Error: "
 	stderr = strings.TrimSpace(stderr)
 	if i := strings.LastIndex(stderr, marker); i >= 0 && (i == 0 || stderr[i-1] == '\n') {
-		return marker + Redact(stderr[i+len(marker):], r.Secrets)
+		return marker + RedactURLs(Redact(stderr[i+len(marker):], r.Secrets))
 	}
-	return Redact(stderr, r.Secrets)
+	return RedactURLs(Redact(stderr, r.Secrets))
 }
 
 // Transcript returns the commands run so far.
@@ -101,7 +101,7 @@ func Mask(name string, args []string) string {
 			out = append(out, a)
 		}
 	}
-	return strings.Join(out, " ")
+	return RedactURLs(strings.Join(out, " "))
 }
 
 func isSetFlag(a string) bool {
