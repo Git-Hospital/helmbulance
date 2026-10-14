@@ -1,6 +1,8 @@
 package report
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,5 +30,23 @@ func TestMarkdownEscapesEvidence(t *testing.T) {
 	}
 	if !strings.Contains(md, "- Error: &lt;img src=x onerror=alert(1)&gt; ## Not a heading\n") {
 		t.Errorf("escaped evidence missing:\n%s", md)
+	}
+}
+
+// A chart URL can carry credentials; report files are shared, the terminal is not.
+func TestWriteHidesChartURLCredentials(t *testing.T) {
+	dir := t.TempDir()
+	r := &Report{Chart: "https://u:hunter2@charts.example.com/c-1.0.0.tgz"}
+	if err := r.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"report.json", "report.md"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "hunter2") {
+			t.Errorf("%s contains the chart URL's password:\n%s", name, b)
+		}
 	}
 }

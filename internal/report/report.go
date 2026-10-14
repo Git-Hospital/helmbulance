@@ -50,6 +50,8 @@ func (r *Report) Write(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	// The chart reference can be a URL with credentials. Report files are shared; keep them out.
+	r.Chart = execx.RedactURLs(r.Chart)
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
