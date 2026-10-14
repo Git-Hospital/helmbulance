@@ -127,6 +127,7 @@ Each scenario goes through these phases:
 - Control: 20 s with no change, which must be clean; a control with failures runs once more before the run is inconclusive. Treatment: the same traffic during the version upgrade (with `--from-version`), or during a rolling restart of every Deployment and StatefulSet. Only failures from the start of the operation on count, measured on the traffic pod's own clock; a window with no requests is inconclusive.
 - Reports failed requests, the longest outage, and the settings that explain it: Recreate, a single replica, no readiness probe, no preStop.
 - This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
+- The traffic pod runs `busybox` pinned by digest, as a non-root user with no ServiceAccount token, no capabilities and a read-only root filesystem (Pod Security `restricted`). It still lives in the release namespace, so the chart's own mutating webhooks can change it.
 
 **`helmbulance scan`** (implemented). A static pre-screen: no cluster, seconds. It reports candidates, never findings; each names the `helmbulance test` run that confirms or rejects it. It exits 0 unless `--strict`.
 - **Immutable fields:** render `--from-version` as an install and the chart as an upgrade (`--is-upgrade`), compare selectors, StatefulSet `serviceName`/`volumeClaimTemplates`/`podManagementPolicy`, Job templates and PVC access modes. Hooks and Jobs named after `.Release.Revision` are skipped (a real upgrade gives them a new name).
