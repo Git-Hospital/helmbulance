@@ -55,7 +55,7 @@ func (r *Runner) RunCapture(ctx context.Context, name string, args ...string) ([
 	r.transcript = append(r.transcript, rec)
 	r.mu.Unlock()
 
-	errText := []byte(RedactURLs(Redact(stderr.String(), r.Secrets)))
+	errText := []byte(r.hide(stderr.String()))
 	if err != nil {
 		return stdout.Bytes(), errText, fmt.Errorf("%s: %w: %s", rec.Line, err, r.errorText(stderr.String()))
 	}
@@ -69,9 +69,14 @@ func (r *Runner) errorText(stderr string) string {
 	const marker = "Error: "
 	stderr = strings.TrimSpace(stderr)
 	if i := strings.LastIndex(stderr, marker); i >= 0 && (i == 0 || stderr[i-1] == '\n') {
-		return marker + RedactURLs(Redact(stderr[i+len(marker):], r.Secrets))
+		return marker + r.hide(stderr[i+len(marker):])
 	}
-	return RedactURLs(Redact(stderr, r.Secrets))
+	return r.hide(stderr)
+}
+
+// hide removes the secrets and URL credentials from text that goes into a report.
+func (r *Runner) hide(text string) string {
+	return RedactURLs(Redact(text, r.Secrets))
 }
 
 // Transcript returns the commands run so far.
