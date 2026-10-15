@@ -166,6 +166,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not find stateful workloads: %v\n", err)
 	}
+	statefulKnown := err == nil
 
 	var repro []string
 	for _, c := range installCmd {
@@ -194,7 +195,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		res.Findings = append(res.Findings, Finding{
 			ID:        "HB-UV-001",
 			Title:     "Secrets change on every upgrade, even with the same values",
-			Severity:  worstSeverity(regenerated, consumers, stateful),
+			Severity:  worstSeverity(regenerated, consumers, stateful, statefulKnown),
 			Evidence:  describe(regenerated, consumers),
 			Impact:    impact,
 			Fix:       fix,
@@ -220,7 +221,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-UV-002",
 			Title:    title,
-			Severity: worstSeverity(changes, consumers, stateful),
+			Severity: worstSeverity(changes, consumers, stateful, statefulKnown),
 			Evidence: describe(changes, consumers),
 			Impact: "Upgrading from the values file in git, without repeating every --set used at " +
 				"install, silently replaces or removes these values. For an encryption key this " +
@@ -245,6 +246,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	return res, []string{
 		note("keys added by an upgrade, not a finding", describe(added, consumers)),
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
+		unknownStatefulNote(statefulKnown, regenerated, changes),
 	}
 }
 
