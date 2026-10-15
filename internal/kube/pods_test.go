@@ -59,3 +59,20 @@ func TestFailedJobs(t *testing.T) {
 		t.Errorf("FailedJobs = %q, %v; want %q", got, err, want)
 	}
 }
+
+// With the default backoffLimit, a Job gets its Failed condition only after about ten minutes of
+// back-off, so a Job that fails every attempt must count while it still retries. One that
+// succeeded after a failed attempt is fine.
+func TestFailedJobsCountsJobsStillRetrying(t *testing.T) {
+	c := kubectlPrinting(t, `{"items":[
+		{"metadata":{"name":"migrate"},"status":{"failed":2,"active":1}},
+		{"metadata":{"name":"flaky"},"status":{"failed":1,"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}},
+		{"metadata":{"name":"gaveup"},"status":{"failed":7,"conditions":[{"type":"Failed","status":"True","reason":"BackoffLimitExceeded"}]}},
+		{"metadata":{"name":"fine"},"status":{"active":1,"conditions":[{"type":"Failed","status":"False"}]}}
+	]}`)
+	got, err := c.FailedJobs(t.Context(), "ns")
+	want := []string{"Job/gaveup: BackoffLimitExceeded", "Job/migrate: 2 failed attempt(s), still retrying"}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("FailedJobs = %q, %v; want %q", got, err, want)
+	}
+}

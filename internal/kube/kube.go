@@ -237,7 +237,8 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 	return pods, nil
 }
 
-// FailedJobs returns the Jobs in ns that gave up (condition Failed), as "Job/<name>: <message>".
+// FailedJobs returns the Jobs in ns that gave up (condition Failed) or are retrying after a failed
+// attempt, as "Job/<name>: <message>".
 func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "jobs", "-o", "json")
 	if err != nil {
@@ -249,6 +250,7 @@ func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
 				Name string `json:"name"`
 			} `json:"metadata"`
 			Status struct {
+				Failed     int `json:"failed"`
 				Conditions []struct {
 					Type    string `json:"type"`
 					Status  string `json:"status"`
@@ -263,10 +265,23 @@ func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
 	}
 	var failed []string
 	for _, item := range list.Items {
+		finished := false
 		for _, cond := range item.Status.Conditions {
-			if cond.Type == "Failed" && cond.Status == "True" {
-				failed = append(failed, "Job/"+item.Metadata.Name+": "+strings.TrimSpace(cond.Reason+" "+cond.Message))
+			if cond.Status != "True" {
+				continue
 			}
+			switch cond.Type {
+			case "Failed":
+				failed = append(failed, "Job/"+item.Metadata.Name+": "+strings.TrimSpace(cond.Reason+" "+cond.Message))
+				finished = true
+			case "Complete":
+				finished = true
+			}
+		}
+		// The Failed condition comes only after the whole back-off, about ten minutes with the
+		// default backoffLimit; a Job still retrying after a failed attempt counts too.
+		if !finished && item.Status.Failed > 0 {
+			failed = append(failed, fmt.Sprintf("Job/%s: %d failed attempt(s), still retrying", item.Metadata.Name, item.Status.Failed))
 		}
 	}
 	sort.Strings(failed)
