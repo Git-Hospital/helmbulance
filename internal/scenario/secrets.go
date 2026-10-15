@@ -13,8 +13,8 @@ import (
 )
 
 // settleInterval and settleReads bound how long a Secret snapshot waits for the namespace to stop
-// changing: up to about half a minute after helm returns.
-const (
+// changing: up to about half a minute after helm returns. Variables, so tests can shorten them.
+var (
 	settleInterval = 3 * time.Second
 	settleReads    = 10
 )
