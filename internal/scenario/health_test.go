@@ -56,3 +56,12 @@ func TestPodProblemsCountsRestartsPerPod(t *testing.T) {
 		t.Errorf("podProblems =\n%q\nwant\n%q", got, want)
 	}
 }
+
+// A Job that was already retrying before the upgrade is not new because its count went up.
+func TestNewlyFailedComparesJobNames(t *testing.T) {
+	before := []string{"Job/old: 1 failed attempt(s), still retrying"}
+	now := []string{"Job/old: 3 failed attempt(s), still retrying"}
+	if got := newlyFailed(now, before); len(got) != 0 {
+		t.Errorf("newlyFailed = %q, want nothing", got)
+	}
+}

@@ -200,15 +200,17 @@ func podProblems(pods []kube.Pod, restartsBefore map[string]int) []string {
 	return problems
 }
 
-// newlyFailed lists the Jobs in now that had not failed before.
+// newlyFailed lists the Jobs in now that had not failed before, by "Job/<name>": the text after
+// the name, such as a count of failed attempts, can change.
 func newlyFailed(now, before []string) []string {
 	had := map[string]bool{}
 	for _, j := range before {
-		had[j] = true
+		name, _, _ := strings.Cut(j, ":")
+		had[name] = true
 	}
 	var out []string
 	for _, j := range now {
-		if !had[j] {
+		if name, _, _ := strings.Cut(j, ":"); !had[name] {
 			out = append(out, j)
 		}
 	}
