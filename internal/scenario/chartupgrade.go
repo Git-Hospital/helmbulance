@@ -161,28 +161,35 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 }
 
 // unhealthyAfter waits for the release to settle and lists pods that are not ready or restarted
-// more than before the upgrade, and Jobs that gave up since.
+// more than before the upgrade, and Jobs that gave up since. A pod that survived the upgrade is
+// compared with its count from before it. A new pod is compared with its count at the first read
+// that sees it, since restarts during its own startup, before helm --wait returned, are not the
+// upgrade's doing; matrix counts the same way.
 func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod, jobsBefore []string) []string {
-	restartsBefore := map[string]int{}
+	baseline := map[string]int{}
 	for _, p := range before {
-		restartsBefore[p.UID] = p.Restarts
+		baseline[p.UID] = p.Restarts
 	}
 	return Settle(ctx, func() []string {
 		pods, err := env.Kube.Pods(ctx, chartUpgradeNamespace)
 		if err != nil {
 			return []string{"could not read pods: " + err.Error()}
 		}
+		for _, p := range pods {
+			if _, seen := baseline[p.UID]; !seen {
+				baseline[p.UID] = p.Restarts
+			}
+		}
 		jobs, err := env.Kube.FailedJobs(ctx, chartUpgradeNamespace)
 		if err != nil {
 			return []string{"could not read Jobs: " + err.Error()}
 		}
-		return append(podProblems(pods, restartsBefore), newlyFailed(jobs, jobsBefore)...)
+		return append(podProblems(pods, baseline), newlyFailed(jobs, jobsBefore)...)
 	})
 }
 
-// podProblems lists pods that are not ready and pods that restarted more than before, by pod UID:
-// a pod the rollout created starts from zero, so a Deployment's new pods are checked too. Job
-// pods are left to the Jobs' own status.
+// podProblems lists pods that are not ready and pods that restarted more than their baseline, by
+// pod UID, so a Deployment's new pods are checked too. Job pods are left to the Jobs' own status.
 func podProblems(pods []kube.Pod, restartsBefore map[string]int) []string {
 	var problems []string
 	for _, p := range pods {
