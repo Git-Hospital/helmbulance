@@ -54,3 +54,29 @@ func TestSecretsInconclusive(t *testing.T) {
 		t.Errorf("summary for a read error = %q", got)
 	}
 }
+
+// Chart C: v2 renames password to db-password and carries the value over, but its Deployment
+// still reads password (optional: true), so the app starts without it. That is not a move.
+func TestUnpairStillRead(t *testing.T) {
+	moved := []oracle.Change{
+		{Ref: "db/password -> db/db-password", Kind: oracle.MovedKind},
+		{Ref: "old-name/key -> new-name/key", Kind: oracle.MovedKind},
+		{Ref: "env/token -> env/api-token", Kind: oracle.MovedKind},
+	}
+	consumers := map[string][]string{
+		"db/password":  {"Deployment/app"},
+		"new-name/key": {"Deployment/app"},
+		"env/*":        {"Deployment/worker"}, // envFrom: the env var name follows the key
+	}
+	kept, back := unpairStillRead(moved, consumers)
+	if want := []oracle.Change{moved[1]}; !reflect.DeepEqual(kept, want) {
+		t.Errorf("kept = %v, want %v", kept, want)
+	}
+	want := []oracle.Change{
+		{Ref: "db/password", Kind: oracle.Removed}, {Ref: "db/db-password", Kind: oracle.Added},
+		{Ref: "env/token", Kind: oracle.Removed}, {Ref: "env/api-token", Kind: oracle.Added},
+	}
+	if !reflect.DeepEqual(back, want) {
+		t.Errorf("back = %v, want %v", back, want)
+	}
+}

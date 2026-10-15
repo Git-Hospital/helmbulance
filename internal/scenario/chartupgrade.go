@@ -116,7 +116,8 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	// A new version adding keys is normal; only changed and removed keys break existing data.
 	// A renamed Secret whose value is carried over loses nothing either.
 	rest, moved := oracle.Moved(control, upgraded, withoutRefs(oracle.Diff(control, upgraded), regenerated))
-	changes, added := splitAdded(rest)
+	moved, back := unpairStillRead(moved, consumers)
+	changes, added := splitAdded(append(rest, back...))
 	if len(changes) > 0 {
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-CU-002",
