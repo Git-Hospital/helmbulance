@@ -118,21 +118,22 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 }
 
 // replacedPods lists the workloads that rolled out a new pod template between two readings: an
-// owner with a pod whose revision it did not have before. Pods without a revision (Jobs, bare
-// pods) and pods that went away without a new revision (finished, scaled down, deleted and
-// recreated from the same template) are not restarts.
+// owner with a pod whose revision it did not have before. The owner is matched by UID, so a
+// workload deleted and created again from the same template counts too. Pods without a revision
+// (Jobs, bare pods) and pods that went away without a new revision (finished, scaled down, a
+// pod deleted and recreated by its controller) are not restarts.
 func replacedPods(before, after []kube.Pod) []string {
 	had := map[string]bool{}
 	for _, p := range before {
 		if p.Revision != "" {
-			had[workload(p.Owner)+"@"+p.Revision] = true
+			had[ownerKey(p)+"@"+p.Revision] = true
 		}
 	}
 	seen := map[string]bool{}
 	var owners []string
 	for _, p := range after {
 		owner := workload(p.Owner)
-		if p.Revision == "" || had[owner+"@"+p.Revision] || seen[owner] {
+		if p.Revision == "" || had[ownerKey(p)+"@"+p.Revision] || seen[owner] {
 			continue
 		}
 		seen[owner] = true
@@ -140,6 +141,14 @@ func replacedPods(before, after []kube.Pod) []string {
 	}
 	sort.Strings(owners)
 	return owners
+}
+
+// ownerKey identifies a pod's owner by UID, or by workload name when the UID is unknown.
+func ownerKey(p kube.Pod) string {
+	if p.OwnerUID != "" {
+		return p.OwnerUID
+	}
+	return workload(p.Owner)
 }
 
 // workload names a Deployment rather than its ReplicaSet (<deployment>-<hash>), so that two

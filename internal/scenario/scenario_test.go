@@ -73,3 +73,21 @@ func TestOutageText(t *testing.T) {
 		t.Errorf("outageText(0) = %q", got)
 	}
 }
+
+// A workload deleted and created again from the same template keeps its name and revision; its
+// owner's UID changes. Scaling within one owner is still no restart.
+func TestReplacedPodsSeesARecreatedWorkload(t *testing.T) {
+	before := []kube.Pod{
+		{UID: "a", Owner: "StatefulSet/db", OwnerUID: "sts-1", Revision: "db-5f6c"},
+		{UID: "b", Owner: "ReplicaSet/web-7d9f8c6b5", OwnerUID: "rs-1", Revision: "7d9f8c6b5"},
+		{UID: "c", Owner: "ReplicaSet/web-7d9f8c6b5", OwnerUID: "rs-1", Revision: "7d9f8c6b5"},
+	}
+	after := []kube.Pod{
+		{UID: "a2", Owner: "StatefulSet/db", OwnerUID: "sts-2", Revision: "db-5f6c"},
+		{UID: "b", Owner: "ReplicaSet/web-7d9f8c6b5", OwnerUID: "rs-1", Revision: "7d9f8c6b5"},
+	}
+	want := []string{"StatefulSet/db"}
+	if got := replacedPods(before, after); !reflect.DeepEqual(got, want) {
+		t.Errorf("replacedPods = %v, want %v", got, want)
+	}
+}
