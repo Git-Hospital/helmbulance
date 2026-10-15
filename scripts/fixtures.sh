@@ -52,7 +52,9 @@ run() {
 
 run regenerates-secret 1 "HB-UV-001 HB-UV-003" testdata/charts/regenerates-secret --scenario upgrade-without-values
 run keeps-secret       0 ""                    testdata/charts/keeps-secret --scenario upgrade-without-values
-# Not a pair: a workload rewrites a Secret the chart does not render, which must not be a finding.
+# Not pairs: Secrets the release stops rendering or never renders must not be findings.
+run generate-once      0 ""                    testdata/charts/generate-once --scenario upgrade-without-values
+# A workload rewrites a Secret the chart does not render.
 run runtime-secret     0 ""                    testdata/charts/runtime-secret -f testdata/charts/runtime-secret/values.yaml --scenario upgrade-without-values
 run drops-set-key      1 "HB-UV-002"           testdata/charts/drops-set-key --set "encryptionKey=$key" --scenario upgrade-without-values
 run keeps-set-key      0 ""                    testdata/charts/keeps-set-key --set "encryptionKey=$key" --scenario upgrade-without-values
