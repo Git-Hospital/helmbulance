@@ -120,8 +120,12 @@ func TestSecretReaderNoteLeavesOutSecretsRenderedLater(t *testing.T) {
 	r := newFakeReader(t, `{"items":[{"metadata":{"name":"late"},"type":"Opaque","data":{"k":"dg=="}},{"metadata":{"name":"job-written"},"type":"Opaque","data":{"k":"dg=="}}]}`,
 		secretManifest(), secretManifest("late"))
 	for range 2 {
-		if _, err := r.snapshot(); err != nil {
+		snap, err := r.snapshot()
+		if err != nil {
 			t.Fatal(err)
+		}
+		if _, ok := snap["job-written/k"]; ok {
+			t.Error("the snapshot compares job-written, which the release never rendered")
 		}
 	}
 	if n, want := r.notComparedNote(), "not compared, since the release does not render them: `job-written`"; n != want {

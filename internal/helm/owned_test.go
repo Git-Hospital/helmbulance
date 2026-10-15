@@ -1,7 +1,10 @@
 package helm
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +75,24 @@ metadata:
 	got := secretNames([]byte(manifest), "hb")
 	if want := []string{"in-a-list", "after-the-bad-one"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("secretNames = %v, want %v", got, want)
+	}
+}
+
+// A pre-install hook can render a Secret; it is the release's too.
+func TestOwnedSecretsReadsManifestAndHooks(t *testing.T) {
+	c := fakeHelm(t, "")
+	script := `#!/bin/sh
+case "$*" in
+  "get manifest"*) printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n' ;;
+  "get hooks"*) printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: hook-secret\n' ;;
+esac
+`
+	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+	if err := os.WriteFile(filepath.Join(bin, "helm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.OwnedSecrets(t.Context(), "hb", "ns")
+	if err != nil || !got["app"] || !got["hook-secret"] || len(got) != 2 {
+		t.Errorf("OwnedSecrets = %v, %v; want app and hook-secret", got, err)
 	}
 }
