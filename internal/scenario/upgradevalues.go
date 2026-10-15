@@ -95,15 +95,18 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		}
 	}
 
+	// HB-UV-003 comes from the control, so every result from here on carries it, an
+	// inconclusive treatment included.
+	defer func() { res = withRestarts(res, restarted, installCmd, reuseCmd) }()
+
 	// Treatment: values files only. Without any --set or values file it would repeat the control.
 	if len(env.Values.Sets) == 0 && len(env.Values.Files) == 0 {
-		res = s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
-		return withRestarts(res, restarted, installCmd, reuseCmd)
+		return s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
 	}
 	mark = len(env.Runner.Transcript())
 	// --reset-values: without any values flag Helm would reuse the install values, --set included.
 	if err := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{Files: env.Values.Files}, "--reset-values"); err != nil {
-		return withRestarts(inconclusive(res, "the upgrade with the values files failed", err), restarted, installCmd, reuseCmd)
+		return inconclusive(res, "the upgrade with the values files failed", err)
 	}
 	filesCmd := env.Runner.Transcript()[mark:]
 	filesOnly, err := snapshot()
@@ -111,8 +114,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "could not read Secrets after the upgrade", err)
 	}
 
-	res = s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
-	return withRestarts(res, restarted, installCmd, reuseCmd)
+	return s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
 }
 
 // replacedPods lists the workloads that rolled out a new pod template between two readings: an

@@ -79,6 +79,8 @@ func TestUpgradeValuesRestarts(t *testing.T) {
 			"An upgrade that changes nothing restarts pods", ""},
 		{"treatment failed", map[string]string{"REVISIONS": "a b b", "FAIL_TREATMENT": "1"}, Fail,
 			"The first upgrade after install restarts pods, even when it changes nothing", "the upgrade with the values files failed"},
+		{"Secret read after the treatment failed", map[string]string{"REVISIONS": "a b b", "FAIL_SECRET_READ": "3"}, Fail,
+			"The first upgrade after install restarts pods, even when it changes nothing", "could not read Secrets after the upgrade"},
 		{"no restart", map[string]string{"REVISIONS": "a"}, Pass, "", ""},
 	}
 	for _, c := range cases {
