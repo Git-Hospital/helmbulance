@@ -153,6 +153,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	} else {
 		res.Verdict = Pass
 		res.Summary = "upgraded from " + fromV + toVersion(ctx, env, release, ns) + " with Secrets kept and workloads healthy"
+		if noKeys(installed, control, upgraded) {
+			res.Summary = "upgraded from " + fromV + toVersion(ctx, env, release, ns) + " with workloads healthy; " + noSecretsTested
+		}
 	}
 	res.Summary = withNotes(res.Summary,
 		note("keys added by the new version, not a finding", describe(added, consumers)),

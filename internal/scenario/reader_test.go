@@ -128,3 +128,19 @@ func TestSecretReaderNoteLeavesOutSecretsRenderedLater(t *testing.T) {
 		t.Errorf("notComparedNote = %q, want %q", n, want)
 	}
 }
+
+// When every Secret in the namespace is written at runtime, nothing is compared, so a PASS must not
+// claim that Secrets stayed the same.
+func TestUpgradeValuesPassWithNoSecretsSaysSo(t *testing.T) {
+	env := newFakeReader(t, `{"items":[]}`, secretManifest()).env
+	cmd := []execx.Command{{Line: "helm upgrade hb ./chart"}}
+	empty := oracle.SecretSnapshot{}
+	res, _ := UpgradeValues{}.verdict(t.Context(), Result{}, empty, empty, empty, cmd, cmd, cmd, env)
+	if res.Verdict != Pass || res.Summary != "the release renders no Secrets; Secret drift was not tested" {
+		t.Errorf("verdict %s, summary %q", res.Verdict, res.Summary)
+	}
+	some := oracle.SecretSnapshot{"app/k": {1}}
+	if res, _ := (UpgradeValues{}).verdict(t.Context(), Result{}, some, some, some, cmd, cmd, cmd, env); res.Summary != "Secrets stayed the same through both upgrades" {
+		t.Errorf("summary with Secrets compared = %q", res.Summary)
+	}
+}

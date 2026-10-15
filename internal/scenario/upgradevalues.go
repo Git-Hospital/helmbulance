@@ -221,6 +221,9 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	} else {
 		res.Verdict = Pass
 		res.Summary = "Secrets stayed the same through both upgrades"
+		if noKeys(installed, reused, filesOnly) {
+			res.Summary = noSecretsTested
+		}
 	}
 	return res, []string{note("keys added by an upgrade, not a finding", describe(added, consumers))}
 }

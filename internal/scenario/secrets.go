@@ -137,3 +137,16 @@ func unpairStillRead(moved []oracle.Change, consumers map[string][]string) (kept
 	}
 	return kept, back
 }
+
+// noSecretsTested is said instead of "Secrets stayed the same" when no key was compared.
+const noSecretsTested = "the release renders no Secrets; Secret drift was not tested"
+
+// noKeys reports whether no snapshot holds a key, so no Secret was compared at all.
+func noKeys(snapshots ...oracle.SecretSnapshot) bool {
+	for _, s := range snapshots {
+		if len(s) > 0 {
+			return false
+		}
+	}
+	return true
+}
