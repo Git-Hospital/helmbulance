@@ -25,7 +25,7 @@ func fakePodReads(t *testing.T, reads ...string) *Env {
 	}
 	script := `#!/bin/sh
 case "$*" in
-  *"get jobs"*) echo '{"items":[]}' ;;
+  *"get jobs"*) if [ -n "$FAKE_JOBS" ]; then echo "$FAKE_JOBS"; else echo '{"items":[]}'; fi ;;
   *"get pods"*)
     n=$(cat "$FAKE_DIR/n" 2>/dev/null || echo 0)
     f="$FAKE_DIR/pods.$n"; [ -f "$f" ] || f="$FAKE_DIR/pods.` + strconv.Itoa(len(reads)-1) + `"
@@ -69,5 +69,19 @@ func TestUnhealthyAfterRestartBaseline(t *testing.T) {
 				t.Errorf("unhealthyAfter = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// A Job that had already failed before the upgrade is the earlier version's, not this upgrade's.
+func TestUnhealthyAfterSkipsJobsThatFailedBefore(t *testing.T) {
+	shortSettle(t, 2*time.Second, 50*time.Millisecond)
+	env := fakePodReads(t, podsJSON("p", 0))
+	t.Setenv("FAKE_JOBS", `{"items":[{"metadata":{"name":"old"},"status":{"conditions":[{"type":"Failed","status":"True","reason":"BackoffLimitExceeded"}]}}]}`)
+	before := []kube.Pod{{UID: "p"}}
+	if got := unhealthyAfter(t.Context(), env, before, []string{"Job/old: BackoffLimitExceeded"}); len(got) != 0 {
+		t.Errorf("unhealthyAfter = %q, want nothing for a Job that failed before", got)
+	}
+	if got := unhealthyAfter(t.Context(), env, before, nil); len(got) != 1 {
+		t.Errorf("unhealthyAfter = %q, want the Job when it is new", got)
 	}
 }
