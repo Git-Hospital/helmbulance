@@ -162,6 +162,7 @@ type Pod struct {
 	Name     string
 	UID      string
 	Owner    string // kind/name of the controlling object
+	OwnerUID string // its UID, which changes when the object is deleted and created again
 	Ready    bool
 	Restarts int
 	Phase    string // Pending, Running or Failed; Succeeded pods are left out
@@ -191,6 +192,7 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 				OwnerReferences   []struct {
 					Kind string `json:"kind"`
 					Name string `json:"name"`
+					UID  string `json:"uid"`
 				} `json:"ownerReferences"`
 			} `json:"metadata"`
 			Status struct {
@@ -223,6 +225,7 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 		}
 		if refs := item.Metadata.OwnerReferences; len(refs) > 0 {
 			p.Owner = refs[0].Kind + "/" + refs[0].Name
+			p.OwnerUID = refs[0].UID
 		}
 		for _, c := range item.Status.Conditions {
 			if c.Type == "Ready" && c.Status == "True" {

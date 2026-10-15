@@ -26,7 +26,7 @@ func kubectlPrinting(t *testing.T, out string) *Client {
 
 func TestPodsReadPhaseAndRevision(t *testing.T) {
 	c := kubectlPrinting(t, `{"items":[
-		{"metadata":{"name":"web-1","uid":"a","labels":{"pod-template-hash":"7d9f8c6b5"},"ownerReferences":[{"kind":"ReplicaSet","name":"web-7d9f8c6b5"}]},
+		{"metadata":{"name":"web-1","uid":"a","labels":{"pod-template-hash":"7d9f8c6b5"},"ownerReferences":[{"kind":"ReplicaSet","name":"web-7d9f8c6b5","uid":"rs-1"}]},
 		 "status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}},
 		{"metadata":{"name":"db-0","uid":"b","labels":{"controller-revision-hash":"db-5f6c"},"ownerReferences":[{"kind":"StatefulSet","name":"db"}]},
 		 "status":{"phase":"Running","containerStatuses":[{"restartCount":2}]}},
@@ -38,7 +38,7 @@ func TestPodsReadPhaseAndRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Pod{
-		{Name: "web-1", UID: "a", Owner: "ReplicaSet/web-7d9f8c6b5", Ready: true, Phase: "Running", Revision: "7d9f8c6b5"},
+		{Name: "web-1", UID: "a", Owner: "ReplicaSet/web-7d9f8c6b5", OwnerUID: "rs-1", Ready: true, Phase: "Running", Revision: "7d9f8c6b5"},
 		{Name: "db-0", UID: "b", Owner: "StatefulSet/db", Restarts: 2, Phase: "Running", Revision: "db-5f6c"},
 		{Name: "migrate-x", UID: "c", Owner: "Job/migrate", Phase: "Failed"},
 	}
