@@ -23,23 +23,31 @@ var (
 // agree. Secrets written by a Job, an operator or the app are left out, since they change for
 // reasons the upgrade did not cause; their names are kept so the report can say what was not
 // compared.
+//
+// owned grows with every snapshot and never shrinks: a "generate once" Secret is rendered by the
+// install only (later renders find it with lookup), and helm.sh/resource-policy: keep leaves it in
+// place, so it stays the release's Secret. One the release stops rendering without keep is
+// deleted by helm, and the diff reports it as removed.
 type secretReader struct {
 	ctx         context.Context
 	env         *Env
 	release, ns string
+	owned       map[string]bool
 	notCompared map[string]bool
 }
 
 func newSecretReader(ctx context.Context, env *Env, release, ns string) *secretReader {
-	return &secretReader{ctx: ctx, env: env, release: release, ns: ns, notCompared: map[string]bool{}}
+	return &secretReader{ctx: ctx, env: env, release: release, ns: ns, owned: map[string]bool{}, notCompared: map[string]bool{}}
 }
 
 func (r *secretReader) snapshot() (oracle.SecretSnapshot, error) {
 	// What the release renders does not change while the namespace settles, so it is read once.
-	owned, err := r.env.Helm.OwnedSecrets(r.ctx, r.release, r.ns)
+	rendered, err := r.env.Helm.OwnedSecrets(r.ctx, r.release, r.ns)
 	if err != nil {
 		return nil, err
 	}
+	maps.Copy(r.owned, rendered)
+	owned := r.owned
 	return oracle.Settle(r.ctx, func() (oracle.SecretSnapshot, error) {
 		secrets, err := r.env.Kube.Secrets(r.ctx, r.ns)
 		if err != nil {
@@ -54,11 +62,13 @@ func (r *secretReader) snapshot() (oracle.SecretSnapshot, error) {
 	}, settleInterval, settleReads)
 }
 
-// notComparedNote names the Secrets that were in the namespace but not rendered by the release.
+// notComparedNote names the Secrets that were in the namespace but never rendered by the release.
 func (r *secretReader) notComparedNote() string {
-	names := slices.Sorted(maps.Keys(r.notCompared))
-	for i, n := range names {
-		names[i] = "`" + n + "`"
+	var names []string
+	for _, n := range slices.Sorted(maps.Keys(r.notCompared)) {
+		if !r.owned[n] {
+			names = append(names, "`"+n+"`")
+		}
 	}
 	return note("not compared, since the release does not render them", names)
 }
