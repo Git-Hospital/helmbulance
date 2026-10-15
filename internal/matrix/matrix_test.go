@@ -84,3 +84,44 @@ func TestBlameARemovedAPIEvenWhenNothingInstalled(t *testing.T) {
 		t.Errorf("a single --k8s version: %s = %s, want FAIL", r.Scenario, r.Verdict)
 	}
 }
+
+// kind has no CRDs, so a chart whose ServiceMonitor or HTTPRoute is on by default fails on every
+// version. The cause is a missing CRD, not a Kubernetes version: INCONCLUSIVE with no finding.
+// gateway.networking.k8s.io ends in .k8s.io but is a CRD too.
+func TestMissingCRDIsNotBlamedOnAVersion(t *testing.T) {
+	for _, kind := range []string{
+		`"ServiceMonitor" in version "monitoring.coreos.com/v1"`,
+		`"HTTPRoute" in version "gateway.networking.k8s.io/v1"`,
+		`"Certificate" in version "cert-manager.io/v1"`,
+	} {
+		err := errors.New(`Error: INSTALLATION FAILED: unable to build kubernetes objects from release manifest: resource mapping not found for name: "web" namespace: "" from "": no matches for kind ` + kind)
+		var results []scenario.Result
+		for _, v := range []string{"1.34", "1.35", "1.37"} {
+			results = append(results, installFailed(t.Context(), scenario.Result{Scenario: "k8s-" + v}, v, err, nil, nil))
+		}
+		for _, r := range Attribute(results) {
+			if r.Verdict != scenario.Inconclusive || len(r.Findings) != 0 {
+				t.Errorf("%s: %s = %s with %d finding(s), want INCONCLUSIVE and none", kind, r.Scenario, r.Verdict, len(r.Findings))
+			}
+		}
+	}
+}
+
+func TestBuiltInGroup(t *testing.T) {
+	cases := map[string]bool{
+		`no matches for kind "PodSecurityPolicy" in version "policy/v1beta1"`:                   true,
+		`no matches for kind "Ingress" in version "extensions/v1beta1"`:                         true,
+		`no matches for kind "Pod" in version "v1"`:                                             true,
+		`no matches for kind "Ingress" in version "networking.k8s.io/v1beta1"`:                  true,
+		`no matches for kind "FlowSchema" in version "flowcontrol.apiserver.k8s.io/v1beta1"`:    true,
+		`no matches for kind "HTTPRoute" in version "gateway.networking.k8s.io/v1"`:             false,
+		`no matches for kind "VolumeSnapshot" in version "snapshot.storage.k8s.io/v1"`:          false,
+		`no matches for kind "ServiceMonitor" in version "monitoring.coreos.com/v1"`:            false,
+		`resource mapping not found for name: "web" namespace: "" from "": no matches for kind`: false,
+	}
+	for msg, want := range cases {
+		if got := builtInGroup(msg); got != want {
+			t.Errorf("builtInGroup(%q) = %v, want %v", msg, got, want)
+		}
+	}
+}

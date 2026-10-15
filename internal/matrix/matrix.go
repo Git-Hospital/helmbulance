@@ -148,15 +148,43 @@ func Attribute(results []scenario.Result) []scenario.Result {
 	return out
 }
 
-// missingAPI reports whether an install failure says the cluster does not serve a kind the chart
-// uses, which is how a removed API version fails.
+// missingAPI reports whether an install failure says the cluster does not serve a built-in kind the
+// chart uses, which is how a removed API version fails. A kind from another group needs a CRD,
+// and kind clusters have none, so that failure says nothing about the Kubernetes version.
 func missingAPI(r scenario.Result) bool {
 	for _, e := range r.Findings[0].Evidence {
-		if strings.Contains(e, "no matches for kind") || strings.Contains(e, "resource mapping not found") {
+		if (strings.Contains(e, "no matches for kind") || strings.Contains(e, "resource mapping not found")) && builtInGroup(e) {
 			return true
 		}
 	}
 	return false
+}
+
+// builtInGroups are the API groups Kubernetes serves itself. A fixed list, since some CRD groups
+// (gateway.networking.k8s.io, snapshot.storage.k8s.io) also end in .k8s.io.
+var builtInGroups = map[string]bool{
+	"": true, "apps": true, "batch": true, "policy": true, "extensions": true, "autoscaling": true,
+	"networking.k8s.io": true, "rbac.authorization.k8s.io": true, "admissionregistration.k8s.io": true,
+	"apiextensions.k8s.io": true, "apiregistration.k8s.io": true, "storage.k8s.io": true,
+	"scheduling.k8s.io": true, "coordination.k8s.io": true, "certificates.k8s.io": true,
+	"discovery.k8s.io": true, "events.k8s.io": true, "node.k8s.io": true,
+	"flowcontrol.apiserver.k8s.io": true, "resource.k8s.io": true,
+}
+
+var inVersion = regexp.MustCompile(`in version "([^"]*)"`)
+
+// builtInGroup reports whether a "no matches for kind … in version "<group>/<version>"" message
+// names a built-in group. The core group has no slash ("v1"). No "in version" means unknown.
+func builtInGroup(msg string) bool {
+	m := inVersion.FindStringSubmatch(msg)
+	if m == nil {
+		return false
+	}
+	group, _, ok := strings.Cut(m[1], "/")
+	if !ok {
+		group = ""
+	}
+	return builtInGroups[group]
 }
 
 func installFailure(r scenario.Result) bool {
