@@ -98,4 +98,9 @@ func TestSplitExpected(t *testing.T) {
 	if _, expected := splitExpected(changes, []string{"*"}); len(expected) != 0 {
 		t.Errorf(`"*" matched %v; it should match no "secret/key" reference`, expected)
 	}
+	// A removed key is not a rotation, so a matching pattern does not silence it (review item 5).
+	removed := []oracle.Change{{Ref: "hb-upgrade-webhook-tls/tls.crt", Kind: oracle.Removed}}
+	if rest, expected := splitExpected(removed, []string{"*-webhook-tls/*"}); len(rest) != 1 || len(expected) != 0 {
+		t.Errorf("a removed key under a rotation pattern: rest = %v, expected = %v", rest, expected)
+	}
 }
