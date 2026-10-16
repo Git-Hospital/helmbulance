@@ -77,13 +77,40 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
 		return inconclusive(res, "the uninstall failed", err)
 	}
-	if err := env.Helm.Install(ctx, release, ns, env.Chart, env.Values); err != nil {
-		return s.installFailed(ctx, res, err, concat(repro, transcriptRepro(env, mark)...))
-	}
+	secondInstall := env.Helm.Install(ctx, release, ns, env.Chart, env.Values)
 	repro = concat(repro, sentinelRepro("write a marker into each volume before the uninstall", "echo marker > /pvc/marker")...)
 	repro = concat(repro, transcriptRepro(env, mark)...)
 	repro = concat(repro, sentinelRepro("read it back after the reinstall", "cat /pvc/marker")...)
+	if secondInstall != nil {
+		// A `helm install --wait` that timed out still applied the release; its pods just never
+		// became ready, which is exactly how a reinstall that broke the credentials behind kept data
+		// shows up. Collect the evidence before the verdict, so HB-RI-001 is not hidden behind
+		// INCONCLUSIVE. Other failures (a render refusal, the chart's webhook, a pull or tool error)
+		// are not this case and go to installFailed.
+		if timedOutWaiting(ctx, secondInstall) {
+			res = s.analyze(ctx, env, res, release, ns, secrets, before, volumes, repro)
+			switch {
+			case len(res.Findings) > 0:
+				res.Findings[0].Evidence = append([]string{
+					"The reinstall's `helm install --wait` timed out before the release was ready: " + helmMessage(secondInstall),
+				}, res.Findings[0].Evidence...)
+				return res
+			case res.Verdict == Inconclusive:
+				return res
+			default:
+				return inconclusive(res, "the reinstall did not finish, and no credential change was proven", secondInstall)
+			}
+		}
+		return s.installFailed(ctx, res, secondInstall, repro)
+	}
+	return s.analyze(ctx, env, res, release, ns, secrets, before, volumes, repro)
+}
 
+// analyze compares the release's Secrets and the volume sentinels after the reinstall and builds the
+// verdict. It runs after a clean reinstall and, for the evidence it can still gather, after a
+// `--wait` timeout, since the release is applied in both.
+func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, ns string,
+	secrets *secretReader, before oracle.SecretSnapshot, volumes []volume, repro []string) Result {
 	after, err := secrets.snapshot()
 	if err != nil {
 		return secretsInconclusive(res, "after the reinstall", err)
@@ -92,9 +119,9 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "could not read the sentinels", err)
 	}
 
-	consumers, err := env.Kube.SecretConsumers(ctx, ns)
-	if err != nil {
-		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", err)
+	consumers, consumersErr := env.Kube.SecretConsumers(ctx, ns)
+	if consumersErr != nil {
+		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", consumersErr)
 	}
 	stateful, err := env.Kube.StatefulWorkloads(ctx, ns)
 	if err != nil {
@@ -102,8 +129,10 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	changes, added := splitAdded(oracle.Diff(before, after))
 	changes, rotated := splitExpected(changes, env.ExpectedRotation)
-	if unknown := append(claimsIn(volumes, "unwritable"), claimsIn(volumes, "unbound")...); len(unknown) > 0 && len(changes) > 0 {
-		return inconclusive(res, "Secrets changed, and no sentinel could be written to "+strings.Join(unknown, ", "),
+	// A claim that could not be written to leaves it unknown whether it kept old data. An unbound
+	// claim was never mounted, so it holds none and needs no such check (review item 5).
+	if unwritable := claimsIn(volumes, "unwritable"); len(unwritable) > 0 && len(changes) > 0 {
+		return inconclusive(res, "Secrets changed, and no sentinel could be written to "+strings.Join(unwritable, ", "),
 			fmt.Errorf("without one it is unknown whether those volumes kept data written with the old values"))
 	}
 	var keptClaims []string
@@ -112,12 +141,19 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 			keptClaims = append(keptClaims, v.claim)
 		}
 	}
-	claimUsers, err := env.Kube.ClaimUsers(ctx, ns, keptClaims)
-	if err != nil {
-		fmt.Fprintf(env.Log, "could not map claims to workloads: %v\n", err)
+	claimUsers, claimUsersErr := env.Kube.ClaimUsers(ctx, ns, keptClaims)
+	if claimUsersErr != nil {
+		fmt.Fprintf(env.Log, "could not map claims to workloads: %v\n", claimUsersErr)
 	}
-	var unrelated []oracle.Change
-	res.Findings, unrelated = reinstallFindings(volumes, changes, consumers, stateful, claimUsers, repro)
+	// If a kept volume's readers could not be mapped while Secrets changed, relatedness is unknown,
+	// so the result is INCONCLUSIVE, not a PASS that never checked (review item 2).
+	if (consumersErr != nil || claimUsersErr != nil) && len(keptClaims) > 0 && len(changes) > 0 {
+		return inconclusive(res, "could not tell which kept volumes read the changed Secrets",
+			fmt.Errorf("mapping Secret readers or claim users failed, so a credential change next to kept data cannot be ruled in or out"))
+	}
+
+	var unrelated, certs []oracle.Change
+	res.Findings, unrelated, certs = reinstallFindings(volumes, changes, consumers, stateful, claimUsers, repro)
 	if len(keptClaims) == 0 {
 		unrelated = nil // the summary already says new Secrets are expected
 	}
@@ -131,6 +167,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	res.Summary = withNotes(res.Summary,
 		note("keys added by the reinstall, not a finding", describe(added, consumers)),
+		note("certificates reissued, read by a workload that kept data, not a finding", describe(certs, consumers)),
 		note("changed, but read by no workload whose volume kept its data", describe(unrelated, consumers)),
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
 		note("no sentinel could be written to", claimsIn(volumes, "unwritable")),
@@ -213,6 +250,21 @@ var reinstallRunErrors = []string{
 	"tls handshake timeout",
 }
 
+// timedOutWaiting reports whether the second install failed because `helm --wait` timed out with
+// the release applied, as opposed to a cancelled run, the chart's own webhook, or a pull or tool
+// error. Only then is the post-install evidence worth collecting.
+func timedOutWaiting(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false // the whole run was cancelled; collect nothing more
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "failed calling webhook") {
+		return false // the chart's own webhook failed: a finding, left to installFailed
+	}
+	return strings.Contains(msg, "timed out waiting for the condition") ||
+		strings.Contains(msg, "context deadline exceeded")
+}
+
 // installFailed is the result when the second install fails.
 //   - The chart refusing at render time (`fail`, `required`) is safe behaviour, a PASS (D4): it may
 //     be asking for an existingSecret, which is what HB-RI-001's fix recommends.
@@ -257,7 +309,7 @@ func (Reinstall) installFailed(ctx context.Context, res Result, err error, repro
 // only when a workload that mounts a volume which kept its data reads it; the other changes are
 // returned apart, to be named in the summary.
 func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[string][]string,
-	stateful map[string]bool, claimUsers map[string][]string, repro []string) (findings []Finding, unrelated []oracle.Change) {
+	stateful map[string]bool, claimUsers map[string][]string, repro []string) (findings []Finding, unrelated, certs []oracle.Change) {
 	keepers := map[string]bool{}
 	var kept []string
 	for _, v := range volumes {
@@ -279,10 +331,15 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 		for _, w := range readers(c, consumers) {
 			reads = reads || keepers[w]
 		}
-		if reads {
-			related = append(related, c)
-		} else {
+		switch {
+		case !reads:
 			unrelated = append(unrelated, c)
+		case keyClass(c) == oracle.ClassTLS:
+			// A reissued certificate a keeper reads does not lock it out of its kept data; it is a
+			// rotation, not a credential mismatch, so it is named in a note, not reported (item 3).
+			certs = append(certs, c)
+		default:
+			related = append(related, c)
 		}
 	}
 	if len(related) > 0 {
@@ -314,7 +371,7 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 			Reproduce: repro,
 		})
 	}
-	return findings, unrelated
+	return findings, unrelated, certs
 }
 
 // reinstallPassSummary says what was checked, including volumes deleted with the release, which

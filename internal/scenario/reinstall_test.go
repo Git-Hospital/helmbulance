@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ func TestReinstallFindings(t *testing.T) {
 	kept := []volume{{claim: "data-hb-reinstall-db-0", state: "kept"}}
 	users := map[string][]string{"data-hb-reinstall-db-0": {"StatefulSet/hb-reinstall-db"}}
 
-	got, _ := reinstallFindings(kept, pw, consumers, stateful, users, nil)
+	got, _, _ := reinstallFindings(kept, pw, consumers, stateful, users, nil)
 	if len(got) != 1 || got[0].ID != "HB-RI-001" || got[0].Severity != "high" {
 		t.Fatalf("kept data and a new password: findings = %+v, want one high HB-RI-001", got)
 	}
@@ -25,16 +26,16 @@ func TestReinstallFindings(t *testing.T) {
 
 	// New credentials with no data left behind are a fresh install: nothing to report.
 	deleted := []volume{{claim: "data", state: "deleted"}}
-	if got, _ := reinstallFindings(deleted, pw, consumers, stateful, users, nil); len(got) != 0 {
+	if got, _, _ := reinstallFindings(deleted, pw, consumers, stateful, users, nil); len(got) != 0 {
 		t.Errorf("deleted volume and a new password: findings = %+v, want none", got)
 	}
 	// Kept data and kept credentials: nothing to report.
-	if got, _ := reinstallFindings(kept, nil, consumers, stateful, users, nil); len(got) != 0 {
+	if got, _, _ := reinstallFindings(kept, nil, consumers, stateful, users, nil); len(got) != 0 {
 		t.Errorf("kept data and kept Secrets: findings = %+v, want none", got)
 	}
 	// A kept claim whose sentinel is gone.
 	emptied := []volume{{claim: "data", state: "missing"}, {claim: "logs", state: "replaced"}}
-	if got, _ := reinstallFindings(emptied, nil, consumers, stateful, users, nil); len(got) != 1 || got[0].ID != "HB-RI-002" {
+	if got, _, _ := reinstallFindings(emptied, nil, consumers, stateful, users, nil); len(got) != 1 || got[0].ID != "HB-RI-002" {
 		t.Errorf("emptied volumes: findings = %+v, want HB-RI-002", got)
 	}
 }
@@ -45,9 +46,53 @@ func TestReinstallFindingsIgnoreUnrelatedKeys(t *testing.T) {
 	kept := []volume{{claim: "data-redis-0", state: "kept"}}
 	users := map[string][]string{"data-redis-0": {"StatefulSet/redis"}}
 	cert := []oracle.Change{{Ref: "webhook-tls/tls.crt", Kind: oracle.Changed}}
-	got, unrelated := reinstallFindings(kept, cert, consumers, nil, users, nil)
+	got, unrelated, _ := reinstallFindings(kept, cert, consumers, nil, users, nil)
 	if len(got) != 0 || len(unrelated) != 1 {
 		t.Errorf("findings = %+v, unrelated = %v; want no finding and the certificate set apart", got, unrelated)
+	}
+}
+
+// A certificate the kept volume's own workload reads is a reissue, not a credential mismatch: no
+// finding, and it is set apart as a certificate rather than reported (review item 3).
+func TestReinstallFindingsCertReadByKeeper(t *testing.T) {
+	consumers := map[string][]string{"db-tls/*": {"StatefulSet/db"}}
+	kept := []volume{{claim: "data-db-0", state: "kept"}}
+	users := map[string][]string{"data-db-0": {"StatefulSet/db"}}
+	stateful := map[string]bool{"StatefulSet/db": true}
+	cert := []oracle.Change{{Ref: "db-tls/tls.crt", Kind: oracle.Changed}}
+	got, unrelated, certs := reinstallFindings(kept, cert, consumers, stateful, users, nil)
+	if len(got) != 0 {
+		t.Errorf("findings = %+v, want none for a reissued certificate a keeper reads", got)
+	}
+	if len(certs) != 1 || certs[0].Ref != "db-tls/tls.crt" {
+		t.Errorf("certs = %v, want the certificate set apart", certs)
+	}
+	if len(unrelated) != 0 {
+		t.Errorf("unrelated = %v, want empty since the keeper does read it", unrelated)
+	}
+}
+
+// Only a --wait timeout with the release applied is worth collecting evidence for; a cancel, the
+// chart's webhook, a pull error or a render refusal are not (review item 1).
+func TestTimedOutWaiting(t *testing.T) {
+	for _, c := range []struct {
+		err  string
+		want bool
+	}{
+		{"Error: INSTALLATION FAILED: timed out waiting for the condition", true},
+		{"Error: INSTALLATION FAILED: context deadline exceeded", true},
+		{`Error: INSTALLATION FAILED: failed calling webhook "v.io": context deadline exceeded`, false},
+		{"Failed to pull image: toomanyrequests: rate limit", false},
+		{"Error: INSTALLATION FAILED: execution error at (demo/templates/secret.yaml:3:4)", false},
+	} {
+		if got := timedOutWaiting(t.Context(), errors.New(c.err)); got != c.want {
+			t.Errorf("timedOutWaiting(%q) = %v, want %v", c.err, got, c.want)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if timedOutWaiting(ctx, errors.New("timed out waiting for the condition")) {
+		t.Error("a cancelled run should not be treated as a collectable timeout")
 	}
 }
 
