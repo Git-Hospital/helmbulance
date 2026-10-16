@@ -23,15 +23,33 @@ func TestPodProblems(t *testing.T) {
 	}
 }
 
-// A Job's failed first attempt is not an unhealthy app (issue #9).
-func TestPodProblemsIgnoresJobAttempts(t *testing.T) {
+// A Job's failed attempt is left to the Job's own status, and a healthy in-progress Job pod is not
+// a problem (issue #9).
+func TestPodProblemsIgnoresFinishedAndHealthyJobPods(t *testing.T) {
 	pods := []kube.Pod{
 		{Name: "web-1", UID: "w1", Owner: "ReplicaSet/web-7d9f8c6b5", Ready: true, Phase: "Running"},
 		{Name: "migrate-x", UID: "m1", Owner: "Job/migrate", Phase: "Failed", Restarts: 1},
-		{Name: "migrate-y", UID: "m2", Owner: "Job/migrate", Phase: "Running"},
+		{Name: "migrate-y", UID: "m2", Owner: "Job/migrate", Phase: "Running", Ready: true},
 	}
 	if got := podProblems(pods, map[string]int{}); len(got) != 0 {
 		t.Errorf("podProblems = %q, want none", got)
+	}
+}
+
+// A Job pod stuck Pending (ErrImagePull) or crash-looping in place (restartPolicy: OnFailure) has
+// not failed yet — its Job stays active with no failure for Settle to see — so it is judged by
+// readiness and restarts rather than skipped (review item 1).
+func TestPodProblemsJudgesStuckJobPods(t *testing.T) {
+	pods := []kube.Pod{
+		{Name: "nopull-x", UID: "n1", Owner: "Job/nopull", Phase: "Pending"},
+		{Name: "crash-x", UID: "c1", Owner: "Job/crash", Phase: "Running", Ready: true, Restarts: 3},
+	}
+	want := []string{
+		"pod `crash-x` (Job/crash) restarted 3 more time(s) after the upgrade",
+		"pod `nopull-x` (Job/nopull) is not ready",
+	}
+	if got := podProblems(pods, map[string]int{}); !reflect.DeepEqual(got, want) {
+		t.Errorf("podProblems =\n%q\nwant\n%q", got, want)
 	}
 }
 

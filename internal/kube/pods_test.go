@@ -9,6 +9,23 @@ import (
 	"github.com/egezamb/helmbulance/internal/execx"
 )
 
+func TestFinishedJob(t *testing.T) {
+	for _, c := range []struct {
+		pod  Pod
+		want bool
+	}{
+		{Pod{Owner: "Job/migrate", Phase: "Failed"}, true},
+		{Pod{Owner: "Job/migrate", Phase: "Succeeded"}, true},
+		{Pod{Owner: "Job/migrate", Phase: "Pending"}, false},  // stuck in ErrImagePull
+		{Pod{Owner: "Job/migrate", Phase: "Running"}, false},  // crash-looping in place
+		{Pod{Owner: "StatefulSet/db", Phase: "Failed"}, false}, // not a Job
+	} {
+		if got := c.pod.FinishedJob(); got != c.want {
+			t.Errorf("FinishedJob(%s, %s) = %v, want %v", c.pod.Owner, c.pod.Phase, got, c.want)
+		}
+	}
+}
+
 // kubectlPrinting puts a kubectl that prints out first on PATH.
 func kubectlPrinting(t *testing.T, out string) *Client {
 	t.Helper()

@@ -183,7 +183,7 @@ func unhealthy(ctx context.Context, k *kube.Client, ns string) []string {
 func restartedSince(pods []kube.Pod, first map[string]int) []string {
 	var out []string
 	for _, p := range pods {
-		if n := p.Restarts - first[p.UID]; n > 0 && !p.FromJob() {
+		if n := p.Restarts - first[p.UID]; n > 0 && !p.FinishedJob() {
 			out = append(out, fmt.Sprintf("pod `%s` restarted %d time(s) while Helmbulance watched it", p.Name, n))
 		}
 	}
@@ -194,7 +194,7 @@ func restartedSince(pods []kube.Pod, first map[string]int) []string {
 func notReady(pods []kube.Pod) []string {
 	var bad []string
 	for _, p := range pods {
-		if !p.Ready && !p.FromJob() {
+		if !p.Ready && !p.FinishedJob() {
 			bad = append(bad, fmt.Sprintf("pod `%s` is not ready (%d restart(s))", p.Name, p.Restarts))
 		}
 	}

@@ -175,6 +175,14 @@ type Pod struct {
 // attempt may be retried, so its readiness says nothing about the app; the Job's own status does.
 func (p Pod) FromJob() bool { return strings.HasPrefix(p.Owner, "Job/") }
 
+// FinishedJob reports whether p is a Job pod that has finished, so its outcome belongs to the Job's
+// status, not to readiness. A Job pod still Pending (stuck in ErrImagePull) or Running (crash-looping
+// in place) has not finished: its Job stays active with no failure recorded, so it is still judged
+// by readiness and restarts. Succeeded pods are already dropped from the pod list.
+func (p Pod) FinishedJob() bool {
+	return p.FromJob() && (p.Phase == "Succeeded" || p.Phase == "Failed")
+}
+
 // Pods returns the pods in ns with their readiness and restart counts. Finished pods and pods that
 // are terminating are left out.
 func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {

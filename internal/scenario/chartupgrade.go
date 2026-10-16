@@ -189,11 +189,13 @@ func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod, jobsBefore
 }
 
 // podProblems lists pods that are not ready and pods that restarted more than their baseline, by
-// pod UID, so a Deployment's new pods are checked too. Job pods are left to the Jobs' own status.
+// pod UID, so a Deployment's new pods are checked too. A finished Job pod is left to the Jobs' own
+// status, but a Job pod stuck Pending or crash-looping in place is judged here, since its Job stays
+// active with no failure for `Settle` to see.
 func podProblems(pods []kube.Pod, restartsBefore map[string]int) []string {
 	var problems []string
 	for _, p := range pods {
-		if p.FromJob() {
+		if p.FinishedJob() {
 			continue
 		}
 		if !p.Ready {
