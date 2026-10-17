@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -435,12 +436,16 @@ func scanCmd(args []string) int {
 // and the state dir when it is somewhere else.
 func localPaths() map[string]string {
 	paths := map[string]string{}
+	// Cleaned, so a trailing slash ("HOME=/home/ege/") still matches the paths tools print.
 	home, err := os.UserHomeDir()
 	if err == nil {
+		home = filepath.Clean(home)
 		paths[home] = "~"
 	}
-	if dir, err := sandbox.StateDir(); err == nil && (home == "" || !strings.HasPrefix(dir+"/", home+"/")) {
-		paths[dir] = "$HELMBULANCE_STATE_DIR"
+	if dir, err := sandbox.StateDir(); err == nil {
+		if dir = filepath.Clean(dir); home == "" || !strings.HasPrefix(dir+"/", home+"/") {
+			paths[dir] = "$HELMBULANCE_STATE_DIR"
+		}
 	}
 	return paths
 }
