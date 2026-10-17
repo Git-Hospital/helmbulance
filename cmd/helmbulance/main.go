@@ -127,9 +127,10 @@ func test(args []string) int {
 	var c *sandbox.Cluster
 	if *cluster != "" {
 		c, err = sandbox.Open(*cluster)
-	} else {
-		fmt.Println("Creating sandbox cluster…")
-		c, err = sandbox.Create(ctx, runner, *nodeImage)
+	} else if c, err = sandbox.NewCluster(); err == nil {
+		// Print the name before kind runs, so an interrupt during creation still leaves it on screen.
+		fmt.Printf("Creating sandbox cluster %s…\n", c.Name)
+		err = c.Create(ctx, runner, *nodeImage)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -428,7 +429,7 @@ func interruptContext() (context.Context, context.CancelFunc) {
 		select {
 		case <-sig:
 			signal.Stop(sig)
-			fmt.Fprintln(os.Stderr, "\nInterrupted: cleaning up. Press Ctrl-C again to quit at once.")
+			fmt.Fprintln(os.Stderr, "\nInterrupted: cleaning up. Press Ctrl-C again to quit now and leave the sandbox cluster (its name was printed above; remove it with kind delete cluster --name).")
 			cancel()
 		case <-ctx.Done():
 		}
