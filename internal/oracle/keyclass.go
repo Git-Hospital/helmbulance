@@ -32,6 +32,11 @@ var credentialWords = map[string]bool{
 	"dockerconfigjson": true, "dockercfg": true, "dockerconfig": true,
 }
 
+// credentialParts mark a word as a credential when it contains one, so run-together names such as
+// dbpassword, htpasswd and secretkey count. Only these four: key and auth stay whole words, or
+// monkey and author would be credentials.
+var credentialParts = []string{"password", "passwd", "secret", "token"}
+
 // keystoreExt are bundle formats that carry a private key, so a Secret key with one is a credential.
 var keystoreExt = map[string]bool{".jks": true, ".p12": true, ".pfx": true}
 
@@ -56,15 +61,31 @@ func KeyClass(key string) string {
 	}
 	// Match whole words from the original name, so camelCase (jwtSecret) splits too.
 	for _, w := range words(key) {
-		if credentialWords[w] {
+		if isCredentialWord(w) {
 			return ClassCredential
 		}
 	}
 	return ClassOther
 }
 
+// isCredentialWord matches a word as written or without a plural s (passwords, tokens, keys), or
+// one that contains a credentialParts entry.
+func isCredentialWord(w string) bool {
+	if credentialWords[w] || credentialWords[strings.TrimSuffix(w, "s")] {
+		return true
+	}
+	for _, part := range credentialParts {
+		if strings.Contains(w, part) {
+			return true
+		}
+	}
+	return false
+}
+
 // words splits a key name into lowercase words, on separators (-, _, ., /, space) and at camelCase
-// boundaries (a lowercase letter followed by an uppercase one), so credentialWords match as words.
+// boundaries: a lowercase letter followed by an uppercase one, and the last capital of an
+// uppercase run followed by a lowercase letter (DBPassword is db, password), so credentialWords
+// match as words.
 func words(s string) []string {
 	var out []string
 	var cur []rune
@@ -79,7 +100,8 @@ func words(s string) []string {
 		switch {
 		case r == '-' || r == '_' || r == '.' || r == '/' || r == ' ':
 			flush()
-		case unicode.IsUpper(r) && i > 0 && unicode.IsLower(rs[i-1]):
+		case unicode.IsUpper(r) && i > 0 && unicode.IsLower(rs[i-1]),
+			unicode.IsUpper(r) && i > 0 && unicode.IsUpper(rs[i-1]) && i+1 < len(rs) && unicode.IsLower(rs[i+1]):
 			flush()
 			cur = append(cur, r)
 		default:
