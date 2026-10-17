@@ -1,0 +1,78 @@
+# Stands in for an operator or an app that writes its own Secret: it rewrites <release>-runtime
+# twice a second through the API. The chart does not render that Secret, so its changes are not the
+# upgrade's. The pod is Ready only while its last write succeeded, so helm --wait proves the writer
+# works and the fixture cannot pass because nothing was written.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-writer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-writer
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ printf "%s-runtime" .Release.Name | quote }}]
+    verbs: [patch]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-writer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-writer
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-writer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-writer
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-writer}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-writer}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-writer
+      securityContext: {runAsNonRoot: true, runAsUser: 65535}
+      containers:
+        - name: writer
+          # curl, not kubectl: 14 MB instead of 300 MB, pulled on every CI run. Pinned by digest.
+          image: curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          env:
+            - {name: NAME, value: {{ printf "%s-runtime" .Release.Name | quote }}}
+          command: [sh, -c]
+          args:
+            - |
+              sa=/var/run/secrets/kubernetes.io/serviceaccount
+              ns=$(cat $sa/namespace)
+              api=https://kubernetes.default.svc/api/v1/namespaces/$ns/secrets
+              call() { curl -sf --cacert $sa/ca.crt -H "Authorization: Bearer $(cat $sa/token)" "$@" >/dev/null; }
+              call -X POST -H 'Content-Type: application/json' "$api" \
+                -d "{\"metadata\":{\"name\":\"$NAME\"},\"stringData\":{\"token\":\"0\"}}" || true
+              i=0
+              while true; do
+                i=$((i+1))
+                if call -X PATCH -H 'Content-Type: application/merge-patch+json' "$api/$NAME" \
+                  -d "{\"stringData\":{\"token\":\"$i\"}}"; then touch /tmp/ok; else rm -f /tmp/ok; fi
+                sleep 0.5
+              done
+          readinessProbe:
+            exec: {command: [cat, /tmp/ok]}
+            periodSeconds: 2
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {}}

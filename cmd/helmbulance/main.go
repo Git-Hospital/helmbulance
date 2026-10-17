@@ -347,6 +347,13 @@ func matrixCmd(args []string) int {
 		fmt.Printf("  %s: %s\n", res.Verdict, res.Summary)
 		rep.Results = append(rep.Results, res)
 	}
+	attributed := matrix.Attribute(rep.Results)
+	for i, res := range attributed {
+		if res.Verdict != rep.Results[i].Verdict {
+			fmt.Printf("%s is now %s: %s\n", res.Scenario, res.Verdict, res.Summary)
+		}
+	}
+	rep.Results = attributed
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()
 	if err := rep.Write(*out); err != nil {

@@ -60,16 +60,11 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "could not confirm the earlier version", err)
 	}
 
-	snapshot := func() (oracle.SecretSnapshot, error) {
-		secrets, err := env.Kube.Secrets(ctx, ns)
-		if err != nil {
-			return nil, err
-		}
-		return env.Hasher.Snapshot(secrets), nil
-	}
+	secrets := newSecretReader(ctx, env, release, ns)
+	snapshot := secrets.snapshot
 	installed, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after install", err)
+		return secretsInconclusive(res, "after install", err)
 	}
 
 	// Control: same version again.
@@ -78,7 +73,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	control, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after the control upgrade", err)
+		return secretsInconclusive(res, "after the control upgrade", err)
 	}
 	podsBefore, err := env.Kube.Pods(ctx, ns)
 	if err != nil {
@@ -89,6 +84,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	mark = len(env.Runner.Transcript())
 	upgradeErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values)
 	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	if IsEnvironmentError(ctx, upgradeErr) {
+		return inconclusive(res, "the upgrade did not finish", upgradeErr)
+	}
 	if upgradeErr != nil {
 		res.Verdict = Fail
 		res.Summary = "the upgrade from " + fromV + " fails"
@@ -110,7 +108,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 
 	upgraded, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after the upgrade", err)
+		return secretsInconclusive(res, "after the upgrade", err)
 	}
 	consumers, err := env.Kube.SecretConsumers(ctx, ns)
 	if err != nil {
@@ -118,7 +116,12 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	}
 
 	regenerated := oracle.Diff(installed, control)
-	if changes := withoutRefs(oracle.Diff(control, upgraded), regenerated); len(changes) > 0 {
+	// A new version adding keys is normal; only changed and removed keys break existing data.
+	// A renamed Secret whose value is carried over loses nothing either.
+	rest, moved := oracle.Moved(control, upgraded, withoutRefs(oracle.Diff(control, upgraded), regenerated))
+	moved, back := unpairStillRead(moved, consumers)
+	changes, added := splitAdded(append(rest, back...))
+	if len(changes) > 0 {
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-CU-002",
 			Title:    "The new version changes or drops Secret values of an existing release",
@@ -153,7 +156,14 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	} else {
 		res.Verdict = Pass
 		res.Summary = "upgraded from " + fromV + toVersion(ctx, env, release, ns) + " with Secrets kept and workloads healthy"
+		if noKeys(installed, control, upgraded) {
+			res.Summary = "upgraded from " + fromV + toVersion(ctx, env, release, ns) + " with workloads healthy; " + noSecretsTested
+		}
 	}
+	res.Summary = withNotes(res.Summary,
+		note("keys added by the new version, not a finding", describe(added, consumers)),
+		note("values moved to another key, not a finding", describe(moved, consumers)),
+		secrets.notComparedNote())
 	return res
 }
 
