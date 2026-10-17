@@ -123,10 +123,11 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 	if consumersErr != nil {
 		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", consumersErr)
 	}
-	stateful, err := env.Kube.StatefulWorkloads(ctx, ns)
-	if err != nil {
-		fmt.Fprintf(env.Log, "could not find stateful workloads: %v\n", err)
+	stateful, statefulErr := env.Kube.StatefulWorkloads(ctx, ns)
+	if statefulErr != nil {
+		fmt.Fprintf(env.Log, "could not find stateful workloads: %v\n", statefulErr)
 	}
+	statefulKnown := statefulErr == nil
 	changes, added := splitAdded(oracle.Diff(before, after))
 	changes, rotated := splitExpected(changes, env.ExpectedRotation)
 	// A claim that could not be written to leaves it unknown whether it kept old data. An unbound
@@ -153,7 +154,7 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 	}
 
 	var unrelated, certs []oracle.Change
-	res.Findings, unrelated, certs = reinstallFindings(volumes, changes, consumers, stateful, claimUsers, repro)
+	res.Findings, unrelated, certs = reinstallFindings(volumes, changes, consumers, stateful, statefulKnown, claimUsers, repro)
 	if len(keptClaims) == 0 {
 		unrelated = nil // the summary already says new Secrets are expected
 	}
@@ -309,7 +310,7 @@ func (Reinstall) installFailed(ctx context.Context, res Result, err error, repro
 // only when a workload that mounts a volume which kept its data reads it; the other changes are
 // returned apart, to be named in the summary.
 func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[string][]string,
-	stateful map[string]bool, claimUsers map[string][]string, repro []string) (findings []Finding, unrelated, certs []oracle.Change) {
+	stateful map[string]bool, statefulKnown bool, claimUsers map[string][]string, repro []string) (findings []Finding, unrelated, certs []oracle.Change) {
 	keepers := map[string]bool{}
 	var kept []string
 	for _, v := range volumes {
@@ -348,7 +349,7 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 		findings = append(findings, Finding{
 			ID:       "HB-RI-001",
 			Title:    "Data survives a reinstall, but the credentials it was written with do not",
-			Severity: worstSeverity(changes, consumers, stateful),
+			Severity: worstSeverity(changes, consumers, stateful, statefulKnown),
 			Evidence: append(evidence, describe(changes, consumers)...),
 			Impact: "After `helm uninstall` and `helm install` the volumes still hold the old data, " +
 				"but the chart generated new credentials. A database initialised with the old " +

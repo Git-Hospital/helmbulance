@@ -16,7 +16,7 @@ func TestReinstallFindings(t *testing.T) {
 	kept := []volume{{claim: "data-hb-reinstall-db-0", state: "kept"}}
 	users := map[string][]string{"data-hb-reinstall-db-0": {"StatefulSet/hb-reinstall-db"}}
 
-	got, _, _ := reinstallFindings(kept, pw, consumers, stateful, users, nil)
+	got, _, _ := reinstallFindings(kept, pw, consumers, stateful, true, users, nil)
 	if len(got) != 1 || got[0].ID != "HB-RI-001" || got[0].Severity != "high" {
 		t.Fatalf("kept data and a new password: findings = %+v, want one high HB-RI-001", got)
 	}
@@ -26,16 +26,16 @@ func TestReinstallFindings(t *testing.T) {
 
 	// New credentials with no data left behind are a fresh install: nothing to report.
 	deleted := []volume{{claim: "data", state: "deleted"}}
-	if got, _, _ := reinstallFindings(deleted, pw, consumers, stateful, users, nil); len(got) != 0 {
+	if got, _, _ := reinstallFindings(deleted, pw, consumers, stateful, true, users, nil); len(got) != 0 {
 		t.Errorf("deleted volume and a new password: findings = %+v, want none", got)
 	}
 	// Kept data and kept credentials: nothing to report.
-	if got, _, _ := reinstallFindings(kept, nil, consumers, stateful, users, nil); len(got) != 0 {
+	if got, _, _ := reinstallFindings(kept, nil, consumers, stateful, true, users, nil); len(got) != 0 {
 		t.Errorf("kept data and kept Secrets: findings = %+v, want none", got)
 	}
 	// A kept claim whose sentinel is gone.
 	emptied := []volume{{claim: "data", state: "missing"}, {claim: "logs", state: "replaced"}}
-	if got, _, _ := reinstallFindings(emptied, nil, consumers, stateful, users, nil); len(got) != 1 || got[0].ID != "HB-RI-002" {
+	if got, _, _ := reinstallFindings(emptied, nil, consumers, stateful, true, users, nil); len(got) != 1 || got[0].ID != "HB-RI-002" {
 		t.Errorf("emptied volumes: findings = %+v, want HB-RI-002", got)
 	}
 }
@@ -46,7 +46,7 @@ func TestReinstallFindingsIgnoreUnrelatedKeys(t *testing.T) {
 	kept := []volume{{claim: "data-redis-0", state: "kept"}}
 	users := map[string][]string{"data-redis-0": {"StatefulSet/redis"}}
 	cert := []oracle.Change{{Ref: "webhook-tls/tls.crt", Kind: oracle.Changed}}
-	got, unrelated, _ := reinstallFindings(kept, cert, consumers, nil, users, nil)
+	got, unrelated, _ := reinstallFindings(kept, cert, consumers, nil, true, users, nil)
 	if len(got) != 0 || len(unrelated) != 1 {
 		t.Errorf("findings = %+v, unrelated = %v; want no finding and the certificate set apart", got, unrelated)
 	}
@@ -60,7 +60,7 @@ func TestReinstallFindingsCertReadByKeeper(t *testing.T) {
 	users := map[string][]string{"data-db-0": {"StatefulSet/db"}}
 	stateful := map[string]bool{"StatefulSet/db": true}
 	cert := []oracle.Change{{Ref: "db-tls/tls.crt", Kind: oracle.Changed}}
-	got, unrelated, certs := reinstallFindings(kept, cert, consumers, stateful, users, nil)
+	got, unrelated, certs := reinstallFindings(kept, cert, consumers, stateful, true, users, nil)
 	if len(got) != 0 {
 		t.Errorf("findings = %+v, want none for a reissued certificate a keeper reads", got)
 	}
