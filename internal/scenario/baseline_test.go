@@ -48,23 +48,29 @@ func podsJSON(uid string, restarts int) string {
 
 func TestUnhealthyAfterRestartBaseline(t *testing.T) {
 	cases := []struct {
-		name   string
-		before []kube.Pod
-		reads  []string
-		want   string
+		name     string
+		before   []kube.Pod
+		upgraded []kube.Pod
+		reads    []string
+		want     string
 	}{
 		// Row F: a new pod that restarted once during its own startup, before helm --wait returned.
-		{"new pod, restart before the first read", nil, []string{podsJSON("new", 1)}, ""},
+		{"new pod, restart before the first read", nil, nil, []string{podsJSON("new", 1)}, ""},
 		// Row D: a new pod that crashes after helm --wait returned.
-		{"new pod, restart while watched", nil, []string{podsJSON("new", 0), podsJSON("new", 2)}, "restarted 2 more time(s)"},
+		{"new pod, restart while watched", nil, nil, []string{podsJSON("new", 0), podsJSON("new", 2)}, "restarted 2 more time(s)"},
+		// A new pod read right after the upgrade, which crashes while the Secrets settle, before
+		// the first Settle read.
+		{"new pod, restart before Settle but after the upgrade", nil, []kube.Pod{{UID: "new", Restarts: 0}}, []string{podsJSON("new", 1)}, "restarted 1 more time(s)"},
 		// A pod that survived the upgrade keeps its count from before the upgrade.
-		{"surviving pod", []kube.Pod{{UID: "old", Restarts: 0}}, []string{podsJSON("old", 1)}, "restarted 1 more time(s)"},
+		{"surviving pod", []kube.Pod{{UID: "old", Restarts: 0}}, nil, []string{podsJSON("old", 1)}, "restarted 1 more time(s)"},
+		// The read after the upgrade does not reset a pod that survived it.
+		{"surviving pod, read again after the upgrade", []kube.Pod{{UID: "old", Restarts: 0}}, []kube.Pod{{UID: "old", Restarts: 1}}, []string{podsJSON("old", 1)}, "restarted 1 more time(s)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			shortSettle(t, 2*time.Second, 50*time.Millisecond)
 			env := fakePodReads(t, c.reads...)
-			got := strings.Join(unhealthyAfter(t.Context(), env, c.before, nil), "; ")
+			got := strings.Join(unhealthyAfter(t.Context(), env, c.before, c.upgraded, nil), "; ")
 			if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
 				t.Errorf("unhealthyAfter = %q, want %q", got, c.want)
 			}
@@ -78,10 +84,10 @@ func TestUnhealthyAfterSkipsJobsThatFailedBefore(t *testing.T) {
 	env := fakePodReads(t, podsJSON("p", 0))
 	t.Setenv("FAKE_JOBS", `{"items":[{"metadata":{"name":"old"},"status":{"conditions":[{"type":"Failed","status":"True","reason":"BackoffLimitExceeded"}]}}]}`)
 	before := []kube.Pod{{UID: "p"}}
-	if got := unhealthyAfter(t.Context(), env, before, []string{"Job/old: BackoffLimitExceeded"}); len(got) != 0 {
+	if got := unhealthyAfter(t.Context(), env, before, nil, []string{"Job/old: BackoffLimitExceeded"}); len(got) != 0 {
 		t.Errorf("unhealthyAfter = %q, want nothing for a Job that failed before", got)
 	}
-	if got := unhealthyAfter(t.Context(), env, before, nil); len(got) != 1 {
+	if got := unhealthyAfter(t.Context(), env, before, nil, nil); len(got) != 1 {
 		t.Errorf("unhealthyAfter = %q, want the Job when it is new", got)
 	}
 }

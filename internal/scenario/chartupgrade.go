@@ -109,6 +109,12 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		return res
 	}
 
+	// Read pods before the Secret snapshot, which can take seconds to settle: a new pod gets its
+	// restart baseline here, so a crash in that wait still counts as after the upgrade.
+	podsUpgraded, err := env.Kube.Pods(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not read pods right after the upgrade: %v\n", err)
+	}
 	upgraded, err := snapshot()
 	if err != nil {
 		return secretsInconclusive(res, "after the upgrade", err)
@@ -138,7 +144,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		})
 	}
 
-	if unhealthy := unhealthyAfter(ctx, env, podsBefore, jobsBefore); len(unhealthy) > 0 {
+	if unhealthy := unhealthyAfter(ctx, env, podsBefore, podsUpgraded, jobsBefore); len(unhealthy) > 0 {
 		res.Findings = append(res.Findings, Finding{
 			ID:        "HB-CU-003",
 			Title:     "Workloads are not healthy after the upgrade",
@@ -173,12 +179,18 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 // unhealthyAfter waits for the release to settle and lists pods that are not ready or restarted
 // more than before the upgrade, and Jobs that gave up since. A pod that survived the upgrade is
 // compared with its count from before it. A new pod is compared with its count at the first read
-// that sees it, since restarts during its own startup, before helm --wait returned, are not the
-// upgrade's doing; matrix counts the same way.
-func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod, jobsBefore []string) []string {
+// that sees it (upgraded, read as soon as helm --wait returned, or else the first Settle read),
+// since restarts during its own startup, before helm --wait returned, are not the upgrade's doing;
+// matrix counts the same way.
+func unhealthyAfter(ctx context.Context, env *Env, before, upgraded []kube.Pod, jobsBefore []string) []string {
 	baseline := map[string]int{}
 	for _, p := range before {
 		baseline[p.UID] = p.Restarts
+	}
+	for _, p := range upgraded {
+		if _, seen := baseline[p.UID]; !seen {
+			baseline[p.UID] = p.Restarts
+		}
 	}
 	return Settle(ctx, func() []string {
 		pods, err := env.Kube.Pods(ctx, chartUpgradeNamespace)
