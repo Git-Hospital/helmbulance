@@ -84,26 +84,28 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	mark = len(env.Runner.Transcript())
 	upgradeErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values)
 	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	// A new version whose pods crash ends in the same `--wait` timeout as a slow machine. The
+	// release was applied, so its containers say which it was: a crash or a container that cannot
+	// start is the chart's failure (D4); anything else stays INCONCLUSIVE (#28).
+	if timedOutWaiting(ctx, upgradeErr) {
+		if crashes := crashesAfterTimeout(ctx, env, ns, podsBefore); len(crashes) > 0 {
+			return upgradeFails(res, fromV, repro,
+				append([]string{"`helm upgrade --wait` timed out while containers of the new version crashed or could not start: " + helmMessage(upgradeErr)}, crashes...),
+				"Read the crashed container's logs (`kubectl logs --previous`) and the pod events in the "+
+					"failure bundle. Typical causes are a setting the new version requires, a changed command "+
+					"or port, a probe that fails, or a Secret or ConfigMap key the new version reads but the "+
+					"chart does not create.")
+		}
+	}
 	if IsEnvironmentError(ctx, upgradeErr) {
 		return inconclusive(res, "the upgrade did not finish", upgradeErr)
 	}
 	if upgradeErr != nil {
-		res.Verdict = Fail
-		res.Summary = "the upgrade from " + fromV + " fails"
-		res.Findings = append(res.Findings, Finding{
-			ID:       "HB-CU-001",
-			Title:    "Upgrading from " + fromV + " fails",
-			Severity: "high",
-			Evidence: []string{"`helm upgrade` failed: " + helmMessage(upgradeErr)},
-			Impact: "Users on " + fromV + " cannot upgrade with their existing values. A " +
-				"failed upgrade can leave the release in a failed state that needs a manual rollback.",
-			Fix: "If the error names an immutable field (selector, StatefulSet volumeClaimTemplates or " +
-				"serviceName), keep it unchanged or document the migration (for example deleting the " +
-				"StatefulSet with --cascade=orphan). If it is a values or schema error, accept the old " +
-				"value or document the change in the release notes.",
-			Reproduce: repro,
-		})
-		return res
+		return upgradeFails(res, fromV, repro, []string{"`helm upgrade` failed: " + helmMessage(upgradeErr)},
+			"If the error names an immutable field (selector, StatefulSet volumeClaimTemplates or "+
+				"serviceName), keep it unchanged or document the migration (for example deleting the "+
+				"StatefulSet with --cascade=orphan). If it is a values or schema error, accept the old "+
+				"value or document the change in the release notes.")
 	}
 
 	upgraded, err := snapshot()
@@ -164,6 +166,23 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		note("keys added by the new version, not a finding", describe(added, consumers)),
 		note("values moved to another key, not a finding", describe(moved, consumers)),
 		secrets.notComparedNote())
+	return res
+}
+
+// upgradeFails is the HB-CU-001 result: the upgrade to the version under test did not succeed.
+func upgradeFails(res Result, fromV string, repro, evidence []string, fix string) Result {
+	res.Verdict = Fail
+	res.Summary = "the upgrade from " + fromV + " fails"
+	res.Findings = append(res.Findings, Finding{
+		ID:       "HB-CU-001",
+		Title:    "Upgrading from " + fromV + " fails",
+		Severity: "high",
+		Evidence: evidence,
+		Impact: "Users on " + fromV + " cannot upgrade with their existing values. A " +
+			"failed upgrade can leave the release in a failed state that needs a manual rollback.",
+		Fix:       fix,
+		Reproduce: repro,
+	})
 	return res
 }
 
