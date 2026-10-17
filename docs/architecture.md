@@ -111,7 +111,7 @@ Each scenario goes through these phases:
 | `Observe` + `Assert` | Waits until the cluster settles (no change for N seconds, with a timeout), then compares against the control |
 | `Cleanup` | Uninstalls, deletes the namespace, and checks for leftovers: orphan PVCs, Secrets, Jobs, hooks |
 
-A run's deadline, or Ctrl-C, stops every tool call with its children: the process group gets SIGTERM, so helm can mark the release failed, and is killed 30 s later. `Cleanup` still runs after that, with its own 10 minute limit. A second Ctrl-C quits at once and leaves the cluster as it is.
+A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker stop`) stops every tool call with the children that stay in its process group: the group gets SIGTERM, so helm can mark the release failed, and is killed 30 s later. `Cleanup` still runs after that, with its own 10 minute limit. A second Ctrl-C or SIGTERM quits at once and leaves the cluster as it is.
 
 #### Scenario definitions
 

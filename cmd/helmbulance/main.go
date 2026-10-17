@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/egezamb/helmbulance/internal/execx"
@@ -418,12 +419,14 @@ func scanCmd(args []string) int {
 	return exitClean
 }
 
-// interruptContext is cancelled by the first Ctrl-C, so the run stops and cleans up. Cleanup can
-// take minutes, so a second Ctrl-C quits at once, leaving the cluster as it is.
+// interruptContext is cancelled by the first Ctrl-C or SIGTERM, so the run stops and cleans up.
+// Cleanup can take minutes, so a second one quits at once, leaving the cluster as it is. SIGTERM
+// (kill, timeout, docker stop) takes the same path: the tools run in their own process groups, so
+// a SIGTERM sent to the run's group no longer reaches them, and only the cancel stops them.
 func interruptContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		defer signal.Stop(sig)
 		select {
