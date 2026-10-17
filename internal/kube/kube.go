@@ -30,7 +30,8 @@ var skippedSecretTypes = map[string]bool{
 	"kubernetes.io/service-account-token": true,
 }
 
-// Secrets returns every Secret in ns that belongs to the chart, sorted by name.
+// Secrets returns the Secrets in ns, sorted by name, without Helm's release records and service
+// account tokens. It does not know which ones the chart renders; see helm.Client.OwnedSecrets.
 func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "secrets", "-o", "json")
 	if err != nil {
@@ -487,9 +488,39 @@ func (c *Client) StartPod(ctx context.Context, ns, name, image, script string, l
 	if len(l) > 0 {
 		args = append(args, "--labels", strings.Join(l, ","))
 	}
+	overrides, err := json.Marshal(hardenedPod(name))
+	if err != nil {
+		return err
+	}
+	args = append(args, "--override-type", "strategic", "--overrides", string(overrides))
 	args = append(args, "--command", "--", "sh", "-c", script)
-	_, err := c.Runner.Run(ctx, "kubectl", args...)
+	_, err = c.Runner.Run(ctx, "kubectl", args...)
 	return err
+}
+
+// hardenedPod is merged into the pod kubectl run makes. The pod lives in the chart's namespace,
+// so it carries no ServiceAccount token and meets Pod Security "restricted": no root, no
+// privilege escalation, no capabilities, a read-only root filesystem.
+func hardenedPod(container string) map[string]any {
+	return map[string]any{
+		"spec": map[string]any{
+			"automountServiceAccountToken": false,
+			"securityContext": map[string]any{
+				"runAsNonRoot":   true,
+				"runAsUser":      65534,
+				"runAsGroup":     65534,
+				"seccompProfile": map[string]any{"type": "RuntimeDefault"},
+			},
+			"containers": []any{map[string]any{
+				"name": container,
+				"securityContext": map[string]any{
+					"allowPrivilegeEscalation": false,
+					"readOnlyRootFilesystem":   true,
+					"capabilities":             map[string]any{"drop": []string{"ALL"}},
+				},
+			}},
+		},
+	}
 }
 
 // WaitPodRunning waits until the pod is running.

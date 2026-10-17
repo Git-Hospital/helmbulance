@@ -27,7 +27,7 @@ const upgradeNamespace = "hb-upgrade-values"
 func (UpgradeValues) Name() string { return "upgrade-without-values" }
 
 func (UpgradeValues) Description() string {
-	return "Upgrades with reused values (control), then with the values files only, and compares every Secret."
+	return "Upgrades with reused values (control), then with the values files only, and compares the Secrets the release renders."
 }
 
 func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
@@ -48,17 +48,12 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	installCmd := env.Runner.Transcript()[start:]
 
-	snapshot := func() (oracle.SecretSnapshot, error) {
-		secrets, err := env.Kube.Secrets(ctx, ns)
-		if err != nil {
-			return nil, err
-		}
-		return env.Hasher.Snapshot(secrets), nil
-	}
+	secrets := newSecretReader(ctx, env, release, ns)
+	snapshot := secrets.snapshot
 
 	installed, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after install", err)
+		return secretsInconclusive(res, "after install", err)
 	}
 
 	podsBefore, err := env.Kube.Pods(ctx, ns)
@@ -74,7 +69,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	reuseCmd := env.Runner.Transcript()[mark:]
 	reused, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after the control upgrade", err)
+		return secretsInconclusive(res, "after the control upgrade", err)
 	}
 	podsAfter, err := env.Kube.Pods(ctx, ns)
 	if err != nil {
@@ -101,7 +96,9 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 
 	// Treatment: values files only. Without any --set or values file it would repeat the control.
 	if len(env.Values.Sets) == 0 && len(env.Values.Files) == 0 {
-		return s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
+		return res
 	}
 	mark = len(env.Runner.Transcript())
 	// --reset-values: without any values flag Helm would reuse the install values, --set included.
@@ -111,10 +108,12 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	filesCmd := env.Runner.Transcript()[mark:]
 	filesOnly, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after the upgrade", err)
+		return secretsInconclusive(res, "after the upgrade", err)
 	}
 
-	return s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
+	res, notes := s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
+	res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
+	return res
 }
 
 // replacedPods lists the workloads that rolled out a new pod template between two readings: an
@@ -217,7 +216,7 @@ func withRestarts(res Result, restarted restarts, installCmd, reuseCmd []execx.C
 }
 
 func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reused, filesOnly oracle.SecretSnapshot,
-	installCmd, reuseCmd, filesCmd []execx.Command, env *Env) Result {
+	installCmd, reuseCmd, filesCmd []execx.Command, env *Env) (Result, []string) {
 	consumers, err := env.Kube.SecretConsumers(ctx, upgradeNamespace)
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", err)
@@ -229,13 +228,14 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	}
 
 	control := oracle.Diff(installed, reused)
-	if len(control) > 0 {
+	regenerated, added := splitAdded(control)
+	if len(regenerated) > 0 {
 		steps := concat(repro, reproLine(reuseCmd[0].Line))
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-UV-001",
 			Title:    "Secrets change on every upgrade, even with the same values",
 			Severity: "high",
-			Evidence: describe(control, consumers),
+			Evidence: describe(regenerated, consumers),
 			Impact: "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
 				"its first start stop matching, and anything encrypted or signed with the old value " +
 				"can no longer be read.",
@@ -249,7 +249,9 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	// Keys that already changed in the control are reported there, not again here.
 	var changes []oracle.Change
 	if filesOnly != nil {
-		changes = withoutRefs(oracle.Diff(reused, filesOnly), control)
+		var more []oracle.Change
+		changes, more = splitAdded(withoutRefs(oracle.Diff(reused, filesOnly), control))
+		added = append(added, more...)
 	}
 	if len(changes) > 0 {
 		steps := concat(repro, reproLine(filesCmd[0].Line))
@@ -278,8 +280,11 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	} else {
 		res.Verdict = Pass
 		res.Summary = "Secrets stayed the same through both upgrades"
+		if noKeys(installed, reused, filesOnly) {
+			res.Summary = noSecretsTested
+		}
 	}
-	return res
+	return res, []string{note("keys added by an upgrade, not a finding", describe(added, consumers))}
 }
 
 func describe(changes []oracle.Change, consumers map[string][]string) []string {
