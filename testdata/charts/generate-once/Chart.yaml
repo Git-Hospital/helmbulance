@@ -1,0 +1,5 @@
+apiVersion: v2
+name: generate-once
+description: "Helmbulance fixture. Renders its Secret on install only (lookup finds it later) and keeps it with resource-policy: keep. The Secret never changes, so this must pass."
+type: application
+version: 0.1.0

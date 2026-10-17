@@ -2,10 +2,15 @@
 package oracle
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
+	"fmt"
+	"maps"
 	"sort"
+	"time"
 
 	"github.com/egezamb/helmbulance/internal/kube"
 )
@@ -53,6 +58,8 @@ const (
 	Changed = "changed"
 	Removed = "removed"
 	Added   = "added"
+	// MovedKind is a key whose value now lives under another key; see Moved.
+	MovedKind = "moved"
 )
 
 // Diff lists the keys that changed, disappeared or appeared, sorted by reference.
@@ -74,4 +81,66 @@ func Diff(before, after SecretSnapshot) []Change {
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Ref < changes[j].Ref })
 	return changes
+}
+
+// ErrNotSettled means the Secrets were still changing when Settle gave up.
+var ErrNotSettled = errors.New("Secrets were still changing")
+
+// Settle reads until two reads in a row agree, waiting interval between them, and returns that
+// snapshot. A Secret written by a Job or the app just after an install would otherwise land
+// between two snapshots and look like a change caused by the upgrade.
+func Settle(ctx context.Context, read func() (SecretSnapshot, error), interval time.Duration, reads int) (SecretSnapshot, error) {
+	prev, err := read()
+	if err != nil {
+		return nil, err
+	}
+	for i := 1; i < reads; i++ {
+		t := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, ctx.Err()
+		case <-t.C:
+		}
+		cur, err := read()
+		if err != nil {
+			return nil, err
+		}
+		if maps.Equal(prev, cur) {
+			return cur, nil
+		}
+		prev = cur
+	}
+	return nil, fmt.Errorf("%w after %d reads, %s apart", ErrNotSettled, reads, interval)
+}
+
+// Moved pairs keys that were removed with keys that were added holding the same value, as when a
+// new chart version renames a Secret and carries the value over with lookup. Nothing is lost
+// there, so the pairs are returned apart from the remaining changes. A value matched by more than
+// one removed or added key is left alone, since the pairing would be a guess.
+func Moved(before, after SecretSnapshot, changes []Change) (rest, moved []Change) {
+	removedBy := map[[32]byte][]string{}
+	addedBy := map[[32]byte][]string{}
+	for _, c := range changes {
+		switch c.Kind {
+		case Removed:
+			removedBy[before[c.Ref]] = append(removedBy[before[c.Ref]], c.Ref)
+		case Added:
+			addedBy[after[c.Ref]] = append(addedBy[after[c.Ref]], c.Ref)
+		}
+	}
+	paired := map[string]bool{}
+	for sum, from := range removedBy {
+		if to := addedBy[sum]; len(from) == 1 && len(to) == 1 {
+			paired[from[0]], paired[to[0]] = true, true
+			moved = append(moved, Change{Ref: from[0] + " -> " + to[0], Kind: MovedKind})
+		}
+	}
+	for _, c := range changes {
+		if !paired[c.Ref] {
+			rest = append(rest, c)
+		}
+	}
+	sort.Slice(moved, func(i, j int) bool { return moved[i].Ref < moved[j].Ref })
+	return rest, moved
 }
