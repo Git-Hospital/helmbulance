@@ -85,6 +85,10 @@ func (r *Runner) hide(text string) string {
 	return r.HidePaths(RedactURLs(Redact(text, r.Secrets)))
 }
 
+// Hide is hide exported, so the report package can apply the same masking (secret values, URL
+// credentials, local paths) to every field it writes. It is idempotent.
+func (r *Runner) Hide(text string) string { return r.hide(text) }
+
 // HidePaths replaces r.Paths, longest first. A path counts only when it ends there or a '/'
 // follows, so /home/eger is not taken for /home/ege.
 func (r *Runner) HidePaths(text string) string {

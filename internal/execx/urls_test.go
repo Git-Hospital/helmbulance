@@ -15,6 +15,8 @@ func TestRedactURLs(t *testing.T) {
 		"see http://a/b?q=1, then http://u:p@c/d":                 "see http://a/b?q=***, then http://***@c/d",
 		"http://svc/p?a=1#frag":                                   "http://svc/p?a=***#frag",
 		"no url here, just user@host and a:b":                     "no url here, just user@host and a:b",
+		// A comma list of values files is one match; each URL's credentials must go (review item 1).
+		"https://u:p1@a.example/v1.yaml,https://u:p2@b.example/v2.yaml": "https://***@a.example/v1.yaml,https://***@b.example/v2.yaml",
 	}
 	for in, want := range cases {
 		if got := RedactURLs(in); got != want {

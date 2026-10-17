@@ -171,6 +171,7 @@ func test(args []string) int {
 
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
+		Hide:          runner.Hide,
 		Chart:         runner.HidePaths(chart),
 		ValuesFiles:   hidePaths(runner, files),
 		SetKeys:       execx.SetKeys(sets),
@@ -327,6 +328,7 @@ func matrixCmd(args []string) int {
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
+		Hide:          runner.Hide,
 		Chart:         runner.HidePaths(chart),
 		ValuesFiles:   hidePaths(runner, files),
 		SetKeys:       execx.SetKeys(sets),
@@ -397,6 +399,7 @@ func scanCmd(args []string) int {
 	started := time.Now()
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
+		Hide:          runner.Hide,
 		Chart:         runner.HidePaths(chart),
 		ValuesFiles:   hidePaths(runner, files),
 		SetKeys:       execx.SetKeys(sets),

@@ -14,7 +14,20 @@ func RedactURLs(s string) string {
 	return urlPattern.ReplaceAllStringFunc(s, redactURL)
 }
 
-func redactURL(u string) string {
+// redactURL hides each URL in a match. A single match can hold several, since helm takes a comma
+// list of values files ("-f a,b"), and urlPattern keeps the comma; each comma-separated URL is
+// redacted on its own, so the second one's credentials are not left behind.
+func redactURL(match string) string {
+	parts := strings.Split(match, ",")
+	for i, p := range parts {
+		if strings.Contains(p, "://") {
+			parts[i] = redactOneURL(p)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+func redactOneURL(u string) string {
 	scheme, rest, _ := strings.Cut(u, "://")
 	end := strings.IndexAny(rest, "/?#")
 	if end < 0 {

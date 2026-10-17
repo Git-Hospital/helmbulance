@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/egezamb/helmbulance/internal/execx"
 	"github.com/egezamb/helmbulance/internal/scenario"
@@ -29,6 +30,10 @@ type Report struct {
 	Duration      string            `json:"duration"`
 	Results       []scenario.Result `json:"results"`
 	Commands      []execx.Command   `json:"commands"`
+
+	// Hide masks secret values, URL credentials and local paths. Write applies it to every field,
+	// so nothing reaches report.json or report.md around the runner's masking. It is idempotent.
+	Hide func(string) string `json:"-"`
 }
 
 // Worst returns the overall verdict: FAIL beats INCONCLUSIVE beats PASS.
@@ -50,8 +55,9 @@ func (r *Report) Write(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	// The chart reference can be a URL with credentials. Report files are shared; keep them out.
-	r.Chart = execx.RedactURLs(r.Chart)
+	// Report files are shared. Mask credentials, local paths and secret values in one place, so no
+	// field reaches either file around the runner's masking.
+	r.redact()
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
@@ -60,6 +66,37 @@ func (r *Report) Write(dir string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "report.md"), []byte(r.Markdown()), 0o644)
+}
+
+// redact masks every text field of the report. With no Hide func it falls back to redacting the
+// chart's URL, as before. Idempotent, so transcript text the runner already masked is unchanged.
+func (r *Report) redact() {
+	hide := r.Hide
+	if hide == nil {
+		r.Chart = execx.RedactURLs(r.Chart)
+		return
+	}
+	r.Chart = hide(r.Chart)
+	for i, v := range r.ValuesFiles {
+		r.ValuesFiles[i] = hide(v)
+	}
+	for i := range r.Commands {
+		r.Commands[i].Line = hide(r.Commands[i].Line)
+	}
+	for i := range r.Results {
+		res := &r.Results[i]
+		res.Summary = hide(res.Summary)
+		for j := range res.Findings {
+			f := &res.Findings[j]
+			f.Title, f.Impact, f.Fix = hide(f.Title), hide(f.Impact), hide(f.Fix)
+			for k, e := range f.Evidence {
+				f.Evidence[k] = hide(e)
+			}
+			for k, c := range f.Reproduce {
+				f.Reproduce[k] = hide(c)
+			}
+		}
+	}
 }
 
 // Markdown renders the report for people.
@@ -98,11 +135,18 @@ func (r *Report) Markdown() string {
 	return b.String()
 }
 
-// escape keeps text from the cluster from breaking a Markdown table or injecting markup.
+// escape keeps text from the cluster from breaking a Markdown table or injecting markup. A lone
+// carriage return is a line ending in CommonMark too, so it is turned into a space like a newline;
+// otherwise a chart's `fail "x\r## Heading"` would start a heading in the report.
 func escape(s string) string {
-	s = strings.NewReplacer("|", "\\|", "\n", " ", "<", "&lt;", ">", "&gt;").Replace(s)
+	s = strings.NewReplacer("|", "\\|", "\n", " ", "\r", " ", "<", "&lt;", ">", "&gt;").Replace(s)
 	if len(s) > 500 {
-		s = s[:500] + "…"
+		s = s[:500]
+		// Do not cut a multi-byte rune in half, which would leave invalid UTF-8.
+		for len(s) > 0 && !utf8.ValidString(s) {
+			s = s[:len(s)-1]
+		}
+		s += "…"
 	}
 	return s
 }

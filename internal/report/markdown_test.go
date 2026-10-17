@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/egezamb/helmbulance/internal/execx"
 	"github.com/egezamb/helmbulance/internal/scenario"
 )
 
@@ -30,6 +31,57 @@ func TestMarkdownEscapesEvidence(t *testing.T) {
 	}
 	if !strings.Contains(md, "- Error: &lt;img src=x onerror=alert(1)&gt; ## Not a heading\n") {
 		t.Errorf("escaped evidence missing:\n%s", md)
+	}
+}
+
+// A lone carriage return is a line ending in CommonMark, so a chart's fail message must not use it
+// to start a heading in the report (review item 2).
+func TestMarkdownEscapesCarriageReturn(t *testing.T) {
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "chart-upgrade", Verdict: scenario.Fail,
+		Findings: []scenario.Finding{{ID: "HB-CU-001", Title: "x", Evidence: []string{"bad value\r## Injected heading"}}},
+	}}}
+	md := r.Markdown()
+	if strings.Contains(md, "\r") {
+		t.Errorf("carriage return reached report.md:\n%q", md)
+	}
+	if strings.Contains(md, "## Injected heading") && !strings.Contains(md, "value ## Injected heading") {
+		t.Errorf("carriage return started a new block:\n%s", md)
+	}
+}
+
+// Every field Write persists goes through Hide, so no field leaks a secret value, URL credential or
+// local path around the runner's masking (review item 1).
+func TestWriteRedactsEveryField(t *testing.T) {
+	runner := &execx.Runner{Secrets: []string{"setval"}, Paths: map[string]string{"/home/zztester": "~"}}
+	r := &Report{
+		Hide:        runner.Hide,
+		Chart:       "https://u:cpw@charts.example.com/c.tgz",
+		ValuesFiles: []string{"https://u:vpw@values.example.com/v.yaml", "/home/zztester/vals.yaml"},
+		Commands:    []execx.Command{{Line: "helm install --set token=setval /home/zztester/chart"}},
+		Results: []scenario.Result{{
+			Scenario: "chart-upgrade", Verdict: scenario.Fail, Summary: "failed at /home/zztester/chart",
+			Findings: []scenario.Finding{{
+				ID: "HB-CU-001", Title: "x",
+				Evidence:  []string{"fetch https://u:epw@e.example/a.tgz failed; chart /home/zztester/chart"},
+				Reproduce: []string{"helm pull https://u:rpw@r.example/c.tgz"},
+			}},
+		}},
+	}
+	dir := t.TempDir()
+	if err := r.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"report.json", "report.md"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, leak := range []string{"cpw", "vpw", "epw", "rpw", "setval", "zztester"} {
+			if strings.Contains(string(b), leak) {
+				t.Errorf("%s leaks %q:\n%s", name, leak, b)
+			}
+		}
 	}
 }
 
