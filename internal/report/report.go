@@ -31,18 +31,24 @@ type Report struct {
 	Commands      []execx.Command   `json:"commands"`
 }
 
-// Worst returns the overall verdict: FAIL beats INCONCLUSIVE beats PASS.
+// Worst returns the overall verdict: FAIL beats INCONCLUSIVE beats PASS. SKIPPED counts for
+// nothing, so a run in which every scenario was skipped tested nothing and is INCONCLUSIVE.
 func (r *Report) Worst() string {
-	worst := scenario.Pass
+	passed, inconclusive := false, false
 	for _, res := range r.Results {
 		switch res.Verdict {
 		case scenario.Fail:
 			return scenario.Fail
 		case scenario.Inconclusive:
-			worst = scenario.Inconclusive
+			inconclusive = true
+		case scenario.Pass:
+			passed = true
 		}
 	}
-	return worst
+	if inconclusive || !passed {
+		return scenario.Inconclusive
+	}
+	return scenario.Pass
 }
 
 // Write saves report.json and report.md in dir.

@@ -89,6 +89,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	mark = len(env.Runner.Transcript())
 	upgradeErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values)
 	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	if IsEnvironmentError(ctx, upgradeErr) {
+		return inconclusive(res, "the upgrade did not finish", upgradeErr)
+	}
 	if upgradeErr != nil {
 		res.Verdict = Fail
 		res.Summary = "the upgrade from " + fromV + " fails"
