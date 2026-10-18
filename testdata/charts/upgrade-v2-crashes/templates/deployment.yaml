@@ -3,9 +3,10 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}-app
 spec:
-  replicas: 1
-  # The old pod goes first (maxSurge 0), so nothing is Ready and helm's --wait times out on the
-  # crash loop. With the default surge the old pod stays Ready and helm's --wait can return.
+  # Two replicas with maxUnavailable 1: Helm 3 counts the Deployment ready once replicas minus
+  # maxUnavailable new pods are Ready, so it needs one, and Helm 4 waits for the whole rollout. The
+  # new pods crash-loop, so both time out. (With one replica Helm 3 needs none and returns at once.)
+  replicas: 2
   strategy:
     type: RollingUpdate
     rollingUpdate: {maxSurge: 0, maxUnavailable: 1}
