@@ -34,23 +34,36 @@ var startFailures = map[string]bool{
 	"InvalidImageName":           true,
 }
 
-// crashedSince lists the containers that crashed or could not start since the pods in before were
-// read. A pod from before only counts with restarts beyond its count then, so a crash the earlier
-// version already had is not blamed on the upgrade.
-func crashedSince(containers []kube.Container, before []kube.Pod) []string {
-	baseline := map[string]int{}
-	for _, p := range before {
-		baseline[p.UID] = p.Restarts
+// crashedSince lists the containers that crashed or could not start since before the upgrade.
+//   - A container of a new pod counts if it waits with a startFailures reason or has restarted.
+//   - A container of a pod from before counts only if that pod was Ready then and the container
+//     was not already failing, and only for restarts beyond its own count then (matched by pod
+//     UID and container name, init containers apart). So an init container that restarted while
+//     v1 started, or a crash loop v1 already had, is not blamed on the upgrade. Without the
+//     containers from before (beforeKnown false), pods from before are left out.
+func crashedSince(containers, beforeContainers []kube.Container, beforePods []kube.Pod, beforeKnown bool) []string {
+	key := func(c kube.Container) string { return fmt.Sprintf("%s/%t/%s", c.PodUID, c.Init, c.Name) }
+	was := map[string]kube.Container{}
+	for _, c := range beforeContainers {
+		was[key(c)] = c
 	}
-	restarts := map[string]int{}
-	for _, c := range containers {
-		restarts[c.PodUID] += c.Restarts
+	old, ready := map[string]bool{}, map[string]bool{}
+	for _, p := range beforePods {
+		old[p.UID], ready[p.UID] = true, p.Ready
 	}
 	var crashed []string
 	for _, c := range containers {
-		_, old := baseline[c.PodUID]
-		restartedSince := restarts[c.PodUID] > baseline[c.PodUID]
-		if startFailures[c.Waiting] && (!old || restartedSince) || c.Restarts > 0 && restartedSince {
+		if !old[c.PodUID] {
+			if startFailures[c.Waiting] || c.Restarts > 0 {
+				crashed = append(crashed, describeContainer(c))
+			}
+			continue
+		}
+		b, had := was[key(c)]
+		if !beforeKnown || !ready[c.PodUID] || had && startFailures[b.Waiting] {
+			continue
+		}
+		if c.Restarts > b.Restarts || startFailures[c.Waiting] {
 			crashed = append(crashed, describeContainer(c))
 		}
 	}
@@ -79,11 +92,11 @@ func describeContainer(c kube.Container) string {
 // crashesAfterTimeout reads the release's containers after a `--wait` timeout and lists the ones
 // that crashed since before. An error reading them is logged and lists nothing, so the result
 // stays INCONCLUSIVE.
-func crashesAfterTimeout(ctx context.Context, env *Env, ns string, before []kube.Pod) []string {
+func crashesAfterTimeout(ctx context.Context, env *Env, ns string, beforePods []kube.Pod, beforeContainers []kube.Container, beforeKnown bool) []string {
 	containers, err := env.Kube.Containers(ctx, ns)
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not read containers after the timeout: %v\n", err)
 		return nil
 	}
-	return crashedSince(containers, before)
+	return crashedSince(containers, beforeContainers, beforePods, beforeKnown)
 }

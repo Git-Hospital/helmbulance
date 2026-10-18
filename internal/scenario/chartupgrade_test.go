@@ -89,17 +89,30 @@ func TestChartUpgradeRejectionIsAFinding(t *testing.T) {
 // podJSON is one pod with one container, for the fake kubectl: its UID, restart count, and the
 // reason it waits ("" when it runs).
 func podJSON(uid string, restarts int, waiting string) string {
-	state := `{"running":{}}`
+	state, ready := `{"running":{}}`, "True"
 	if waiting != "" {
-		state = `{"waiting":{"reason":"` + waiting + `"}}`
+		state, ready = `{"waiting":{"reason":"`+waiting+`"}}`, "False"
 	}
 	return `{"metadata":{"name":"web-` + uid + `","uid":"` + uid + `","ownerReferences":[{"kind":"ReplicaSet","name":"web"}]},` +
-		`"status":{"phase":"Running","conditions":[{"type":"Ready","status":"` + strconv.FormatBool(waiting == "") + `"}],` +
+		`"status":{"phase":"Running","conditions":[{"type":"Ready","status":"` + ready + `"}],` +
 		`"containerStatuses":[{"name":"app","restartCount":` + strconv.Itoa(restarts) + `,"state":` + state +
 		`,"lastState":{"terminated":{"reason":"Error","exitCode":1}}}]}}`
 }
 
 func items(pods ...string) string { return `{"items":[` + strings.Join(pods, ",") + `]}` }
+
+// notReady turns a podJSON pod's Ready condition to False, leaving its containers running.
+func notReady(pod string) string {
+	return strings.Replace(pod, `"type":"Ready","status":"True"`, `"type":"Ready","status":"False"`, 1)
+}
+
+// podInitJSON is a Ready pod whose init container restarted initRestarts times before it completed.
+func podInitJSON(uid string, initRestarts int) string {
+	return `{"metadata":{"name":"web-` + uid + `","uid":"` + uid + `","ownerReferences":[{"kind":"ReplicaSet","name":"web"}]},` +
+		`"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}],` +
+		`"initContainerStatuses":[{"name":"wait","restartCount":` + strconv.Itoa(initRestarts) + `,"state":{"terminated":{"reason":"Completed","exitCode":0}}}],` +
+		`"containerStatuses":[{"name":"app","restartCount":0,"state":{"running":{}}}]}}`
+}
 
 // #28: a new version that crash-loops ends in helm's --wait timeout; the crash makes it a finding.
 func TestChartUpgradeTimeoutWithACrashIsAFinding(t *testing.T) {
@@ -113,9 +126,17 @@ func TestChartUpgradeTimeoutWithACrashIsAFinding(t *testing.T) {
 		"old pod restarts since":         {items(podJSON("old", 1, "")), items(podJSON("old", 2, ""), podJSON("new", 0, "ContainerCreating")), Fail},
 		"new pod pulls its image":        {items(podJSON("old", 0, "")), items(podJSON("old", 0, ""), podJSON("new", 0, "ImagePullBackOff")), Inconclusive},
 		"old restarts from before only":  {items(podJSON("old", 2, "")), items(podJSON("old", 2, ""), podJSON("new", 0, "ContainerCreating")), Inconclusive},
+		// Review round 1, item 2: an init container that restarted while v1 started (it waits for a
+		// database, say) is not a crash of the new version.
+		"old init restarts from before": {items(podInitJSON("old", 1)), items(podInitJSON("old", 1), podJSON("new", 0, "ContainerCreating")), Inconclusive},
+		// Item 3: a crash loop v1 already had (the pod was not Ready before) is not blamed on the upgrade.
+		// A v1 pod that runs but was not Ready (its liveness probe restarts it) is not blamed either.
+		"v1 pod already unhealthy":  {items(notReady(podJSON("old", 3, ""))), items(notReady(podJSON("old", 5, "")), podJSON("new", 0, "ContainerCreating")), Inconclusive},
+		"crash loop v1 already had": {items(podJSON("old", 3, "CrashLoopBackOff")), items(podJSON("old", 5, "CrashLoopBackOff"), podJSON("new", 0, "ContainerCreating")), Inconclusive},
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := runChartUpgrade(t, timeout, c.before, c.after)
+			// Reads: pods before the upgrade, containers before it, containers after the timeout.
+			res := runChartUpgrade(t, timeout, c.before, c.before, c.after)
 			if res.Verdict != c.want {
 				t.Fatalf("verdict = %s (%s), want %s", res.Verdict, res.Summary, c.want)
 			}

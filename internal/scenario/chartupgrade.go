@@ -79,6 +79,13 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not read pods", err)
 	}
+	// Each container's restarts and state before the upgrade, so a --wait timeout blames only
+	// crashes that came after it.
+	containersBefore, err := env.Kube.Containers(ctx, ns)
+	containersKnown := err == nil
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not read containers before the upgrade: %v\n", err)
+	}
 
 	// Treatment: the version under test.
 	mark = len(env.Runner.Transcript())
@@ -88,7 +95,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	// release was applied, so its containers say which it was: a crash or a container that cannot
 	// start is the chart's failure (D4); anything else stays INCONCLUSIVE (#28).
 	if timedOutWaiting(ctx, upgradeErr) {
-		if crashes := crashesAfterTimeout(ctx, env, ns, podsBefore); len(crashes) > 0 {
+		if crashes := crashesAfterTimeout(ctx, env, ns, podsBefore, containersBefore, containersKnown); len(crashes) > 0 {
 			return upgradeFails(res, fromV, repro,
 				append([]string{"`helm upgrade --wait` timed out while containers of the new version crashed or could not start: " + helmMessage(upgradeErr)}, crashes...),
 				"Read the crashed container's logs (`kubectl logs --previous`) and the pod events in the "+
