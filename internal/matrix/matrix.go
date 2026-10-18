@@ -91,18 +91,7 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	warnings := apiWarnings(stderr)
 
 	if err != nil {
-		res.Verdict = scenario.Fail
-		res.Summary = "does not install on Kubernetes " + version
-		res.Findings = append(res.Findings, scenario.Finding{
-			ID:        "HB-K8S-001",
-			Title:     "The chart does not install on Kubernetes " + version,
-			Severity:  "high",
-			Evidence:  append([]string{"`helm install` failed: " + helmMessage(err)}, warnings...),
-			Impact:    "Clusters on Kubernetes " + version + " cannot run this chart. Upgrading the cluster breaks existing installs too.",
-			Fix:       "Look for an API version this release removed (`kubectl api-versions` on the cluster) or a field it no longer accepts, and gate it on `.Capabilities.KubeVersion` / `.Capabilities.APIVersions.Has`.",
-			Reproduce: repro,
-		})
-		return res
+		return installFailed(ctx, res, version, err, warnings, repro)
 	}
 
 	if bad := unhealthy(ctx, k, ns); len(bad) > 0 {
@@ -136,6 +125,94 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	}
 	res.Verdict = scenario.Pass
 	res.Summary = "installs and runs on Kubernetes " + version + " with no API warnings"
+	return res
+}
+
+// Attribute keeps a failed install (HB-K8S-001) as a finding only if the chart installed on
+// another version: otherwise the failure is not about a Kubernetes version, and the result is
+// INCONCLUSIVE. A version installed when its result is not an install failure or INCONCLUSIVE.
+// A failure that names a missing API stays a finding either way: the API was removed in a
+// Kubernetes version, perhaps one older than every version tested.
+func Attribute(results []scenario.Result) []scenario.Result {
+	for _, r := range results {
+		if r.Verdict != scenario.Inconclusive && !installFailure(r) {
+			return results
+		}
+	}
+	out := make([]scenario.Result, len(results))
+	for i, r := range results {
+		if installFailure(r) && !missingAPI(r) {
+			r.Verdict = scenario.Inconclusive
+			r.Summary += "; it installed on no version tested, so the cause is not a Kubernetes version (run helmbulance test)"
+			r.Findings = nil
+		}
+		out[i] = r
+	}
+	return out
+}
+
+// missingAPI reports whether an install failure says the cluster does not serve a built-in kind the
+// chart uses, which is how a removed API version fails. A kind from another group needs a CRD,
+// and kind clusters have none, so that failure says nothing about the Kubernetes version.
+func missingAPI(r scenario.Result) bool {
+	for _, e := range r.Findings[0].Evidence {
+		if (strings.Contains(e, "no matches for kind") || strings.Contains(e, "resource mapping not found")) && builtInGroup(e) {
+			return true
+		}
+	}
+	return false
+}
+
+// builtInGroups are the API groups Kubernetes serves itself. A fixed list, since some CRD groups
+// (gateway.networking.k8s.io, snapshot.storage.k8s.io) also end in .k8s.io.
+var builtInGroups = map[string]bool{
+	"": true, "apps": true, "batch": true, "policy": true, "extensions": true, "autoscaling": true,
+	"networking.k8s.io": true, "rbac.authorization.k8s.io": true, "admissionregistration.k8s.io": true,
+	"apiextensions.k8s.io": true, "apiregistration.k8s.io": true, "storage.k8s.io": true,
+	"scheduling.k8s.io": true, "coordination.k8s.io": true, "certificates.k8s.io": true,
+	"discovery.k8s.io": true, "events.k8s.io": true, "node.k8s.io": true,
+	"flowcontrol.apiserver.k8s.io": true, "resource.k8s.io": true,
+}
+
+var inVersion = regexp.MustCompile(`in version "([^"]*)"`)
+
+// builtInGroup reports whether a "no matches for kind … in version "<group>/<version>"" message
+// names a built-in group. The core group has no slash ("v1"). No "in version" means unknown.
+func builtInGroup(msg string) bool {
+	m := inVersion.FindStringSubmatch(msg)
+	if m == nil {
+		return false
+	}
+	group, _, ok := strings.Cut(m[1], "/")
+	if !ok {
+		group = ""
+	}
+	return builtInGroups[group]
+}
+
+func installFailure(r scenario.Result) bool {
+	return r.Verdict == scenario.Fail && len(r.Findings) > 0 && r.Findings[0].ID == "HB-K8S-001"
+}
+
+// installFailed is the result when helm install failed on Kubernetes version. A timeout, a pull
+// error or a cluster that did not answer says nothing about the version, so it is INCONCLUSIVE.
+func installFailed(ctx context.Context, res scenario.Result, version string, err error, warnings, repro []string) scenario.Result {
+	if scenario.IsEnvironmentError(ctx, err) {
+		res.Verdict = scenario.Inconclusive
+		res.Summary = "the install did not finish on Kubernetes " + version + ": " + helmMessage(err)
+		return res
+	}
+	res.Verdict = scenario.Fail
+	res.Summary = "does not install on Kubernetes " + version
+	res.Findings = append(res.Findings, scenario.Finding{
+		ID:        "HB-K8S-001",
+		Title:     "The chart does not install on Kubernetes " + version,
+		Severity:  "high",
+		Evidence:  append([]string{"`helm install` failed: " + helmMessage(err)}, warnings...),
+		Impact:    "Clusters on Kubernetes " + version + " cannot run this chart. Upgrading the cluster breaks existing installs too.",
+		Fix:       "Look for an API version this release removed (`kubectl api-versions` on the cluster) or a field it no longer accepts, and gate it on `.Capabilities.KubeVersion` / `.Capabilities.APIVersions.Has`.",
+		Reproduce: repro,
+	})
 	return res
 }
 

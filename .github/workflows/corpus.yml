@@ -1,0 +1,88 @@
+# The known-bug corpus (docs/corpus.md; decision 0001, D3 and D8): real charts with a documented
+# day-two defect, each next to the version that fixed it. A third-party chart runs here without the
+# protections of docs/architecture.md §4, so every chart gets its own job on a fresh VM, with a token
+# that has no permissions, no secrets and no caches, and its archive is pinned by sha256.
+name: Corpus
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: corpus-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  chart:
+    name: ${{ matrix.id }} ${{ matrix.chart }} ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # HBC-01: the admin password is generated anew on every upgrade (grafana/helm-charts#10).
+          - id: HBC-01
+            chart: grafana
+            version: 6.9.2
+            url: https://github.com/grafana/helm-charts/releases/download/grafana-6.9.2/grafana-6.9.2.tgz
+            sha256: a2bd055c04e7184dccbec175ba04948f5798fc3e0a47d46c03d7fb963ae6d785
+            values: testdata/corpus/hbc-01-grafana/values.yaml
+            scenario: upgrade-without-values
+            exit-code: 1
+            findings: HB-UV-001 HB-UV-003
+          # 6.9.3 keeps the password. Its pods are still replaced by the first upgrade.
+          - id: HBC-01
+            chart: grafana
+            version: 6.9.3
+            url: https://github.com/grafana/helm-charts/releases/download/grafana-6.9.3/grafana-6.9.3.tgz
+            sha256: 52de98e1ad86674df4b52076e8b1fcf4cc29f8d4d5aa2e26f6d0bb8646247978
+            values: testdata/corpus/hbc-01-grafana/values.yaml
+            scenario: upgrade-without-values
+            exit-code: 1
+            findings: HB-UV-003
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the chart
+        env:
+          URL: ${{ matrix.url }}
+          SHA256: ${{ matrix.sha256 }}
+        run: |
+          curl -fsSLo corpus-chart.tgz "$URL"
+          echo "$SHA256  corpus-chart.tgz" | sha256sum -c -
+
+      - name: Run Helmbulance
+        id: hb
+        uses: ./ # zizmor: ignore[self-repository] only this commit is checked out; switch to $/ once confirmed for a root action
+        with:
+          chart: corpus-chart.tgz
+          values: ${{ matrix.values }}
+          scenarios: ${{ matrix.scenario }}
+          timeout: 5m
+          report-dir: corpus-report
+          fail-on: never
+
+      # One test per line: under `bash -e` only the last command of an `&&` list can fail the step.
+      - name: Compare with the expected result
+        env:
+          WANT_CODE: ${{ matrix.exit-code }}
+          WANT_IDS: ${{ matrix.findings }}
+          GOT_CODE: ${{ steps.hb.outputs.exit-code }}
+        run: |
+          # A run that wrote no report is never "no findings".
+          test -s corpus-report/report.json
+          got_ids=$({ grep -o '"id": *"HB-[A-Z0-9-]*"' corpus-report/report.json || true; } | sed 's/.*"\(HB-[^"]*\)"/\1/' | sort -u | tr '\n' ' ' | sed 's/ $//')
+          echo "exit $GOT_CODE, want $WANT_CODE; findings '$got_ids', want '$WANT_IDS'" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$GOT_CODE" = "$WANT_CODE" ]
+          [ "$got_ids" = "$WANT_IDS" ]

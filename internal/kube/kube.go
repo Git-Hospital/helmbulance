@@ -30,7 +30,8 @@ var skippedSecretTypes = map[string]bool{
 	"kubernetes.io/service-account-token": true,
 }
 
-// Secrets returns every Secret in ns that belongs to the chart, sorted by name.
+// Secrets returns the Secrets in ns, sorted by name, without Helm's release records and service
+// account tokens. It does not know which ones the chart renders; see helm.Client.OwnedSecrets.
 func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "secrets", "-o", "json")
 	if err != nil {
@@ -122,6 +123,49 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 		}
 	}
 	return consumers, nil
+}
+
+// StatefulWorkloads returns the workloads (kind/name) in ns that keep data across restarts: a
+// StatefulSet with volume claim templates, or any workload whose pods mount a PersistentVolumeClaim.
+// A credential such a workload reads was probably written into its data at first start.
+func (c *Client) StatefulWorkloads(ctx context.Context, ns string) (map[string]bool, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
+		"get", "deployments,statefulsets,daemonsets", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				VolumeClaimTemplates []json.RawMessage `json:"volumeClaimTemplates"`
+				Template             struct {
+					Spec struct {
+						Volumes []struct {
+							PersistentVolumeClaim *json.RawMessage `json:"persistentVolumeClaim"`
+						} `json:"volumes"`
+					} `json:"spec"`
+				} `json:"template"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse workloads: %w", err)
+	}
+	stateful := map[string]bool{}
+	for _, item := range list.Items {
+		keeps := len(item.Spec.VolumeClaimTemplates) > 0
+		for _, v := range item.Spec.Template.Spec.Volumes {
+			keeps = keeps || v.PersistentVolumeClaim != nil
+		}
+		if keeps {
+			stateful[item.Kind+"/"+item.Metadata.Name] = true
+		}
+	}
+	return stateful, nil
 }
 
 type podSpec struct {
@@ -412,9 +456,39 @@ func (c *Client) StartPod(ctx context.Context, ns, name, image, script string, l
 	if len(l) > 0 {
 		args = append(args, "--labels", strings.Join(l, ","))
 	}
+	overrides, err := json.Marshal(hardenedPod(name))
+	if err != nil {
+		return err
+	}
+	args = append(args, "--override-type", "strategic", "--overrides", string(overrides))
 	args = append(args, "--command", "--", "sh", "-c", script)
-	_, err := c.Runner.Run(ctx, "kubectl", args...)
+	_, err = c.Runner.Run(ctx, "kubectl", args...)
 	return err
+}
+
+// hardenedPod is merged into the pod kubectl run makes. The pod lives in the chart's namespace,
+// so it carries no ServiceAccount token and meets Pod Security "restricted": no root, no
+// privilege escalation, no capabilities, a read-only root filesystem.
+func hardenedPod(container string) map[string]any {
+	return map[string]any{
+		"spec": map[string]any{
+			"automountServiceAccountToken": false,
+			"securityContext": map[string]any{
+				"runAsNonRoot":   true,
+				"runAsUser":      65534,
+				"runAsGroup":     65534,
+				"seccompProfile": map[string]any{"type": "RuntimeDefault"},
+			},
+			"containers": []any{map[string]any{
+				"name": container,
+				"securityContext": map[string]any{
+					"allowPrivilegeEscalation": false,
+					"readOnlyRootFilesystem":   true,
+					"capabilities":             map[string]any{"drop": []string{"ALL"}},
+				},
+			}},
+		},
+	}
 }
 
 // WaitPodRunning waits until the pod is running.

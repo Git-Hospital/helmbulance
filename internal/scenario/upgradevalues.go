@@ -27,7 +27,7 @@ const upgradeNamespace = "hb-upgrade-values"
 func (UpgradeValues) Name() string { return "upgrade-without-values" }
 
 func (UpgradeValues) Description() string {
-	return "Upgrades with reused values (control), then with the values files only, and compares every Secret."
+	return "Upgrades with reused values (control), then with the values files only, and compares the Secrets the release renders."
 }
 
 func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
@@ -50,17 +50,12 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	installCmd := env.Runner.Transcript()[start:]
 
-	snapshot := func() (oracle.SecretSnapshot, error) {
-		secrets, err := env.Kube.Secrets(ctx, ns)
-		if err != nil {
-			return nil, err
-		}
-		return env.Hasher.Snapshot(secrets), nil
-	}
+	secrets := newSecretReader(ctx, env, release, ns)
+	snapshot := secrets.snapshot
 
 	installed, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after install", err)
+		return secretsInconclusive(res, "after install", err)
 	}
 
 	podsBefore, err := env.Kube.Pods(ctx, ns)
@@ -76,7 +71,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	reuseCmd := env.Runner.Transcript()[mark:]
 	reused, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after the control upgrade", err)
+		return secretsInconclusive(res, "after the control upgrade", err)
 	}
 	podsAfter, err := env.Kube.Pods(ctx, ns)
 	if err != nil {
@@ -86,8 +81,10 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 
 	// Treatment: values files only. Without any --set or values file it would repeat the control.
 	if len(env.Values.Sets) == 0 && len(env.Values.Files) == 0 {
-		res = s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
-		return withRestarts(res, restarted, installCmd, reuseCmd)
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res = withRestarts(res, restarted, installCmd, reuseCmd)
+		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
+		return res
 	}
 	mark = len(env.Runner.Transcript())
 	// --reset-values: without any values flag Helm would reuse the install values, --set included.
@@ -97,11 +94,13 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	filesCmd := env.Runner.Transcript()[mark:]
 	filesOnly, err := snapshot()
 	if err != nil {
-		return inconclusive(res, "could not read Secrets after the upgrade", err)
+		return secretsInconclusive(res, "after the upgrade", err)
 	}
 
-	res = s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
-	return withRestarts(res, restarted, installCmd, reuseCmd)
+	res, notes := s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
+	res = withRestarts(res, restarted, installCmd, reuseCmd)
+	res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
+	return res
 }
 
 // replacedPods lists the workloads whose pods were replaced, by pod UID, between two readings.
@@ -160,11 +159,16 @@ func withRestarts(res Result, restarted []string, installCmd, reuseCmd []execx.C
 }
 
 func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reused, filesOnly oracle.SecretSnapshot,
-	installCmd, reuseCmd, filesCmd []execx.Command, env *Env) Result {
+	installCmd, reuseCmd, filesCmd []execx.Command, env *Env) (Result, []string) {
 	consumers, err := env.Kube.SecretConsumers(ctx, upgradeNamespace)
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", err)
 	}
+	stateful, err := env.Kube.StatefulWorkloads(ctx, upgradeNamespace)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not find stateful workloads: %v\n", err)
+	}
+	statefulKnown := err == nil
 
 	var repro []string
 	for _, c := range installCmd {
@@ -172,19 +176,31 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	}
 
 	control := oracle.Diff(installed, reused)
-	if len(control) > 0 {
+	regenerated, added := splitAdded(control)
+	regenerated, rotated := splitExpected(regenerated, env.ExpectedRotation)
+	if len(regenerated) > 0 {
 		steps := concat(repro, reproLine(reuseCmd[0].Line))
+		impact := "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
+			"its first start stop matching, and anything encrypted or signed with the old value " +
+			"can no longer be read."
+		fix := "Generate the value only when it does not exist yet: read the current Secret with " +
+			"`lookup` and reuse its value, and add `helm.sh/resource-policy: keep`. `lookup` " +
+			"returns nothing under `helm template` (Argo CD), so also support an existingSecret."
+		if onlyTLS(regenerated) {
+			impact = "Every `helm upgrade` issues new certificates. Anything that trusts the old CA (a " +
+				"webhook's caBundle, a client that pins the CA, a sidecar that cached it) fails until " +
+				"it gets the new one."
+			fix = "If the rotation is not meant to happen on every upgrade, keep the certificate with " +
+				"`lookup` like any generated value, or let cert-manager issue it. If it is on purpose, " +
+				"make sure every consumer is updated in the same upgrade."
+		}
 		res.Findings = append(res.Findings, Finding{
-			ID:       "HB-UV-001",
-			Title:    "Secrets change on every upgrade, even with the same values",
-			Severity: "high",
-			Evidence: describe(control, consumers),
-			Impact: "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
-				"its first start stop matching, and anything encrypted or signed with the old value " +
-				"can no longer be read.",
-			Fix: "Generate the value only when it does not exist yet: read the current Secret with " +
-				"`lookup` and reuse its value, and add `helm.sh/resource-policy: keep`. `lookup` " +
-				"returns nothing under `helm template` (Argo CD), so also support an existingSecret.",
+			ID:        "HB-UV-001",
+			Title:     "Secrets change on every upgrade, even with the same values",
+			Severity:  worstSeverity(regenerated, consumers, stateful, statefulKnown),
+			Evidence:  describe(regenerated, consumers),
+			Impact:    impact,
+			Fix:       fix,
 			Reproduce: steps,
 		})
 	}
@@ -192,7 +208,11 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	// Keys that already changed in the control are reported there, not again here.
 	var changes []oracle.Change
 	if filesOnly != nil {
-		changes = withoutRefs(oracle.Diff(reused, filesOnly), control)
+		var more []oracle.Change
+		changes, more = splitAdded(withoutRefs(oracle.Diff(reused, filesOnly), control))
+		added = append(added, more...)
+		changes, more = splitExpected(changes, env.ExpectedRotation)
+		rotated = append(rotated, more...)
 	}
 	if len(changes) > 0 {
 		steps := concat(repro, reproLine(filesCmd[0].Line))
@@ -203,7 +223,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-UV-002",
 			Title:    title,
-			Severity: "high",
+			Severity: worstSeverity(changes, consumers, stateful, statefulKnown),
 			Evidence: describe(changes, consumers),
 			Impact: "Upgrading from the values file in git, without repeating every --set used at " +
 				"install, silently replaces or removes these values. For an encryption key this " +
@@ -221,17 +241,25 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	} else {
 		res.Verdict = Pass
 		res.Summary = "Secrets stayed the same through both upgrades"
+		if noKeys(installed, reused, filesOnly) {
+			res.Summary = noSecretsTested
+		}
 	}
-	return res
+	return res, []string{
+		note("keys added by an upgrade, not a finding", describe(added, consumers)),
+		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
+		unknownStatefulNote(statefulKnown, regenerated, changes),
+	}
 }
 
 func describe(changes []oracle.Change, consumers map[string][]string) []string {
 	var lines []string
 	for _, c := range changes {
 		line := fmt.Sprintf("`%s` %s", c.Ref, c.Kind)
-		secret, _, _ := strings.Cut(c.Ref, "/")
-		users := append(append([]string{}, consumers[c.Ref]...), consumers[secret+"/*"]...)
-		if len(users) > 0 {
+		if class := keyClass(c); class != oracle.ClassOther && c.Kind != oracle.MovedKind {
+			line += ", " + class
+		}
+		if users := readers(c, consumers); len(users) > 0 {
 			line += " (read by " + strings.Join(users, ", ") + ")"
 		}
 		lines = append(lines, line)
