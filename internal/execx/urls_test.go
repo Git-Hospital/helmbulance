@@ -17,6 +17,11 @@ func TestRedactURLs(t *testing.T) {
 		"no url here, just user@host and a:b":                     "no url here, just user@host and a:b",
 		// A comma list of values files is one match; each URL's credentials must go (review item 1).
 		"https://u:p1@a.example/v1.yaml,https://u:p2@b.example/v2.yaml": "https://***@a.example/v1.yaml,https://***@b.example/v2.yaml",
+		// A comma inside the user info or a query value is not a list separator (review round 2).
+		"https://u:pa,ss@host.example/charts/app.tgz":                     "https://***@host.example/charts/app.tgz",
+		"--from oci://deploy:s3cr,et@registry.example.com/charts/app":     "--from oci://***@registry.example.com/charts/app",
+		"https://h.example/x.tgz?token=abc,def":                           "https://h.example/x.tgz?token=***",
+		"https://u:p,1@a.example/v1.yaml,https://u:p,2@b.example/v2.yaml": "https://***@a.example/v1.yaml,https://***@b.example/v2.yaml",
 	}
 	for in, want := range cases {
 		if got := RedactURLs(in); got != want {

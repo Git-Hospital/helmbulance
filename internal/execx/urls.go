@@ -14,17 +14,23 @@ func RedactURLs(s string) string {
 	return urlPattern.ReplaceAllStringFunc(s, redactURL)
 }
 
+// nextURL is a comma that starts another URL in the same match.
+var nextURL = regexp.MustCompile(`,[a-zA-Z][a-zA-Z0-9+.-]*://`)
+
 // redactURL hides each URL in a match. A single match can hold several, since helm takes a comma
-// list of values files ("-f a,b"), and urlPattern keeps the comma; each comma-separated URL is
-// redacted on its own, so the second one's credentials are not left behind.
+// list of values files ("-f a,b"), and urlPattern keeps the comma; each URL is redacted on its own,
+// so the second one's credentials are not left behind. The match is cut only at a comma followed by
+// "scheme://": a comma is legal in user info and query values (https://u:pa,ss@host/?t=a,b).
 func redactURL(match string) string {
-	parts := strings.Split(match, ",")
-	for i, p := range parts {
-		if strings.Contains(p, "://") {
-			parts[i] = redactOneURL(p)
-		}
+	var out strings.Builder
+	start := 0
+	for _, loc := range nextURL.FindAllStringIndex(match, -1) {
+		out.WriteString(redactOneURL(match[start:loc[0]]))
+		out.WriteByte(',')
+		start = loc[0] + 1
 	}
-	return strings.Join(parts, ",")
+	out.WriteString(redactOneURL(match[start:]))
+	return out.String()
 }
 
 func redactOneURL(u string) string {
