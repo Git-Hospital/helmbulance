@@ -179,29 +179,32 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 // unhealthyAfter waits for the release to settle and lists pods that are not ready or restarted
 // more than before the upgrade, and Jobs that gave up since. A pod that survived the upgrade is
 // compared with its count from before it. A new pod is compared with its count at the first read
-// that sees it (upgraded, read as soon as helm --wait returned, or else the first Settle read),
-// since restarts during its own startup, before helm --wait returned, are not the upgrade's doing;
-// matrix counts the same way.
+// that sees it (upgraded, read as soon as helm --wait returned, or else the first Settle read), and
+// no lower than its workload's pods before the upgrade, since restarts during its own startup are
+// not the upgrade's doing; matrix counts the same way.
 func unhealthyAfter(ctx context.Context, env *Env, before, upgraded []kube.Pod, jobsBefore []string) []string {
 	baseline := map[string]int{}
+	// A new pod starts no lower than its workload's pods did before the upgrade: a pod that crashes
+	// once on its first start in both versions is the app's startup, however early it is read.
+	floor := map[string]int{}
 	for _, p := range before {
 		baseline[p.UID] = p.Restarts
+		floor[workload(p.Owner)] = max(floor[workload(p.Owner)], p.Restarts)
 	}
-	for _, p := range upgraded {
-		if _, seen := baseline[p.UID]; !seen {
-			baseline[p.UID] = p.Restarts
+	firstSeen := func(pods []kube.Pod) {
+		for _, p := range pods {
+			if _, seen := baseline[p.UID]; !seen {
+				baseline[p.UID] = max(p.Restarts, floor[workload(p.Owner)])
+			}
 		}
 	}
+	firstSeen(upgraded)
 	return Settle(ctx, func() []string {
 		pods, err := env.Kube.Pods(ctx, chartUpgradeNamespace)
 		if err != nil {
 			return []string{"could not read pods: " + err.Error()}
 		}
-		for _, p := range pods {
-			if _, seen := baseline[p.UID]; !seen {
-				baseline[p.UID] = p.Restarts
-			}
-		}
+		firstSeen(pods)
 		jobs, err := env.Kube.FailedJobs(ctx, chartUpgradeNamespace)
 		if err != nil {
 			return []string{"could not read Jobs: " + err.Error()}

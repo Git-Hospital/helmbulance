@@ -63,6 +63,13 @@ func TestUnhealthyAfterRestartBaseline(t *testing.T) {
 		{"new pod, restart before Settle but after the upgrade", nil, []kube.Pod{{UID: "new", Restarts: 0}}, []string{podsJSON("new", 1)}, "restarted 1 more time(s)"},
 		// A pod that survived the upgrade keeps its count from before the upgrade.
 		{"surviving pod", []kube.Pod{{UID: "old", Restarts: 0}}, nil, []string{podsJSON("old", 1)}, "restarted 1 more time(s)"},
+		// Row F: v1's pod also crashed once on its first start, so the new pod's first-start crash is
+		// the app's, even when the early read saw it at 0 (review round 3).
+		{"new pod, first-start crash its workload had before", []kube.Pod{{UID: "old", Owner: "ReplicaSet/web-0", Restarts: 1}},
+			[]kube.Pod{{UID: "new", Owner: "ReplicaSet/web-1", Restarts: 0}}, []string{podsJSON("new", 1)}, ""},
+		// Row I: v1's pod never restarted, so the same crash is the new version's.
+		{"new pod, crash its workload never had", []kube.Pod{{UID: "old", Owner: "ReplicaSet/web-0", Restarts: 0}},
+			[]kube.Pod{{UID: "new", Owner: "ReplicaSet/web-1", Restarts: 0}}, []string{podsJSON("new", 1)}, "restarted 1 more time(s)"},
 		// The read after the upgrade does not reset a pod that survived it.
 		{"surviving pod, read again after the upgrade", []kube.Pod{{UID: "old", Restarts: 0}}, []kube.Pod{{UID: "old", Restarts: 1}}, []string{podsJSON("old", 1)}, "restarted 1 more time(s)"},
 	}
