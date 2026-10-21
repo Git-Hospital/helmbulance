@@ -126,7 +126,7 @@ Each scenario goes through these phases:
 - Report a failed upgrade with Helm's error, Secrets the new version changes or drops, and workloads that are not healthy afterwards.
 
 **`zero-downtime`** (implemented).
-- A pod in the release namespace sends one request every 200 ms to the most HTTP-like Service port (`--traffic-target`, `--traffic-path` to choose). ExternalName, headless and `externalIPs` Services are never chosen, so the traffic stays on the release's pods.
+- A pod in the release namespace sends one request every 200 ms to the most HTTP-like Service port (`--traffic-target`, `--traffic-path` to choose). ExternalName, headless and `externalIPs` Services are never chosen, and neither is a Service with an endpoint address that is not a pod in the namespace (a chart can add its own EndpointSlice to a Service, and kube-proxy sends traffic to it too). So the traffic stays on the release's pods. `--traffic-target` is used as given.
 - Control: 20 s with no change, which must be clean; a control with failures runs once more before the run is inconclusive. Treatment: the same traffic during the version upgrade (with `--from-version`), or during a rolling restart of every Deployment and StatefulSet. Only failures from the start of the operation on count, measured on the traffic pod's own clock; a window with no requests is inconclusive.
 - Reports failed requests, the longest outage, and the settings that explain it: Recreate, a single replica, no readiness probe, no preStop.
 - This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
