@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,5 +48,24 @@ echo '{"items":[{"metadata":{"name":"db"},"spec":{"selector":{"app":"db"},"ports
 `)
 	if res.Verdict != Skipped {
 		t.Errorf("verdict = %s (%s), want SKIPPED", res.Verdict, res.Summary)
+	}
+}
+
+func TestZeroDowntimeSkipsAServiceWithAnEndpointOutsideThePods(t *testing.T) {
+	// The chart's own EndpointSlice adds an outside address to web's Service; kube-proxy would
+	// send part of the traffic there.
+	res := runZeroDowntimeUntilTarget(t, `#!/bin/sh
+case "$*" in
+*"get services"*)
+	echo '{"items":[{"metadata":{"name":"web"},"spec":{"clusterIP":"10.96.0.10","selector":{"app":"web"},"ports":[{"name":"http","port":80}]}}]}' ;;
+*"get endpointslices,pods"*)
+	echo '{"items":[{"kind":"Pod","status":{"podIP":"10.244.0.5"}},
+	 {"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web"}},"endpoints":[{"addresses":["10.244.0.5"]}]},
+	 {"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web"}},"endpoints":[{"addresses":["203.0.113.9"]}]}]}' ;;
+esac
+exit 0
+`)
+	if res.Verdict != Skipped || !strings.Contains(res.Summary, "203.0.113.9") {
+		t.Errorf("verdict = %s (%s), want SKIPPED naming 203.0.113.9", res.Verdict, res.Summary)
 	}
 }

@@ -195,7 +195,8 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 var errNoTarget = errors.New("no Service port looks like HTTP; give --traffic-target service:port")
 
 // target picks the Service and port to send traffic to: --traffic-target when given, otherwise
-// pickTarget's choice among the release's Services.
+// pickTarget's choice among the release's Services, minus any whose endpoints are not all pods
+// in the namespace.
 func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, error) {
 	if env.TrafficTarget != "" {
 		return env.TrafficTarget, nil
@@ -204,14 +205,19 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 	if err != nil {
 		return "", err
 	}
-	return pickTarget(services)
+	outside, err := env.Kube.OutsideEndpoints(ctx, ns)
+	if err != nil {
+		return "", err
+	}
+	return pickTarget(services, outside)
 }
 
 // pickTarget returns "service:port" for a port named http or web, then a common HTTP port number,
 // then any port with http in its name. Services whose traffic would not stay on the release's pods
 // are skipped: ExternalName (an outside host), headless (no port translation, so a request can
-// reach a pod that is not ready) and externalIPs.
-func pickTarget(services []kube.Service) (string, error) {
+// reach a pod that is not ready), externalIPs, and those with an address in outside (endpoints
+// that are not pods in the namespace, keyed by Service name).
+func pickTarget(services []kube.Service, outside map[string][]string) (string, error) {
 	score := func(p kube.ServicePort) int {
 		switch {
 		case p.Protocol != "" && p.Protocol != "TCP":
@@ -233,7 +239,7 @@ func pickTarget(services []kube.Service) (string, error) {
 	var cands []candidate
 	var skipped []string
 	for _, s := range services {
-		if why := leavesThePods(s); why != "" {
+		if why := leavesThePods(s, outside[s.Name]); why != "" {
 			skipped = append(skipped, s.Name+" ("+why+")")
 			continue
 		}
@@ -254,7 +260,8 @@ func pickTarget(services []kube.Service) (string, error) {
 }
 
 // leavesThePods says why traffic to s would not stay on the release's pods, or "" if it would.
-func leavesThePods(s kube.Service) string {
+// outside holds s's endpoint addresses that are not pods in the namespace.
+func leavesThePods(s kube.Service, outside []string) string {
 	switch {
 	case s.Type == "ExternalName":
 		return "ExternalName"
@@ -262,6 +269,8 @@ func leavesThePods(s kube.Service) string {
 		return "headless"
 	case len(s.ExternalIPs) > 0:
 		return "externalIPs"
+	case len(outside) > 0:
+		return "endpoints that are not pods in the namespace: " + strings.Join(outside, ", ")
 	}
 	return ""
 }
