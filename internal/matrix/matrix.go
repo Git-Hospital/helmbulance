@@ -65,8 +65,11 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 		res.Summary = "no kind node image for Kubernetes " + version + "; supported: " + strings.Join(Versions(), ", ")
 		return res
 	}
-	fmt.Fprintf(o.Log, "Creating a Kubernetes %s cluster…\n", version)
-	c, err := sandbox.Create(ctx, o.Runner, image)
+	c, err := sandbox.NewCluster()
+	if err == nil {
+		fmt.Fprintf(o.Log, "Creating a Kubernetes %s cluster %s…\n", version, c.Name)
+		err = c.Create(ctx, o.Runner, image)
+	}
 	if err != nil {
 		res.Verdict = scenario.Inconclusive
 		res.Summary = "the cluster did not start: " + err.Error()
@@ -234,27 +237,48 @@ func apiWarnings(stderr string) []string {
 // unhealthy waits for pods to settle and lists those that are not ready. Restarts alone are not
 // counted: many apps restart once at first start while their database comes up.
 func unhealthy(ctx context.Context, k *kube.Client, ns string) []string {
-	deadline := time.Now().Add(90 * time.Second)
-	for {
+	// Restarts at the first read: a pod that crashes and comes back while Settle watches is a
+	// problem even if it is ready again.
+	var first map[string]int
+	return scenario.Settle(ctx, func() []string {
 		pods, err := k.Pods(ctx, ns)
 		if err != nil {
 			return []string{"could not read pods: " + err.Error()}
 		}
-		var bad []string
-		for _, p := range pods {
-			if !p.Ready {
-				bad = append(bad, fmt.Sprintf("pod `%s` is not ready (%d restart(s))", p.Name, p.Restarts))
+		jobs, err := k.FailedJobs(ctx, ns)
+		if err != nil {
+			return []string{"could not read Jobs: " + err.Error()}
+		}
+		if first == nil {
+			first = map[string]int{}
+			for _, p := range pods {
+				first[p.UID] = p.Restarts
 			}
 		}
-		if len(bad) == 0 || time.Now().After(deadline) {
-			return bad
-		}
-		select {
-		case <-ctx.Done():
-			return bad
-		case <-time.After(10 * time.Second):
+		return append(append(notReady(pods), restartedSince(pods, first)...), jobs...)
+	})
+}
+
+// restartedSince lists pods that restarted more than they had in first, by pod UID.
+func restartedSince(pods []kube.Pod, first map[string]int) []string {
+	var out []string
+	for _, p := range pods {
+		if n := p.Restarts - first[p.UID]; n > 0 && !p.FinishedJob() {
+			out = append(out, fmt.Sprintf("pod `%s` restarted %d time(s) while Helmbulance watched it", p.Name, n))
 		}
 	}
+	return out
+}
+
+// notReady lists the pods that are not ready.
+func notReady(pods []kube.Pod) []string {
+	var bad []string
+	for _, p := range pods {
+		if !p.Ready && !p.FinishedJob() {
+			bad = append(bad, fmt.Sprintf("pod `%s` is not ready (%d restart(s))", p.Name, p.Restarts))
+		}
+	}
+	return bad
 }
 
 func reproLine(line string) string {

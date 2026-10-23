@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/egezamb/helmbulance/internal/execx"
 )
@@ -125,6 +126,49 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 	return consumers, nil
 }
 
+// StatefulWorkloads returns the workloads (kind/name) in ns that keep data across restarts: a
+// StatefulSet with volume claim templates, or any workload whose pods mount a PersistentVolumeClaim.
+// A credential such a workload reads was probably written into its data at first start.
+func (c *Client) StatefulWorkloads(ctx context.Context, ns string) (map[string]bool, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
+		"get", "deployments,statefulsets,daemonsets", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				VolumeClaimTemplates []json.RawMessage `json:"volumeClaimTemplates"`
+				Template             struct {
+					Spec struct {
+						Volumes []struct {
+							PersistentVolumeClaim *json.RawMessage `json:"persistentVolumeClaim"`
+						} `json:"volumes"`
+					} `json:"spec"`
+				} `json:"template"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse workloads: %w", err)
+	}
+	stateful := map[string]bool{}
+	for _, item := range list.Items {
+		keeps := len(item.Spec.VolumeClaimTemplates) > 0
+		for _, v := range item.Spec.Template.Spec.Volumes {
+			keeps = keeps || v.PersistentVolumeClaim != nil
+		}
+		if keeps {
+			stateful[item.Kind+"/"+item.Metadata.Name] = true
+		}
+	}
+	return stateful, nil
+}
+
 type podSpec struct {
 	InitContainers []container `json:"initContainers"`
 	Containers     []container `json:"containers"`
@@ -163,8 +207,25 @@ type Pod struct {
 	Name     string
 	UID      string
 	Owner    string // kind/name of the controlling object
+	OwnerUID string // its UID, which changes when the object is deleted and created again
 	Ready    bool
 	Restarts int
+	Phase    string // Pending, Running or Failed; Succeeded pods are left out
+	// Revision is the pod template revision of a Deployment (pod-template-hash) or a StatefulSet
+	// or DaemonSet (controller-revision-hash); "" for other pods.
+	Revision string
+}
+
+// FromJob reports whether p is an attempt of a Job. Such a pod ends by design, and a failed
+// attempt may be retried, so its readiness says nothing about the app; the Job's own status does.
+func (p Pod) FromJob() bool { return strings.HasPrefix(p.Owner, "Job/") }
+
+// FinishedJob reports whether p is a Job pod that has finished, so its outcome belongs to the Job's
+// status, not to readiness. A Job pod still Pending (stuck in ErrImagePull) or Running (crash-looping
+// in place) has not finished: its Job stays active with no failure recorded, so it is still judged
+// by readiness and restarts. Succeeded pods are already dropped from the pod list.
+func (p Pod) FinishedJob() bool {
+	return p.FromJob() && (p.Phase == "Succeeded" || p.Phase == "Failed")
 }
 
 // Pods returns the pods in ns with their readiness and restart counts. Finished pods and pods that
@@ -177,12 +238,14 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 	var list struct {
 		Items []struct {
 			Metadata struct {
-				Name              string  `json:"name"`
-				UID               string  `json:"uid"`
-				DeletionTimestamp *string `json:"deletionTimestamp"`
+				Name              string            `json:"name"`
+				UID               string            `json:"uid"`
+				DeletionTimestamp *string           `json:"deletionTimestamp"`
+				Labels            map[string]string `json:"labels"`
 				OwnerReferences   []struct {
 					Kind string `json:"kind"`
 					Name string `json:"name"`
+					UID  string `json:"uid"`
 				} `json:"ownerReferences"`
 			} `json:"metadata"`
 			Status struct {
@@ -208,9 +271,14 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 		if item.Metadata.DeletionTimestamp != nil { // on its way out, already replaced
 			continue
 		}
-		p := Pod{Name: item.Metadata.Name, UID: item.Metadata.UID}
+		p := Pod{Name: item.Metadata.Name, UID: item.Metadata.UID, Phase: item.Status.Phase}
+		p.Revision = item.Metadata.Labels["pod-template-hash"]
+		if p.Revision == "" {
+			p.Revision = item.Metadata.Labels["controller-revision-hash"]
+		}
 		if refs := item.Metadata.OwnerReferences; len(refs) > 0 {
 			p.Owner = refs[0].Kind + "/" + refs[0].Name
+			p.OwnerUID = refs[0].UID
 		}
 		for _, c := range item.Status.Conditions {
 			if c.Type == "Ready" && c.Status == "True" {
@@ -223,6 +291,57 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 		pods = append(pods, p)
 	}
 	return pods, nil
+}
+
+// FailedJobs returns the Jobs in ns that gave up (condition Failed) or are retrying after a failed
+// attempt, as "Job/<name>: <message>".
+func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "jobs", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				Failed     int `json:"failed"`
+				Conditions []struct {
+					Type    string `json:"type"`
+					Status  string `json:"status"`
+					Reason  string `json:"reason"`
+					Message string `json:"message"`
+				} `json:"conditions"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse jobs: %w", err)
+	}
+	var failed []string
+	for _, item := range list.Items {
+		finished := false
+		for _, cond := range item.Status.Conditions {
+			if cond.Status != "True" {
+				continue
+			}
+			switch cond.Type {
+			case "Failed":
+				failed = append(failed, "Job/"+item.Metadata.Name+": "+strings.TrimSpace(cond.Reason+" "+cond.Message))
+				finished = true
+			case "Complete":
+				finished = true
+			}
+		}
+		// The Failed condition comes only after the whole back-off, about ten minutes with the
+		// default backoffLimit; a Job still retrying after a failed attempt counts too.
+		if !finished && item.Status.Failed > 0 {
+			failed = append(failed, fmt.Sprintf("Job/%s: %d failed attempt(s), still retrying", item.Metadata.Name, item.Status.Failed))
+		}
+	}
+	sort.Strings(failed)
+	return failed, nil
 }
 
 // Service is one Service of the release and the ports it exposes.
@@ -464,6 +583,153 @@ func (c *Client) Logs(ctx context.Context, ns, name string) (string, error) {
 func (c *Client) LastLogLine(ctx context.Context, ns, name string) (string, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "logs", "--tail=1", name)
 	return strings.TrimSpace(string(out)), err
+}
+
+// PVC is one PersistentVolumeClaim. The UID tells a claim that survived from one that was deleted
+// and created again under the same name.
+type PVC struct {
+	Name, UID, Phase string
+}
+
+// PVCs returns the PersistentVolumeClaims in ns, sorted by name.
+func (c *Client) PVCs(ctx context.Context, ns string) ([]PVC, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pvc", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+				UID  string `json:"uid"`
+			} `json:"metadata"`
+			Status struct {
+				Phase string `json:"phase"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse pvcs: %w", err)
+	}
+	var pvcs []PVC
+	for _, item := range list.Items {
+		pvcs = append(pvcs, PVC{Name: item.Metadata.Name, UID: item.Metadata.UID, Phase: item.Status.Phase})
+	}
+	sort.Slice(pvcs, func(i, j int) bool { return pvcs[i].Name < pvcs[j].Name })
+	return pvcs, nil
+}
+
+// RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
+// returns what it printed. The pod runs as root with only the capabilities it needs to write into a
+// volume whatever owner the app gave its files (CHOWN, DAC_OVERRIDE, FOWNER), no service account
+// token, small resource limits, and is deleted afterwards, even when ctx is cancelled. It returns
+// as soon as the pod fails, and gives up after timeout.
+func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script string, timeout time.Duration) (string, error) {
+	overrides, err := json.Marshal(map[string]any{"spec": map[string]any{
+		"restartPolicy":                "Never",
+		"automountServiceAccountToken": false,
+		"securityContext":              map[string]any{"seccompProfile": map[string]any{"type": "RuntimeDefault"}},
+		"containers": []any{map[string]any{
+			"name": name, "image": image, "command": []string{"sh", "-c", script},
+			"volumeMounts": []any{map[string]any{"name": "pvc", "mountPath": "/pvc"}},
+			"securityContext": map[string]any{
+				"runAsUser": 0, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
+				"capabilities": map[string]any{"drop": []string{"ALL"}, "add": []string{"CHOWN", "DAC_OVERRIDE", "FOWNER"}},
+			},
+			"resources": map[string]any{
+				"requests": map[string]string{"cpu": "10m", "memory": "16Mi"},
+				"limits":   map[string]string{"cpu": "100m", "memory": "32Mi"},
+			},
+		}},
+		"volumes": []any{map[string]any{"name": "pvc", "persistentVolumeClaim": map[string]any{"claimName": claim}}},
+	}})
+	if err != nil {
+		return "", err
+	}
+	base := []string{"--kubeconfig", c.Kubeconfig, "--namespace", ns}
+	defer func() {
+		_, _ = c.Runner.Run(context.WithoutCancel(ctx), "kubectl", append(base, "delete", "pod", name, "--ignore-not-found", "--wait=true")...)
+	}()
+	if _, err := c.Runner.Run(ctx, "kubectl", append(base, "run", name, "--image", image, "--restart", "Never",
+		"--overrides", string(overrides))...); err != nil {
+		return "", err
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := c.Runner.Run(ctx, "kubectl", append(base, "get", "pod", name, "-o", "jsonpath={.status.phase}")...)
+		if err != nil {
+			return "", err
+		}
+		phase := strings.TrimSpace(string(out))
+		if phase == "Succeeded" {
+			break
+		}
+		if phase == "Failed" || time.Now().After(deadline) {
+			return "", fmt.Errorf("pod %s is %s after %s (mounting %s)", name, phase, timeout, claim)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	out, err := c.Runner.Run(ctx, "kubectl", append(base, "logs", name)...)
+	return string(out), err
+}
+
+// ClaimUsers maps each of the given claims to the workloads (kind/name) that mount it: through a
+// persistentVolumeClaim volume, or as a StatefulSet's claim from a volume claim template
+// (<template>-<statefulset>-<ordinal>).
+func (c *Client) ClaimUsers(ctx context.Context, ns string, claims []string) (map[string][]string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
+		"get", "deployments,statefulsets,daemonsets", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				VolumeClaimTemplates []struct {
+					Metadata struct {
+						Name string `json:"name"`
+					} `json:"metadata"`
+				} `json:"volumeClaimTemplates"`
+				Template struct {
+					Spec struct {
+						Volumes []struct {
+							PersistentVolumeClaim struct {
+								ClaimName string `json:"claimName"`
+							} `json:"persistentVolumeClaim"`
+						} `json:"volumes"`
+					} `json:"spec"`
+				} `json:"template"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse workloads: %w", err)
+	}
+	users := map[string][]string{}
+	for _, item := range list.Items {
+		w := item.Kind + "/" + item.Metadata.Name
+		for _, claim := range claims {
+			uses := false
+			for _, v := range item.Spec.Template.Spec.Volumes {
+				uses = uses || v.PersistentVolumeClaim.ClaimName == claim
+			}
+			for _, t := range item.Spec.VolumeClaimTemplates {
+				uses = uses || strings.HasPrefix(claim, t.Metadata.Name+"-"+item.Metadata.Name+"-")
+			}
+			if uses {
+				users[claim] = append(users[claim], w)
+			}
+		}
+	}
+	return users, nil
 }
 
 // DeletePod removes a pod without waiting for it to go.

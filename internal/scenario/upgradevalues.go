@@ -34,6 +34,8 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	res.Scenario = s.Name()
 	const release, ns = "hb-upgrade", upgradeNamespace
 	defer func() {
+		ctx, cancel := cleanupContext(ctx)
+		defer cancel()
 		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
 			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
 		}
@@ -75,12 +77,28 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not read pods after the control upgrade", err)
 	}
-	restarted := replacedPods(podsBefore, podsAfter)
+	restarted := restarts{owners: replacedPods(podsBefore, podsAfter)}
+	if len(restarted.owners) > 0 {
+		// A second no-op upgrade tells a restart on the first upgrade after install from one on
+		// every upgrade.
+		restarted.again = "unknown"
+		if err := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{}); err == nil {
+			if podsAgain, err := env.Kube.Pods(ctx, ns); err == nil {
+				restarted.again = "no"
+				if len(replacedPods(podsAfter, podsAgain)) > 0 {
+					restarted.again = "yes"
+				}
+			}
+		}
+	}
+
+	// HB-UV-003 comes from the control, so every result from here on carries it, an
+	// inconclusive treatment included.
+	defer func() { res = withRestarts(res, restarted, installCmd, reuseCmd) }()
 
 	// Treatment: values files only. Without any --set or values file it would repeat the control.
 	if len(env.Values.Sets) == 0 && len(env.Values.Files) == 0 {
 		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
-		res = withRestarts(res, restarted, installCmd, reuseCmd)
 		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
 		return res
 	}
@@ -96,63 +114,106 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	}
 
 	res, notes := s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
-	res = withRestarts(res, restarted, installCmd, reuseCmd)
 	res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
 	return res
 }
 
-// replacedPods lists the workloads whose pods were replaced, by pod UID, between two readings.
+// replacedPods lists the workloads that rolled out a new pod template between two readings: an
+// owner with a pod whose revision it did not have before. The owner is matched by UID, so a
+// workload deleted and created again from the same template counts too. Pods without a revision
+// (Jobs, bare pods) and pods that went away without a new revision (finished, scaled down, a
+// pod deleted and recreated by its controller) are not restarts.
 func replacedPods(before, after []kube.Pod) []string {
-	uids := map[string]bool{}
-	for _, p := range after {
-		uids[p.UID] = true
+	had := map[string]bool{}
+	for _, p := range before {
+		if p.Revision != "" {
+			had[ownerKey(p)+"@"+p.Revision] = true
+		}
 	}
 	seen := map[string]bool{}
 	var owners []string
-	for _, p := range before {
-		owner := p.Owner
-		if strings.HasPrefix(owner, "ReplicaSet/") {
-			// Name the Deployment, not the ReplicaSet: <deployment>-<hash>.
-			if i := strings.LastIndex(owner, "-"); i > len("ReplicaSet/") {
-				owner = "Deployment/" + owner[len("ReplicaSet/"):i]
-			}
+	for _, p := range after {
+		owner := workload(p.Owner)
+		if p.Revision == "" || had[ownerKey(p)+"@"+p.Revision] || seen[owner] {
+			continue
 		}
-		if !uids[p.UID] && !seen[owner] {
-			seen[owner] = true
-			owners = append(owners, owner)
-		}
+		seen[owner] = true
+		owners = append(owners, owner)
 	}
 	sort.Strings(owners)
 	return owners
 }
 
-// withRestarts adds HB-UV-003 when an upgrade that changed nothing replaced pods.
-func withRestarts(res Result, restarted []string, installCmd, reuseCmd []execx.Command) Result {
-	if len(restarted) == 0 || res.Verdict == Inconclusive {
+// ownerKey identifies a pod's owner by UID, or by workload name when the UID is unknown.
+func ownerKey(p kube.Pod) string {
+	if p.OwnerUID != "" {
+		return p.OwnerUID
+	}
+	return workload(p.Owner)
+}
+
+// workload names a Deployment rather than its ReplicaSet (<deployment>-<hash>), so that two
+// revisions of one Deployment have one name.
+func workload(owner string) string {
+	if strings.HasPrefix(owner, "ReplicaSet/") {
+		if i := strings.LastIndex(owner, "-"); i > len("ReplicaSet/") {
+			return "Deployment/" + owner[len("ReplicaSet/"):i]
+		}
+	}
+	return owner
+}
+
+// restarts is what the no-op upgrades showed: the workloads the first one restarted, and whether
+// a second one restarted pods again ("yes", "no", or "unknown" when it could not run).
+type restarts struct {
+	owners []string
+	again  string
+}
+
+// withRestarts adds HB-UV-003 when an upgrade that changed nothing replaced pods. The control
+// showed it, so it stands even when the treatment could not run; the summary then says why.
+func withRestarts(res Result, restarted restarts, installCmd, reuseCmd []execx.Command) Result {
+	if len(restarted.owners) == 0 {
 		return res
+	}
+	incomplete := ""
+	if res.Verdict == Inconclusive {
+		incomplete = "; the rest did not run: " + res.Summary
 	}
 	var repro []string
 	for _, c := range installCmd {
 		repro = append(repro, reproLine(c.Line))
 	}
 	var evidence []string
-	for _, o := range restarted {
+	for _, o := range restarted.owners {
 		evidence = append(evidence, "`"+o+"`: its pods were replaced by an upgrade that changed no values")
+	}
+	title := "An upgrade that changes nothing restarts pods"
+	when := "A no-op `helm upgrade`, such as one from a GitOps sync, restarted these workloads"
+	switch restarted.again {
+	case "yes":
+		title = "Every upgrade, even one that changes nothing, restarts pods"
+		when = "Every `helm upgrade`, even a no-op one from a GitOps sync, restarts these workloads"
+		evidence = append(evidence, "A second upgrade that changed nothing replaced pods again.")
+	case "no":
+		title = "The first upgrade after install restarts pods, even when it changes nothing"
+		when = "The first `helm upgrade` after an install, even a no-op one from a GitOps sync, restarts these workloads"
+		evidence = append(evidence, "A second upgrade that changed nothing replaced no pods.")
 	}
 	res.Findings = append(res.Findings, Finding{
 		ID:       "HB-UV-003",
-		Title:    "An upgrade that changes nothing restarts pods",
+		Title:    title,
 		Severity: "medium",
 		Evidence: evidence,
-		Impact: "Every `helm upgrade`, even a no-op one from a GitOps sync, restarts these workloads: a " +
-			"short outage for single replicas, lost in-memory or emptyDir state, and noise in alerts.",
+		Impact: when + ": a short outage for single replicas, lost in-memory or emptyDir state, and " +
+			"noise in alerts.",
 		Fix: "Usually a pod-template annotation that changes on every render, such as a checksum of a " +
 			"Secret with a generated value, a timestamp or randAlphaNum. Keep generated values stable " +
 			"(see HB-UV-001) and hash only inputs that come from values.",
 		Reproduce: concat(repro, reproLine(reuseCmd[0].Line)),
 	})
 	res.Verdict = Fail
-	res.Summary = fmt.Sprintf("%d problem(s) across upgrades", len(res.Findings))
+	res.Summary = fmt.Sprintf("%d problem(s) across upgrades", len(res.Findings)) + incomplete
 	return res
 }
 
@@ -162,6 +223,11 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", err)
 	}
+	stateful, err := env.Kube.StatefulWorkloads(ctx, upgradeNamespace)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not find stateful workloads: %v\n", err)
+	}
+	statefulKnown := err == nil
 
 	var repro []string
 	for _, c := range installCmd {
@@ -170,19 +236,30 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 
 	control := oracle.Diff(installed, reused)
 	regenerated, added := splitAdded(control)
+	regenerated, rotated := splitExpected(regenerated, env.ExpectedRotation)
 	if len(regenerated) > 0 {
 		steps := concat(repro, reproLine(reuseCmd[0].Line))
+		impact := "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
+			"its first start stop matching, and anything encrypted or signed with the old value " +
+			"can no longer be read."
+		fix := "Generate the value only when it does not exist yet: read the current Secret with " +
+			"`lookup` and reuse its value, and add `helm.sh/resource-policy: keep`. `lookup` " +
+			"returns nothing under `helm template` (Argo CD), so also support an existingSecret."
+		if onlyTLS(regenerated) {
+			impact = "Every `helm upgrade` issues new certificates. Anything that trusts the old CA (a " +
+				"webhook's caBundle, a client that pins the CA, a sidecar that cached it) fails until " +
+				"it gets the new one."
+			fix = "If the rotation is not meant to happen on every upgrade, keep the certificate with " +
+				"`lookup` like any generated value, or let cert-manager issue it. If it is on purpose, " +
+				"make sure every consumer is updated in the same upgrade."
+		}
 		res.Findings = append(res.Findings, Finding{
-			ID:       "HB-UV-001",
-			Title:    "Secrets change on every upgrade, even with the same values",
-			Severity: "high",
-			Evidence: describe(regenerated, consumers),
-			Impact: "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
-				"its first start stop matching, and anything encrypted or signed with the old value " +
-				"can no longer be read.",
-			Fix: "Generate the value only when it does not exist yet: read the current Secret with " +
-				"`lookup` and reuse its value, and add `helm.sh/resource-policy: keep`. `lookup` " +
-				"returns nothing under `helm template` (Argo CD), so also support an existingSecret.",
+			ID:        "HB-UV-001",
+			Title:     "Secrets change on every upgrade, even with the same values",
+			Severity:  worstSeverity(regenerated, consumers, stateful, statefulKnown),
+			Evidence:  describe(regenerated, consumers),
+			Impact:    impact,
+			Fix:       fix,
 			Reproduce: steps,
 		})
 	}
@@ -193,6 +270,8 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		var more []oracle.Change
 		changes, more = splitAdded(withoutRefs(oracle.Diff(reused, filesOnly), control))
 		added = append(added, more...)
+		changes, more = splitExpected(changes, env.ExpectedRotation)
+		rotated = append(rotated, more...)
 	}
 	if len(changes) > 0 {
 		steps := concat(repro, reproLine(filesCmd[0].Line))
@@ -203,7 +282,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		res.Findings = append(res.Findings, Finding{
 			ID:       "HB-UV-002",
 			Title:    title,
-			Severity: "high",
+			Severity: worstSeverity(changes, consumers, stateful, statefulKnown),
 			Evidence: describe(changes, consumers),
 			Impact: "Upgrading from the values file in git, without repeating every --set used at " +
 				"install, silently replaces or removes these values. For an encryption key this " +
@@ -225,16 +304,21 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 			res.Summary = noSecretsTested
 		}
 	}
-	return res, []string{note("keys added by an upgrade, not a finding", describe(added, consumers))}
+	return res, []string{
+		note("keys added by an upgrade, not a finding", describe(added, consumers)),
+		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
+		unknownStatefulNote(statefulKnown, regenerated, changes),
+	}
 }
 
 func describe(changes []oracle.Change, consumers map[string][]string) []string {
 	var lines []string
 	for _, c := range changes {
 		line := fmt.Sprintf("`%s` %s", c.Ref, c.Kind)
-		secret, _, _ := strings.Cut(c.Ref, "/")
-		users := append(append([]string{}, consumers[c.Ref]...), consumers[secret+"/*"]...)
-		if len(users) > 0 {
+		if class := keyClass(c); class != oracle.ClassOther && c.Kind != oracle.MovedKind {
+			line += ", " + class
+		}
+		if users := readers(c, consumers); len(users) > 0 {
 			line += " (read by " + strings.Join(users, ", ") + ")"
 		}
 		lines = append(lines, line)

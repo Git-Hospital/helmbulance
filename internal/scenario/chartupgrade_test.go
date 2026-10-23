@@ -148,17 +148,25 @@ func TestChartUpgradeTimeoutWithACrashIsAFinding(t *testing.T) {
 	}
 }
 
-// A cancelled run or the chart's own webhook is not a --wait timeout, so pods are not read for it.
+// Only a --wait timeout with the release applied is worth reading pods or collecting evidence for;
+// a cancelled run, the chart's own webhook, a pull error or a render refusal are not. The upgrade
+// (#34) and the second install of reinstall (#30) share it.
 func TestTimedOutWaiting(t *testing.T) {
 	for msg, want := range map[string]bool{
 		"Error: UPGRADE FAILED: context deadline exceeded":                                                  true,
 		"Error: UPGRADE FAILED: timed out waiting for the condition":                                        true,
+		"Error: INSTALLATION FAILED: timed out waiting for the condition":                                   true,
 		"Error: UPGRADE FAILED: failed calling webhook \"x\": context deadline exceeded":                    false,
 		"Error: UPGRADE FAILED: cannot patch db with kind StatefulSet: spec: Forbidden: field is immutable": false,
+		"Failed to pull image: toomanyrequests: rate limit":                                                 false,
+		"Error: INSTALLATION FAILED: execution error at (demo/templates/secret.yaml:3:4)":                   false,
 	} {
 		if got := timedOutWaiting(t.Context(), errors.New(msg)); got != want {
 			t.Errorf("timedOutWaiting(%q) = %v, want %v", msg, got, want)
 		}
+	}
+	if timedOutWaiting(t.Context(), nil) {
+		t.Error("no error counts as a --wait timeout")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
