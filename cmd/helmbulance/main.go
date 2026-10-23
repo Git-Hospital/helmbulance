@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/egezamb/helmbulance/internal/execx"
@@ -115,7 +116,7 @@ func test(args []string) int {
 		return exitError
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := interruptContext()
 	defer stop()
 
 	selected, err := pick(only)
@@ -134,9 +135,10 @@ func test(args []string) int {
 	var c *sandbox.Cluster
 	if *cluster != "" {
 		c, err = sandbox.Open(*cluster)
-	} else {
-		fmt.Println("Creating sandbox cluster…")
-		c, err = sandbox.Create(ctx, runner, *nodeImage)
+	} else if c, err = sandbox.NewCluster(); err == nil {
+		// Print the name before kind runs, so an interrupt during creation still leaves it on screen.
+		fmt.Printf("Creating sandbox cluster %s…\n", c.Name)
+		err = c.Create(ctx, runner, *nodeImage)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -326,7 +328,7 @@ func matrixCmd(args []string) int {
 	if refuseRemote(*allowRemote, chart) {
 		return exitError
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := interruptContext()
 	defer stop()
 
 	runner := execx.NewSandboxRunner()
@@ -403,7 +405,7 @@ func scanCmd(args []string) int {
 	if refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := interruptContext()
 	defer stop()
 	runner := execx.NewSandboxRunner()
 	runner.Secrets = execx.SetValues(sets)
@@ -432,6 +434,27 @@ func scanCmd(args []string) int {
 		return exitFindings
 	}
 	return exitClean
+}
+
+// interruptContext is cancelled by the first Ctrl-C or SIGTERM, so the run stops and cleans up.
+// Cleanup can take minutes, so a second one quits at once, leaving the cluster as it is. SIGTERM
+// (kill, timeout, docker stop) takes the same path: the tools run in their own process groups, so
+// a SIGTERM sent to the run's group no longer reaches them, and only the cancel stops them.
+func interruptContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		defer signal.Stop(sig)
+		select {
+		case <-sig:
+			signal.Stop(sig)
+			fmt.Fprintln(os.Stderr, "\nInterrupted: cleaning up. Press Ctrl-C again to quit now and leave the sandbox cluster (its name was printed above; remove it with kind delete cluster --name).")
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // checkRotations rejects --expected-rotation patterns that could never match a "secret/key"
