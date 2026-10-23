@@ -26,8 +26,7 @@ type ZeroDowntime struct{}
 
 const (
 	zeroDowntimeNamespace = "hb-zero-downtime"
-	// The multi-arch index digest of the tag, so a re-pushed tag cannot change what runs.
-	trafficImage = "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+	trafficImage          = busyboxImage
 )
 
 // Variables, not constants, so tests can shorten them.
@@ -47,6 +46,8 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	res.Scenario = s.Name()
 	const release, ns = "hb-zd", zeroDowntimeNamespace
 	defer func() {
+		ctx, cancel := cleanupContext(ctx)
+		defer cancel()
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control-2")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic")
