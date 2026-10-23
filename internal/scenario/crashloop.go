@@ -35,17 +35,23 @@ var startFailures = map[string]bool{
 }
 
 // crashedSince lists the containers that crashed or could not start since before the upgrade.
-//   - A container of a new pod counts if it waits with a startFailures reason or has restarted.
+//   - A container of a new pod counts if it waits with a startFailures reason, or if it restarted
+//     more often than the same container (by name, init containers apart) did in any pod of its
+//     workload before the upgrade. A container that crashes once on its first start in both
+//     versions is the app's startup, as in unhealthyAfter's floor. Without the containers from
+//     before (beforeKnown false) there is no such count, so only the waiting reason counts.
 //   - A container of a pod from before counts only if that pod was Ready then and the container
 //     was not already failing, and only for restarts beyond its own count then (matched by pod
 //     UID and container name, init containers apart). So an init container that restarted while
 //     v1 started, or a crash loop v1 already had, is not blamed on the upgrade. Without the
-//     containers from before (beforeKnown false), pods from before are left out.
+//     containers from before, pods from before are left out.
 func crashedSince(containers, beforeContainers []kube.Container, beforePods []kube.Pod, beforeKnown bool) []string {
 	key := func(c kube.Container) string { return fmt.Sprintf("%s/%t/%s", c.PodUID, c.Init, c.Name) }
-	was := map[string]kube.Container{}
+	floorKey := func(c kube.Container) string { return fmt.Sprintf("%s/%t/%s", workload(c.Owner), c.Init, c.Name) }
+	was, floor := map[string]kube.Container{}, map[string]int{}
 	for _, c := range beforeContainers {
 		was[key(c)] = c
+		floor[floorKey(c)] = max(floor[floorKey(c)], c.Restarts)
 	}
 	old, ready := map[string]bool{}, map[string]bool{}
 	for _, p := range beforePods {
@@ -54,7 +60,7 @@ func crashedSince(containers, beforeContainers []kube.Container, beforePods []ku
 	var crashed []string
 	for _, c := range containers {
 		if !old[c.PodUID] {
-			if startFailures[c.Waiting] || c.Restarts > 0 {
+			if startFailures[c.Waiting] || beforeKnown && c.Restarts > floor[floorKey(c)] {
 				crashed = append(crashed, describeContainer(c))
 			}
 			continue

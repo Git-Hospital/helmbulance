@@ -114,29 +114,47 @@ func podInitJSON(uid string, initRestarts int) string {
 		`"containerStatuses":[{"name":"app","restartCount":0,"state":{"running":{}}}]}}`
 }
 
+// ownedBy moves a podJSON pod to another ReplicaSet of the same Deployment, as an upgrade does.
+func ownedBy(pod, replicaSet string) string {
+	return strings.Replace(pod, `"kind":"ReplicaSet","name":"web"`, `"kind":"ReplicaSet","name":"`+replicaSet+`"`, 1)
+}
+
 // #28: a new version that crash-loops ends in helm's --wait timeout; the crash makes it a finding.
 func TestChartUpgradeTimeoutWithACrashIsAFinding(t *testing.T) {
 	const timeout = "Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: InProgress\ncontext deadline exceeded"
 	for name, c := range map[string]struct {
-		before, after string
-		want          string
+		before, after    string
+		containersBefore string // the containers read before the upgrade, when not the pods before
+		want             string
 	}{
-		"new pod crash-loops":            {items(podJSON("old", 0, "")), items(podJSON("old", 0, ""), podJSON("new", 3, "CrashLoopBackOff")), Fail},
-		"new pod cannot read its config": {items(podJSON("old", 0, "")), items(podJSON("new", 0, "CreateContainerConfigError")), Fail},
-		"old pod restarts since":         {items(podJSON("old", 1, "")), items(podJSON("old", 2, ""), podJSON("new", 0, "ContainerCreating")), Fail},
-		"new pod pulls its image":        {items(podJSON("old", 0, "")), items(podJSON("old", 0, ""), podJSON("new", 0, "ImagePullBackOff")), Inconclusive},
-		"old restarts from before only":  {items(podJSON("old", 2, "")), items(podJSON("old", 2, ""), podJSON("new", 0, "ContainerCreating")), Inconclusive},
+		"new pod crash-loops":            {items(podJSON("old", 0, "")), items(podJSON("old", 0, ""), podJSON("new", 3, "CrashLoopBackOff")), "", Fail},
+		"new pod cannot read its config": {items(podJSON("old", 0, "")), items(podJSON("new", 0, "CreateContainerConfigError")), "", Fail},
+		"old pod restarts since":         {items(podJSON("old", 1, "")), items(podJSON("old", 2, ""), podJSON("new", 0, "ContainerCreating")), "", Fail},
+		"new pod pulls its image":        {items(podJSON("old", 0, "")), items(podJSON("old", 0, ""), podJSON("new", 0, "ImagePullBackOff")), "", Inconclusive},
+		"old restarts from before only":  {items(podJSON("old", 2, "")), items(podJSON("old", 2, ""), podJSON("new", 0, "ContainerCreating")), "", Inconclusive},
 		// Review round 1, item 2: an init container that restarted while v1 started (it waits for a
 		// database, say) is not a crash of the new version.
-		"old init restarts from before": {items(podInitJSON("old", 1)), items(podInitJSON("old", 1), podJSON("new", 0, "ContainerCreating")), Inconclusive},
+		"old init restarts from before": {items(podInitJSON("old", 1)), items(podInitJSON("old", 1), podJSON("new", 0, "ContainerCreating")), "", Inconclusive},
 		// Item 3: a crash loop v1 already had (the pod was not Ready before) is not blamed on the upgrade.
 		// A v1 pod that runs but was not Ready (its liveness probe restarts it) is not blamed either.
-		"v1 pod already unhealthy":  {items(notReady(podJSON("old", 3, ""))), items(notReady(podJSON("old", 5, "")), podJSON("new", 0, "ContainerCreating")), Inconclusive},
-		"crash loop v1 already had": {items(podJSON("old", 3, "CrashLoopBackOff")), items(podJSON("old", 5, "CrashLoopBackOff"), podJSON("new", 0, "ContainerCreating")), Inconclusive},
+		"v1 pod already unhealthy":  {items(notReady(podJSON("old", 3, ""))), items(notReady(podJSON("old", 5, "")), podJSON("new", 0, "ContainerCreating")), "", Inconclusive},
+		"crash loop v1 already had": {items(podJSON("old", 3, "CrashLoopBackOff")), items(podJSON("old", 5, "CrashLoopBackOff"), podJSON("new", 0, "ContainerCreating")), "", Inconclusive},
+		// Round 2: a container that crashes once on its first start in both versions is the app's
+		// startup (row F of #24), so a timeout from another workload stays INCONCLUSIVE. The new pod
+		// is matched to the v1 pods by workload, not by its ReplicaSet, which the upgrade replaced.
+		"first-start crash both versions have": {items(ownedBy(podJSON("old", 1, ""), "web-5d8f7c")), items(ownedBy(podJSON("new", 1, ""), "web-7b9c4d")), "", Inconclusive},
+		"new pod restarts more than v1's did":  {items(ownedBy(podJSON("old", 1, ""), "web-5d8f7c")), items(ownedBy(podJSON("new", 2, ""), "web-7b9c4d")), "", Fail},
+		// Without the containers from before there is nothing to compare restarts with.
+		"no containers from before, restarted":  {items(podJSON("old", 0, "")), items(podJSON("new", 1, "")), "not json", Inconclusive},
+		"no containers from before, crash loop": {items(podJSON("old", 0, "")), items(podJSON("new", 3, "CrashLoopBackOff")), "not json", Fail},
 	} {
 		t.Run(name, func(t *testing.T) {
 			// Reads: pods before the upgrade, containers before it, containers after the timeout.
-			res := runChartUpgrade(t, timeout, c.before, c.before, c.after)
+			containersBefore := c.before
+			if c.containersBefore != "" {
+				containersBefore = c.containersBefore
+			}
+			res := runChartUpgrade(t, timeout, c.before, containersBefore, c.after)
 			if res.Verdict != c.want {
 				t.Fatalf("verdict = %s (%s), want %s", res.Verdict, res.Summary, c.want)
 			}
