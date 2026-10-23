@@ -58,9 +58,8 @@ func TestZeroDowntimeSkipsAServiceWithAnEndpointOutsideThePods(t *testing.T) {
 case "$*" in
 *"get services"*)
 	echo '{"items":[{"metadata":{"name":"web"},"spec":{"clusterIP":"10.96.0.10","selector":{"app":"web"},"ports":[{"name":"http","port":80}]}}]}' ;;
-*"get endpointslices,pods"*)
-	echo '{"items":[{"kind":"Pod","status":{"podIP":"10.244.0.5"}},
-	 {"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web"}},"endpoints":[{"addresses":["10.244.0.5"]}]},
+*"get endpointslices"*)
+	echo '{"items":[{"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web","endpointslice.kubernetes.io/managed-by":"endpointslice-controller.k8s.io"}},"endpoints":[{"addresses":["10.244.0.5"]}]},
 	 {"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web"}},"endpoints":[{"addresses":["203.0.113.9"]}]}]}' ;;
 esac
 exit 0

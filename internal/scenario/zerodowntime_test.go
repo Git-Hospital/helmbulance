@@ -20,7 +20,7 @@ for a in "$@"; do last="$a"; done
 case "$*" in
   *"get services"*) echo '{"items":[{"metadata":{"name":"web"},"spec":{"selector":{"app":"web"},"ports":[{"name":"http","port":80}]}}]}' ;;
   *"get deployments,statefulsets"*) echo '{"items":[]}' ;;
-  *"get endpointslices,pods"*) echo '{"items":[]}' ;;
+  *"get endpointslices"*) echo '{"items":[]}' ;;
   *" logs --tail=1 "*) [ -f "$FAKE_LOGS/$last.before" ] && tail -n 1 "$FAKE_LOGS/$last.before" ;;
   *" logs "*) cat "$FAKE_LOGS/$last" ;;
 esac

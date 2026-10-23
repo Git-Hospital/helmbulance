@@ -77,7 +77,7 @@ func TestPickTargetSkipsServicesWithEndpointsOutsideThePods(t *testing.T) {
 		t.Errorf("pickTarget = %q, %v; want app:8080", got, err)
 	}
 	_, err = pickTarget([]kube.Service{web}, outside)
-	if err == nil || !strings.Contains(err.Error(), "skipped web (endpoints that are not pods in the namespace: 203.0.113.9)") {
+	if err == nil || !strings.Contains(err.Error(), "skipped web (endpoints the control plane did not write: 203.0.113.9)") {
 		t.Errorf("err = %v, want web named with its outside address", err)
 	}
 }
