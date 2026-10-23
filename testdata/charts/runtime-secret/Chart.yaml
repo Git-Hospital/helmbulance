@@ -1,0 +1,5 @@
+apiVersion: v2
+name: runtime-secret
+description: "Helmbulance fixture. Keeps its own Secret like keeps-secret, but a workload keeps rewriting another Secret at runtime, as operators and apps do. That Secret is not the chart's, so it must not be a finding."
+type: application
+version: 0.1.0

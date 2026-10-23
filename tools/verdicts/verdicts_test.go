@@ -288,8 +288,15 @@ func TestRepositoryTable(t *testing.T) {
 		t.Error(problem)
 	}
 	for _, c := range truth.Cases {
-		for _, arg := range c.Args {
+		for i, arg := range c.Args {
 			if !strings.HasPrefix(arg, "testdata/") {
+				continue
+			}
+			// A values file (-f, --values) must exist; any other path must be a chart.
+			if i > 0 && (c.Args[i-1] == "-f" || c.Args[i-1] == "--values") {
+				if _, err := os.Stat(filepath.Join(root, arg)); err != nil {
+					t.Errorf("%s: values file %s: %v", c.Name, arg, err)
+				}
 				continue
 			}
 			if _, err := os.Stat(filepath.Join(root, arg, "Chart.yaml")); err != nil {

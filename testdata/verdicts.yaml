@@ -34,6 +34,22 @@ cases:
     args: [testdata/charts/keeps-secret, --scenario, upgrade-without-values]
     exit: 0
     verdicts: {upgrade-without-values: PASS}
+  # More fixed twins, not pairs of their own: Secrets the release stops rendering or never renders,
+  # and a Secret a workload rewrites, must not be findings.
+  - name: generate-once
+    pair: secret-regeneration
+    role: fixed
+    command: test
+    args: [testdata/charts/generate-once, --scenario, upgrade-without-values]
+    exit: 0
+    verdicts: {upgrade-without-values: PASS}
+  - name: runtime-secret
+    pair: secret-regeneration
+    role: fixed
+    command: test
+    args: [testdata/charts/runtime-secret, -f, testdata/charts/runtime-secret/values.yaml, --scenario, upgrade-without-values]
+    exit: 0
+    verdicts: {upgrade-without-values: PASS}
 
   - name: drops-set-key
     pair: set-key
