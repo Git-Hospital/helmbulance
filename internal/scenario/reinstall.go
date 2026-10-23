@@ -251,21 +251,6 @@ var reinstallRunErrors = []string{
 	"tls handshake timeout",
 }
 
-// timedOutWaiting reports whether the second install failed because `helm --wait` timed out with
-// the release applied, as opposed to a cancelled run, the chart's own webhook, or a pull or tool
-// error. Only then is the post-install evidence worth collecting.
-func timedOutWaiting(ctx context.Context, err error) bool {
-	if ctx.Err() != nil {
-		return false // the whole run was cancelled; collect nothing more
-	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "failed calling webhook") {
-		return false // the chart's own webhook failed: a finding, left to installFailed
-	}
-	return strings.Contains(msg, "timed out waiting for the condition") ||
-		strings.Contains(msg, "context deadline exceeded")
-}
-
 // installFailed is the result when the second install fails.
 //   - The chart refusing at render time (`fail`, `required`) is safe behaviour, a PASS (D4): it may
 //     be asking for an existingSecret, which is what HB-RI-001's fix recommends.

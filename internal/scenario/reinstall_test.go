@@ -1,7 +1,6 @@
 package scenario
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -69,30 +68,6 @@ func TestReinstallFindingsCertReadByKeeper(t *testing.T) {
 	}
 	if len(unrelated) != 0 {
 		t.Errorf("unrelated = %v, want empty since the keeper does read it", unrelated)
-	}
-}
-
-// Only a --wait timeout with the release applied is worth collecting evidence for; a cancel, the
-// chart's webhook, a pull error or a render refusal are not (review item 1).
-func TestTimedOutWaiting(t *testing.T) {
-	for _, c := range []struct {
-		err  string
-		want bool
-	}{
-		{"Error: INSTALLATION FAILED: timed out waiting for the condition", true},
-		{"Error: INSTALLATION FAILED: context deadline exceeded", true},
-		{`Error: INSTALLATION FAILED: failed calling webhook "v.io": context deadline exceeded`, false},
-		{"Failed to pull image: toomanyrequests: rate limit", false},
-		{"Error: INSTALLATION FAILED: execution error at (demo/templates/secret.yaml:3:4)", false},
-	} {
-		if got := timedOutWaiting(t.Context(), errors.New(c.err)); got != c.want {
-			t.Errorf("timedOutWaiting(%q) = %v, want %v", c.err, got, c.want)
-		}
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if timedOutWaiting(ctx, errors.New("timed out waiting for the condition")) {
-		t.Error("a cancelled run should not be treated as a collectable timeout")
 	}
 }
 
