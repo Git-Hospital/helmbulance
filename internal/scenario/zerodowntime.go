@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -90,6 +92,13 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		path = "/"
 	}
 	url := "http://" + target + path
+	// When helmbulance chose the Service, its endpoints are read again after the operation: the
+	// version under test, a hook or a pod with RBAC can add a slice of its own at any time after
+	// target ran. This detects such a slice; it does not keep the traffic away from it.
+	service := ""
+	if env.TrafficTarget == "" {
+		service = target[:strings.LastIndex(target, ":")]
+	}
 
 	var control, firstControl oracle.TrafficStats
 	for i, pod := range []string{"hb-traffic-control", "hb-traffic-control-2"} {
@@ -132,8 +141,22 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		operation = "the upgrade from " + env.FromVersion
 		act = func() error { return env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values) }
 	}
-	var actErr error
+	var actErr, recheckErr error
 	var actStart int64
+	gained := map[string]bool{} // addresses the chosen Service gained in slices the control plane did not write
+	recheck := func() {
+		if service == "" || recheckErr != nil {
+			return
+		}
+		outside, err := env.Kube.OutsideEndpoints(ctx, ns)
+		if err != nil {
+			recheckErr = err
+			return
+		}
+		for _, addr := range outside[service] {
+			gained[addr] = true
+		}
+	}
 	log, err := s.measure(ctx, env, ns, "hb-traffic", url, func() error {
 		if err := sleep(ctx, trafficLead); err != nil {
 			return err
@@ -147,7 +170,12 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		}
 		actStart, _ = oracle.TrafficSecond(last)
 		actErr = act()
-		return sleep(ctx, trafficTail)
+		recheck()
+		if err := sleep(ctx, trafficTail); err != nil {
+			return err
+		}
+		recheck()
+		return nil
 	})
 	if err != nil {
 		return inconclusive(res, "the traffic during the operation could not run", err)
@@ -155,6 +183,14 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	treatment := oracle.ParseTrafficSince(log, actStart)
 	if actErr != nil {
 		return inconclusive(res, operation+" failed", actErr)
+	}
+	if recheckErr != nil {
+		return inconclusive(res, "could not read the endpoints of "+service+" again after "+operation, recheckErr)
+	}
+	if len(gained) > 0 {
+		return inconclusive(res, "the traffic may have left the release's pods during "+operation,
+			fmt.Errorf("%s gained endpoints the control plane did not write: %s",
+				service, strings.Join(slices.Sorted(maps.Keys(gained)), ", ")))
 	}
 	if treatment.Total == 0 {
 		return inconclusive(res, "no requests were sent during "+operation, fmt.Errorf("the traffic pod logged nothing after the operation started"))
