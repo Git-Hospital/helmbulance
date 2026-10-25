@@ -143,7 +143,7 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 
 **`helmbulance matrix`** (implemented). A command rather than a scenario, because each Kubernetes version needs its own cluster.
 - For each version (kind node images pinned by digest: 1.34, 1.35, 1.36, 1.37): create a cluster, install, wait for the pods, collect the API server's warnings from helm's stderr, delete the cluster.
-- Reports a failed install, pods that never become ready, pods that restart while they are watched (the release must stay clean for 30 s; restarts before helm's `--wait` returned are not counted, apps often restart once at first start), Jobs that gave up or are retrying after a failed attempt, and warnings about deprecated APIs.
+- Reports a failed install, pods that never become ready, pods that restart while they are watched (the release must stay clean for 30 s; restarts before helm's `--wait` returned are not counted, apps often restart once at first start), Jobs that gave up or are retrying after a failed attempt, and the API server's warnings: a deprecated or removed API is HB-K8S-003, any other warning (a duplicated environment variable, say) is HB-K8S-004 at low severity. Warnings are read in client-go's klog format and as `Warning: …` lines.
 - Known deprecations are also caught statically (`helm lint`, pluto); what the matrix adds is whether the chart actually runs on each version.
 
 **`reinstall`** (implemented).
