@@ -156,10 +156,13 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 - PVCs deleted with the release are named in the summary, with a note that the result depends on the StorageClass reclaim policy. New credentials with no data left are a fresh install, not a finding.
 - The sandbox has one node, so the sentinel pod can mount a ReadWriteOnce claim next to the app. On several nodes it would need the app's node.
 
-**`gitops-render`** (v0.1).
-- Find `lookup` statically.
-- Install the chart, then compare a client-side render with a server-side dry run of the same values.
-- Secrets that differ would be regenerated on every Argo CD sync.
+**`gitops-render`** (implemented).
+- Install the chart and read the release's own Secrets. Render the same values three times: once with `helm template --dry-run=server`, where `lookup` reads the cluster as install and upgrade do, and twice with `helm template` and no cluster, as Argo CD renders.
+- A Secret key is a finding when the client-side render changes it while Helm keeps it: the server-side render gives the release's value, or leaves the Secret out, as a chart that renders it only `if not (lookup …)` does. A key the server-side render changes too is regenerated under Helm as well; `upgrade-without-values` reports that one.
+- Findings:
+  - HB-GR-001: the keys a sync would overwrite, with their readers and the D5 severity. Keys whose two client-side renders differ are named as changing on every sync; for a local chart, the template lines that call `lookup` are listed.
+- Values are compared as keyed hashes, like every Secret comparison here. The server-side render prints Secrets in clear, so it is not a reproduce line.
+- Flux's helm-controller installs through the Helm SDK, where `lookup` works, so this is about tools that render with `helm template`.
 
 **`network-isolation`** (v0.1, or v0.2 if time runs short).
 - **Treatment:** the release with its NetworkPolicies. **Control:** the same release with the chart's NetworkPolicy objects removed for a moment. No values key is needed.
