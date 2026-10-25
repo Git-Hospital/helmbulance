@@ -52,9 +52,14 @@ type Options struct {
 	Log     io.Writer
 }
 
-// warningLine matches the API server warnings helm prints, e.g.
-// "W1011 12:00:00.000000 12345 warnings.go:70] policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+".
-var warningLine = regexp.MustCompile(`warnings\.go:\d+\] (.*)`)
+// warningLine matches the API server warnings helm prints, in client-go's klog format, e.g.
+// "W1011 12:00:00.000000 12345 warnings.go:70] policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+",
+// or as a line of its own, "Warning: …", the format kubectl and client-go's warning writer use (#12).
+// Helm's own "WARNING:" notices (a group-readable kubeconfig) are not API warnings.
+var warningLine = regexp.MustCompile(`warnings\.go:\d+\] (.*)|^Warning: (.*)`)
+
+// deprecation matches a warning about an API version that is deprecated or removed.
+var deprecation = regexp.MustCompile(`(?i)\bdeprecated\b|\bunavailable in\b|\bremoved in\b`)
 
 // Run checks the chart on one Kubernetes version and removes the cluster afterwards.
 func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
@@ -109,18 +114,10 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 		return res
 	}
 
-	if len(warnings) > 0 {
+	if findings := warningFindings(version, warnings, repro); len(findings) > 0 {
 		res.Verdict = scenario.Fail
 		res.Summary = fmt.Sprintf("runs on Kubernetes %s, with %d API warning(s)", version, len(warnings))
-		res.Findings = append(res.Findings, scenario.Finding{
-			ID:        "HB-K8S-003",
-			Title:     "The API server warns about resources this chart creates on Kubernetes " + version,
-			Severity:  "medium",
-			Evidence:  warnings,
-			Impact:    "A deprecated API keeps working until the release that removes it; then installs and upgrades fail.",
-			Fix:       "Move to the API version the warning names, gated on `.Capabilities.APIVersions.Has` if older clusters still need the old one.",
-			Reproduce: repro,
-		})
+		res.Findings = append(res.Findings, findings...)
 		return res
 	}
 	res.Verdict = scenario.Pass
@@ -224,7 +221,11 @@ func apiWarnings(stderr string) []string {
 		if m == nil {
 			continue
 		}
-		w := strings.Trim(strings.TrimSpace(m[1]), `"`)
+		w := strings.TrimSpace(m[1] + m[2])
+		// klog may quote the whole message; a quote that ends a name inside it stays.
+		if len(w) >= 2 && w[0] == '"' && w[len(w)-1] == '"' {
+			w = w[1 : len(w)-1]
+		}
 		w = strings.TrimPrefix(w, "Warning: ")
 		if !seen[w] {
 			seen[w] = true
@@ -232,6 +233,44 @@ func apiWarnings(stderr string) []string {
 		}
 	}
 	return out
+}
+
+// warningFindings turns the API warnings of an install into findings: a deprecated or removed API
+// is HB-K8S-003, with what its removal will do; any other warning, such as a duplicated
+// environment variable, is HB-K8S-004, about the manifest itself (#12).
+func warningFindings(version string, warnings, repro []string) []scenario.Finding {
+	var deprecations, other []string
+	for _, w := range warnings {
+		if deprecation.MatchString(w) {
+			deprecations = append(deprecations, w)
+		} else {
+			other = append(other, w)
+		}
+	}
+	var findings []scenario.Finding
+	if len(deprecations) > 0 {
+		findings = append(findings, scenario.Finding{
+			ID:        "HB-K8S-003",
+			Title:     "The chart uses APIs that are deprecated or removed on Kubernetes " + version,
+			Severity:  "medium",
+			Evidence:  deprecations,
+			Impact:    "A deprecated API keeps working until the release that removes it; then installs and upgrades fail.",
+			Fix:       "Move to the API version the warning names, gated on `.Capabilities.APIVersions.Has` if older clusters still need the old one.",
+			Reproduce: repro,
+		})
+	}
+	if len(other) > 0 {
+		findings = append(findings, scenario.Finding{
+			ID:        "HB-K8S-004",
+			Title:     "The API server warns about objects this chart creates on Kubernetes " + version,
+			Severity:  "low",
+			Evidence:  other,
+			Impact:    "Kubernetes accepts these objects today, but the warning points at a mistake in the manifest, such as a duplicated environment variable or a field it ignores.",
+			Fix:       "Correct the field each warning names.",
+			Reproduce: repro,
+		})
+	}
+	return findings
 }
 
 // unhealthy waits for pods to settle and lists those that are not ready. Restarts alone are not
