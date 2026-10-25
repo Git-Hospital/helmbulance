@@ -102,6 +102,23 @@ func runGitopsRender(t *testing.T, server, client, chart string) Result {
 	return GitopsRender{}.Run(t.Context(), env)
 }
 
+// A local chart given as "testdata/charts/x" has a '/' and no leading '.', like repo/chart; it is
+// still on disk, so its lookup calls are named. Found on kind: the evidence had none.
+func TestGitopsRenderNamesLookupInARelativeChartPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "charts", "demo", "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "charts", "demo", "templates", "secret.yaml"), []byte("{{ lookup \"v1\" \"Secret\" \"ns\" \"db\" }}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	res := runGitopsRender(t, "pw", "random", "charts/demo")
+	if res.Verdict != Fail || !strings.Contains(strings.Join(res.Findings[0].Evidence, "\n"), "`lookup` in `templates/secret.yaml:1`") {
+		t.Errorf("verdict = %s, findings = %+v; want the lookup line in the evidence", res.Verdict, res.Findings)
+	}
+}
+
 func TestGitopsRenderRun(t *testing.T) {
 	chart := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(chart, "templates"), 0o755); err != nil {

@@ -110,7 +110,8 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	if refs := slices.Sorted(maps.Keys(everySync)); len(refs) > 0 {
 		evidence = append(evidence, "A new value on every client-side render, so on every sync: `"+strings.Join(refs, "`, `")+"`.")
 	}
-	if helm.IsPath(env.Chart) {
+	// IsLocal, not IsPath: "testdata/charts/x" looks like repo/chart but is on disk.
+	if helm.IsLocal(env.Chart) {
 		evidence = append(evidence, lookupCalls(env.Chart)...)
 	}
 	res.Verdict = Fail
