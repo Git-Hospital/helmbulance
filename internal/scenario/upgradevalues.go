@@ -44,6 +44,9 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		}
 	}()
 
+	if err := startClean(ctx, env, release, ns); err != nil {
+		return inconclusive(res, "could not clear what an earlier run left", err)
+	}
 	start := len(env.Runner.Transcript())
 	if err := env.Helm.Install(ctx, release, ns, env.Chart, env.Values); err != nil {
 		return inconclusive(res, "the chart did not install", err)
