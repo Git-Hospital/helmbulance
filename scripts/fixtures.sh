@@ -64,6 +64,9 @@ run reinstall-loses-creds 1 "HB-RI-001"         testdata/charts/reinstall-loses-
 run reinstall-keeps-creds 0 ""                  testdata/charts/reinstall-keeps-creds --scenario reinstall
 # Not a pair: a templated claim is deleted with the release, so new credentials lose nothing.
 run reinstall-templated-pvc 0 ""                testdata/charts/reinstall-templated-pvc --scenario reinstall
+# A password generated behind lookup is new on every helm template render, as under Argo CD. Its twin takes it from values.
+run gitops-lookup-random 1 "HB-GR-001"          testdata/charts/gitops-lookup-random --scenario gitops-render
+run gitops-values-secret 0 ""                   testdata/charts/gitops-values-secret --scenario gitops-render
 run zd-recreate        1 "HB-ZD-001"           testdata/charts/zd-recreate --scenario zero-downtime
 run zd-rolling         0 ""                    testdata/charts/zd-rolling --scenario zero-downtime
 

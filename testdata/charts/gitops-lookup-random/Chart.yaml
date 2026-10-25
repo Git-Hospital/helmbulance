@@ -1,0 +1,5 @@
+apiVersion: v2
+name: gitops-lookup-random
+description: "Helmbulance fixture: a password generated behind lookup, new on every helm template render (HB-GR-001)."
+type: application
+version: 1.0.0
