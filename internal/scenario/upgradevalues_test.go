@@ -16,14 +16,21 @@ import (
 
 // fakeUpgradeTools answers upgrade-without-values. Pod reads, in order, show pod-template-hash
 // revisions[0], revisions[1], …, then the last one. The n-th Secret read fails when n is in
-// failSecretRead; the second no-op upgrade or the treatment fail when told to.
+// failSecretRead, and from read SECRET_CHANGES_FROM on the key has another value; the second no-op
+// upgrade or the treatment fail when told to, and the control or the treatment time out in --wait.
 const fakeUpgradeTools = `#!/bin/sh
 count() { n=$(cat "$FAKE_DIR/$1" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$FAKE_DIR/$1"; echo $n; }
+timeout() { echo "Error: UPGRADE FAILED: context deadline exceeded" >&2; exit 1; }
 case "$(basename "$0") $*" in
-  "helm upgrade"*"--reset-values"*) [ -n "$FAIL_TREATMENT" ] && { echo "Error: treatment failed" >&2; exit 1; }; exit 0 ;;
-  "helm upgrade"*) n=$(count upgrade); [ "$n" = 2 ] && [ -n "$FAIL_SECOND_UPGRADE" ] && { echo "Error: busy" >&2; exit 1; }; exit 0 ;;
+  "helm upgrade"*"--reset-values"*) [ -n "$TIMEOUT_TREATMENT" ] && timeout
+    [ -n "$FAIL_TREATMENT" ] && { echo "Error: treatment failed" >&2; exit 1; }; exit 0 ;;
+  "helm upgrade"*) n=$(count upgrade); [ "$n" = 1 ] && [ -n "$TIMEOUT_CONTROL" ] && timeout
+    [ "$n" = 1 ] && [ -n "$FAIL_CONTROL" ] && { echo "Error: UPGRADE FAILED: rendered manifests contain a resource that already exists" >&2; exit 1; }
+    [ "$n" = 2 ] && [ -n "$FAIL_SECOND_UPGRADE" ] && { echo "Error: busy" >&2; exit 1; }; exit 0 ;;
+  "helm get manifest"*) printf 'apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\n' ;;
   "kubectl"*"get secrets"*) n=$(count secrets); case " $FAIL_SECRET_READ " in *" $n "*) echo "Error: forbidden" >&2; exit 1 ;; esac
-    echo '{"items":[{"metadata":{"name":"s"},"type":"Opaque","data":{"k":"dg=="}}]}' ;;
+    v=dg==; [ -n "$SECRET_CHANGES_FROM" ] && [ "$n" -ge "$SECRET_CHANGES_FROM" ] && v=dw==
+    echo '{"items":[{"metadata":{"name":"s"},"type":"Opaque","data":{"k":"'$v'"}}]}' ;;
   "kubectl"*"get pods"*) n=$(count pods); set -- $REVISIONS; i=1; rev=""
     for r in "$@"; do rev=$r; [ $i -ge $n ] && break; i=$((i+1)); done
     echo '{"items":[{"metadata":{"name":"web-'$rev'","uid":"'$rev'","labels":{"pod-template-hash":"'$rev'"},"ownerReferences":[{"kind":"ReplicaSet","name":"web-'$rev'"}]},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}' ;;
@@ -42,7 +49,8 @@ func runUpgradeValues(t *testing.T, env map[string]string) Result {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_DIR", dir)
-	for _, k := range []string{"REVISIONS", "FAIL_TREATMENT", "FAIL_SECOND_UPGRADE", "FAIL_SECRET_READ"} {
+	for _, k := range []string{"REVISIONS", "FAIL_TREATMENT", "FAIL_SECOND_UPGRADE", "FAIL_SECRET_READ",
+		"SECRET_CHANGES_FROM", "TIMEOUT_CONTROL", "TIMEOUT_TREATMENT", "FAIL_CONTROL"} {
 		t.Setenv(k, env[k])
 	}
 	hasher, err := oracle.NewHasher()
@@ -97,6 +105,55 @@ func TestUpgradeValuesRestarts(t *testing.T) {
 			if res.Verdict != c.verdict || strings.Join(titles, "|") != c.title || !strings.Contains(res.Summary, c.inSummary) {
 				t.Errorf("verdict %s, HB-UV-003 %q, summary %q; want %s, %q, summary with %q",
 					res.Verdict, titles, res.Summary, c.verdict, c.title, c.inSummary)
+			}
+		})
+	}
+}
+
+// A --wait timeout is how a regenerated password usually shows up: the app cannot log in to data
+// initialised with the old one and never gets ready. The upgrade was applied, so its Secrets are
+// still compared; a changed key is the finding, with the timeout as evidence. Without one, nothing
+// says why the release did not get ready (#35).
+func TestUpgradeValuesTimeout(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       map[string]string
+		verdict   string
+		ids       string
+		inSummary string
+		timedOut  string // the finding whose evidence starts with the timeout
+	}{
+		// Install reads Secrets 1-2, the control 3-4, the treatment 5-6.
+		{"control times out, key regenerated", map[string]string{"REVISIONS": "a", "TIMEOUT_CONTROL": "1", "SECRET_CHANGES_FROM": "3"},
+			Fail, "HB-UV-001", "the upgrade with the values files did not run", "HB-UV-001"},
+		{"control times out, nothing changed", map[string]string{"REVISIONS": "a", "TIMEOUT_CONTROL": "1"},
+			Inconclusive, "", "the upgrade with reused values did not finish, and no Secret change was proven", ""},
+		{"treatment times out, key lost", map[string]string{"REVISIONS": "a", "TIMEOUT_TREATMENT": "1", "SECRET_CHANGES_FROM": "5"},
+			Fail, "HB-UV-002", "1 problem(s)", "HB-UV-002"},
+		{"treatment times out, nothing changed", map[string]string{"REVISIONS": "a", "TIMEOUT_TREATMENT": "1"},
+			Inconclusive, "", "the upgrade with the values files did not finish, and no Secret change was proven", ""},
+		// Only a --wait timeout applied the release; another failure is still INCONCLUSIVE.
+		{"control fails otherwise", map[string]string{"REVISIONS": "a", "FAIL_CONTROL": "1", "SECRET_CHANGES_FROM": "3"},
+			Inconclusive, "", "the upgrade with reused values failed", ""},
+		// HB-UV-001 from the control stands; the treatment's timeout explains nothing, so it goes to
+		// the summary, not to that finding's evidence.
+		{"control regenerated, treatment times out", map[string]string{"REVISIONS": "a", "TIMEOUT_TREATMENT": "1", "SECRET_CHANGES_FROM": "3"},
+			Fail, "HB-UV-001", "the upgrade with the values files did not finish", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := runUpgradeValues(t, c.env)
+			var ids []string
+			for _, f := range res.Findings {
+				ids = append(ids, f.ID)
+				first := strings.Contains(f.Evidence[0], "timed out") && strings.Contains(f.Evidence[0], "context deadline exceeded")
+				if first != (f.ID == c.timedOut) {
+					t.Errorf("%s evidence %q: timeout first = %t, want %t", f.ID, f.Evidence, first, !first)
+				}
+			}
+			if res.Verdict != c.verdict || strings.Join(ids, " ") != c.ids || !strings.Contains(res.Summary, c.inSummary) {
+				t.Errorf("verdict %s, findings %q, summary %q; want %s, %q, summary with %q",
+					res.Verdict, ids, res.Summary, c.verdict, c.ids, c.inSummary)
 			}
 		})
 	}

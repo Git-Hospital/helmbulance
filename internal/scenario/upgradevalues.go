@@ -68,13 +68,24 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 
 	// Control: Helm reuses the install values.
 	mark := len(env.Runner.Transcript())
-	if err := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{}); err != nil {
-		return inconclusive(res, "the upgrade with reused values failed", err)
+	reuseErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{})
+	if reuseErr != nil && !timedOutWaiting(ctx, reuseErr) {
+		return inconclusive(res, "the upgrade with reused values failed", reuseErr)
 	}
 	reuseCmd := env.Runner.Transcript()[mark:]
 	reused, err := snapshot()
 	if err != nil {
 		return secretsInconclusive(res, "after the control upgrade", err)
+	}
+	if reuseErr != nil {
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res = afterTimeout(res, "HB-UV-001", "the upgrade with reused values", reuseErr,
+			crashesAfterTimeout(ctx, env, ns, podsBefore, nil, false))
+		if res.Verdict == Fail {
+			res.Summary += "; the upgrade with the values files did not run"
+		}
+		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
+		return res
 	}
 	podsAfter, err := env.Kube.Pods(ctx, ns)
 	if err != nil {
@@ -105,10 +116,15 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
 		return res
 	}
+	podsTreated, err := env.Kube.Pods(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not read pods before the upgrade with the values files: %v\n", err)
+	}
 	mark = len(env.Runner.Transcript())
 	// --reset-values: without any values flag Helm would reuse the install values, --set included.
-	if err := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{Files: env.Values.Files}, "--reset-values"); err != nil {
-		return inconclusive(res, "the upgrade with the values files failed", err)
+	filesErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{Files: env.Values.Files}, "--reset-values")
+	if filesErr != nil && !timedOutWaiting(ctx, filesErr) {
+		return inconclusive(res, "the upgrade with the values files failed", filesErr)
 	}
 	filesCmd := env.Runner.Transcript()[mark:]
 	filesOnly, err := snapshot()
@@ -117,8 +133,35 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	}
 
 	res, notes := s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
+	if filesErr != nil {
+		res = afterTimeout(res, "HB-UV-002", "the upgrade with the values files", filesErr,
+			crashesAfterTimeout(ctx, env, ns, podsTreated, nil, false))
+	}
 	res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
 	return res
+}
+
+// afterTimeout keeps the finding a `--wait` timeout would hide (#35). A regenerated password
+// usually shows up as exactly that: the app cannot log in to data initialised with the old one and
+// never gets ready. The upgrade was applied, so its Secrets were compared anyway. When they prove
+// finding id, the timeout and the containers that crashed are its first evidence. Without it the
+// timeout is unexplained: another finding stands with the timeout in the summary, and none at all
+// is INCONCLUSIVE. Crashes come without a restart baseline, since the Secret change is the proof:
+// only containers of new pods that wait in a crash loop or cannot start are named.
+func afterTimeout(res Result, id, what string, err error, crashes []string) Result {
+	for i, f := range res.Findings {
+		if f.ID == id {
+			res.Findings[i].Evidence = concat(append([]string{
+				"`helm upgrade --wait` timed out before the release was ready, in " + what + ": " + helmMessage(err),
+			}, crashes...), f.Evidence...)
+			return res
+		}
+	}
+	if len(res.Findings) > 0 {
+		res.Summary += "; " + what + " did not finish: " + helmMessage(err)
+		return res
+	}
+	return inconclusive(res, what+" did not finish, and no Secret change was proven", err)
 }
 
 // replacedPods lists the workloads that rolled out a new pod template between two readings: an
