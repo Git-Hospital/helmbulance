@@ -37,6 +37,7 @@ var scenarios = []scenario.Scenario{
 	scenario.ChartUpgrade{},
 	scenario.ZeroDowntime{},
 	scenario.Reinstall{},
+	scenario.GitopsRender{},
 }
 
 type multiFlag []string
