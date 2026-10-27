@@ -1,0 +1,49 @@
+# Stands in for a database: it stores the password it was first started with on its volume, and
+# refuses to start with any other, as Postgres or MySQL do once their data directory exists. After
+# an upgrade renders a new password, the new pod crash-loops and helm's --wait times out (#35).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-db
+spec:
+  serviceName: {{ .Release.Name }}-db
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-db}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-db}
+      # Restart when the Secret changes, as many charts do.
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65535}
+      containers:
+        - name: db
+          image: busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+          command:
+            - sh
+            - -c
+            - |
+              [ -f /data/password ] || echo "$DB_PASSWORD" > /data/password
+              [ "$(cat /data/password)" = "$DB_PASSWORD" ] || { echo "password authentication failed"; exit 1; }
+              exec sleep 2147483647
+          env:
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Release.Name }}-db, key: password}}
+          # Like a real database's: without a readiness probe the container is Ready the moment it
+          # starts, and helm's --wait returns before the first crash.
+          readinessProbe:
+            exec: {command: ["cat", "/data/password"]}
+            initialDelaySeconds: 3
+            periodSeconds: 2
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 10Mi}}
