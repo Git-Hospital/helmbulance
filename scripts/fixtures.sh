@@ -52,6 +52,8 @@ run() {
 
 run regenerates-secret 1 "HB-UV-001 HB-UV-003" testdata/charts/regenerates-secret --scenario upgrade-without-values
 run keeps-secret       0 ""                    testdata/charts/keeps-secret --scenario upgrade-without-values
+# The regenerated password crash-loops the database, so the control upgrade times out (#35).
+run regenerates-db-password 1 "HB-UV-001"  testdata/charts/regenerates-db-password --scenario upgrade-without-values
 # Not pairs: Secrets the release stops rendering or never renders must not be findings.
 run generate-once      0 ""                    testdata/charts/generate-once --scenario upgrade-without-values
 # A workload rewrites a Secret the chart does not render.
