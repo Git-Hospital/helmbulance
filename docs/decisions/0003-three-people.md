@@ -36,7 +36,7 @@ These replace the two-person rules in 0001 wherever they differ.
 ## Access
 
 - Everyone on the repository needs at least write access, since the ruleset counts approvals only from people with write access.
-- Admin stays with the maintainers. The organisation's default repository permission is `admin` today, which gives every member admin on every repository. Lowering it to `write` is a follow-up for the organisation owners.
+- Admin stays with the maintainers. The organisation's default repository permission was `admin`, which gave every member admin on every repository; on 27 October Ege lowered it to `write`. Ege and Kadirhan are organisation owners; Arda is a member with write access.
 
 ## Updates to 0001
 
