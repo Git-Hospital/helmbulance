@@ -63,6 +63,22 @@ func (r *secretReader) snapshot() (oracle.SecretSnapshot, error) {
 	}, settleInterval, settleReads)
 }
 
+// survivors names the release's Secrets that are still in the namespace, read right after
+// `helm uninstall`: those kept with helm.sh/resource-policy: keep, and hooks, which Helm leaves.
+func (r *secretReader) survivors() (map[string]bool, error) {
+	secrets, err := r.env.Kube.Secrets(r.ctx, r.ns)
+	if err != nil {
+		return nil, err
+	}
+	left := map[string]bool{}
+	for _, s := range secrets {
+		if r.owned[s.Name] {
+			left[s.Name] = true
+		}
+	}
+	return left, nil
+}
+
 // notComparedNote names the Secrets that were in the namespace but never rendered by the release.
 func (r *secretReader) notComparedNote() string {
 	var names []string

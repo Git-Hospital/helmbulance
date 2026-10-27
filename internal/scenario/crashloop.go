@@ -19,8 +19,11 @@ func timedOutWaiting(ctx context.Context, err error) bool {
 	if strings.Contains(msg, "failed calling webhook") {
 		return false
 	}
+	// Helm 4's kstatus wait stops as soon as a resource reports Failed, such as a pod that exited,
+	// without waiting out the timeout; the release is applied all the same.
 	return strings.Contains(msg, "timed out waiting for the condition") ||
-		strings.Contains(msg, "context deadline exceeded")
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "not ready. status: failed")
 }
 
 // startFailures are waiting reasons that come from the pod spec the chart renders, not from the

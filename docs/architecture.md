@@ -152,9 +152,12 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 **`reinstall`** (implemented).
 - Write a random sentinel file into each bound PVC from a one-off pod that mounts it, and read it back once (the control). Unbound claims are skipped: mounting one would bind it.
 - Uninstall, install again with the same values (`--wait` covers the release's health), and check the sentinels and the release's own Secrets. A claim with the same name but a new UID was deleted with the release and made again: it is named, not a finding.
+- The release's Secrets still in the namespace right after the uninstall are its survivors: those kept with `helm.sh/resource-policy: keep`, and hooks, which Helm does not delete.
+- A first install whose `--wait` runs out with the release applied (a timeout, or Helm 4 stopping at a resource that reports Failed) does not end the run: a chart that needs something outside the cluster, such as an external database, never becomes ready in the sandbox, and its kept credentials can still be replaced. Its findings carry the timeout as evidence; without one the result is `INCONCLUSIVE`, since the release never ran.
 - Findings:
   - HB-RI-001: a volume kept its data, and a Secret key that a workload mounting it reads changed (severity as in D5). Other changed keys are named in the summary.
   - HB-RI-002: a kept volume lost its sentinel.
+  - HB-RI-004: a survivor's key changed on the reinstall (severity as in D5, so at least medium). The chart keeps it so that whatever was set up with it, such as an external database or credentials edited in, works again; a pre-install hook is deleted and created again on every install, so it needs `lookup` too. Keys HB-RI-001 already reports and reissued certificates are left out.
   - HB-RI-003: the second install fails. A render-time refusal (`fail`, `required`) is a PASS that "refuses safely" (D4); a timeout, a killed helm or a pull error is `INCONCLUSIVE`, but a failing call to the chart's own webhook stays a finding.
 - PVCs deleted with the release are named in the summary, with a note that the result depends on the StorageClass reclaim policy. New credentials with no data left are a fresh install, not a finding.
 - The sandbox has one node, so the sentinel pod can mount a ReadWriteOnce claim next to the app. On several nodes it would need the app's node.

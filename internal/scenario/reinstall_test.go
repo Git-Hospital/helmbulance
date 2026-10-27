@@ -118,3 +118,66 @@ func TestSentinelRepro(t *testing.T) {
 		}
 	}
 }
+
+// A Secret the uninstall left (kept, or a hook) that the reinstall rewrote is HB-RI-004, even with
+// no volume: what it was set up for, such as an external database, is outside the release.
+func TestKeptSecretReplaced(t *testing.T) {
+	survivors := map[string]bool{"hb-reinstall-db-secret": true}
+	consumers := map[string][]string{"hb-reinstall-db-secret/*": {"StatefulSet/hb-reinstall-filer"}}
+	changes := []oracle.Change{
+		{Ref: "hb-reinstall-db-secret/password", Kind: oracle.Changed},
+		{Ref: "hb-reinstall-db-secret/user", Kind: oracle.Changed},
+		{Ref: "hb-reinstall-app/token", Kind: oracle.Changed}, // deleted with the release: a fresh one is fine
+	}
+	got, ok := keptSecretReplaced(changes, survivors, consumers, map[string]bool{}, true, nil)
+	if !ok || got.ID != "HB-RI-004" || got.Severity != "medium" {
+		t.Fatalf("kept db secret rewritten: finding = %+v, %v; want a medium HB-RI-004", got, ok)
+	}
+	ev := strings.Join(got.Evidence, " ")
+	for _, want := range []string{"`hb-reinstall-db-secret`", "password` changed", "user` changed", "StatefulSet/hb-reinstall-filer"} {
+		if !strings.Contains(ev, want) {
+			t.Errorf("evidence %q does not contain %q", ev, want)
+		}
+	}
+	if strings.Contains(ev, "hb-reinstall-app") {
+		t.Errorf("evidence %q names a Secret the uninstall deleted", ev)
+	}
+
+	// A credential a workload with persistent data reads keeps its high rating.
+	stateful := map[string]bool{"StatefulSet/hb-reinstall-filer": true}
+	if got, _ := keptSecretReplaced(changes[:1], survivors, consumers, stateful, true, nil); got.Severity != "high" {
+		t.Errorf("read by a stateful workload: severity = %s, want high", got.Severity)
+	}
+	// A reissued certificate and a deleted Secret are not this finding; nor is anything when the
+	// survivors could not be listed.
+	cert := []oracle.Change{{Ref: "hb-reinstall-db-secret/tls.crt", Kind: oracle.Changed}}
+	if _, ok := keptSecretReplaced(cert, survivors, consumers, stateful, true, nil); ok {
+		t.Error("a reissued certificate in a kept Secret is reported")
+	}
+	if _, ok := keptSecretReplaced(changes[2:], survivors, consumers, stateful, true, nil); ok {
+		t.Error("a Secret the uninstall deleted is reported")
+	}
+	if _, ok := keptSecretReplaced(changes, nil, consumers, stateful, true, nil); ok {
+		t.Error("a finding without knowing what survived the uninstall")
+	}
+}
+
+// A first install applied but never ready keeps its findings, with the timeout as evidence; with
+// none, the run proves nothing.
+func TestUnreadyFirstInstall(t *testing.T) {
+	wait := errors.New("Error: INSTALLATION FAILED: resource StatefulSet/hb-reinstall/filer not ready. status: Failed, message: 1 pods have failed")
+	found := Result{Verdict: Fail, Findings: []Finding{{ID: "HB-RI-004", Evidence: []string{"kept"}}}}
+	got := unreadyFirstInstall(found, wait)
+	if got.Verdict != Fail || len(got.Findings[0].Evidence) != 2 || !strings.Contains(got.Findings[0].Evidence[0], "first `helm install --wait`") {
+		t.Errorf("with a finding: %+v, want FAIL with the timeout first in the evidence", got)
+	}
+	if got := unreadyFirstInstall(Result{Verdict: Pass, Summary: "ok"}, wait); got.Verdict != Inconclusive {
+		t.Errorf("no finding: verdict = %s, want INCONCLUSIVE", got.Verdict)
+	}
+	if got := unreadyFirstInstall(Result{Verdict: Inconclusive, Summary: "x"}, wait); got.Summary != "x" {
+		t.Errorf("an INCONCLUSIVE result was rewritten: %q", got.Summary)
+	}
+	if got := unreadyFirstInstall(Result{Verdict: Pass, Summary: "ok"}, nil); got.Verdict != Pass {
+		t.Errorf("a ready install: verdict = %s, want PASS", got.Verdict)
+	}
+}
