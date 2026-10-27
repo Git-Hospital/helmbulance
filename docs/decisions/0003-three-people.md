@@ -27,6 +27,8 @@ These replace the two-person rules in 0001 wherever they differ.
   - `docs/architecture.md` and `docs/decisions/` need both maintainers, as before;
   - `.github/` and `action.yml` need Kadirhan, or Ege when Kadirhan wrote the change;
   - a change in what a verdict means (when a scenario says `FAIL`, `INCONCLUSIVE` or `PASS`) needs the maintainer who did not write it.
+
+  This is kept by agreement, not by GitHub: there is no CODEOWNERS file, so the ruleset counts Arda's approval like anyone else's. The three of us work side by side, which is enough for now; a CODEOWNERS file can enforce it later.
 - **Who merges.** The author merges after approval. Reviewers do not merge someone else's PR, and do not push to another person's branch without asking; they suggest changes in comments.
 - **After a push,** earlier approvals are dismissed. The reviewer re-approves once the new commits are checked. All review threads must be resolved before merge.
 - **Merging without review.** As in 0001, the author may merge without an approval when `main` is broken, the change fixes a security problem, or **neither** of the other two has answered for 48 hours and the change blocks work. CI must be green, and the PR says "Merged without review:" and why. This never applies to `docs/architecture.md` or `docs/decisions/`.
