@@ -31,6 +31,7 @@ These replace the two-person rules in 0001 wherever they differ.
 - **After a push,** earlier approvals are dismissed. The reviewer re-approves once the new commits are checked. All review threads must be resolved before merge.
 - **Merging without review.** As in 0001, the author may merge without an approval when `main` is broken, the change fixes a security problem, or **neither** of the other two has answered for 48 hours and the change blocks work. CI must be green, and the PR says "Merged without review:" and why. This never applies to `docs/architecture.md` or `docs/decisions/`.
 - **Upstream.** Only Ege and Kadirhan post to upstream projects. Anyone may check a draft against the outbound gate in 0001.
+- **No cap on open upstream threads** (Ege, 27 October). The D2 and working-agreement limit of three threads waiting for a first maintainer response is dropped. Every post still passes the outbound gate and, before a PR is opened upstream, the pr-reviewer check.
 - **Security-class results** go privately, as in 0001, and are never discussed in a public issue, PR or review comment before the fix.
 
 ## Access
