@@ -30,6 +30,7 @@ It is not an application security scanner. A bug in the application's own code m
 - **Control before treatment.** Every assertion is checked twice: on an untouched release or a neutral operation (the control), and after the action (the treatment). A difference that already shows in the control is reported as such, not blamed on the action.
 - **Three verdicts.** `PASS`, `FAIL`, or `INCONCLUSIVE`.
   - A timeout, a failed install or a cluster that never settles is `INCONCLUSIVE`, never a finding. Errors that come from the run rather than the chart (helm's `--wait` timing out, a killed process, an image pull or registry rate limit, a cluster that does not answer) are always `INCONCLUSIVE`. A `FAIL` comes from the chart: an API or render rejection, a failing call to the chart's own admission webhook, or a check that failed.
+  - One timeout is read further. When `chart-upgrade`'s `--wait` times out, the release was applied, so its containers are read: a container of a new pod that crash-loops or cannot start (`CreateContainerConfigError`, `CreateContainerError`, `RunContainerError`, `InvalidImageName`) or restarted more often than the same container did in its workload's pods before the upgrade, or a container of a Ready pod from before that restarted since, makes it a `FAIL` (HB-CU-001) with each container's state and last exit as evidence. A first-start crash both versions have is the app's startup, as in the health check below. Image pulls and pods that are only not ready yet stay `INCONCLUSIVE` (#28).
   - `matrix` blames a Kubernetes version for a failed install only if the chart installed on another version, or if the error names a missing built-in API (`no matches for kind` in a group Kubernetes serves itself, such as `policy/v1beta1`), which a version removed. A missing kind from any other group needs a CRD, and kind clusters have none, so that failure is INCONCLUSIVE.
   - A scenario with nothing to test (no HTTP Service, no `--from-version`) is `SKIPPED`. It is not a verdict on the chart and counts for nothing: a run in which everything was skipped is `INCONCLUSIVE`.
   - Exit codes: 0 `PASS`, 1 `FAIL`, 2 usage or setup error, 3 `INCONCLUSIVE`.
@@ -130,7 +131,7 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 - Report a failed upgrade with Helm's error, Secrets the new version changes or drops, and workloads that are not healthy afterwards: pods not ready or restarted until the release has stayed clean for 30 s, and Jobs that failed since the upgrade, given up or still retrying. Restarts are compared per pod: a pod that survived the upgrade with its count from before it, a new pod with its count when first seen (read as soon as helm's `--wait` returns) and no lower than its workload's pods had before the upgrade, since a first-start crash both versions have is the app's startup. A finished Job pod is left to the Job's status; a Job pod that is Pending or Running is judged by readiness and restarts like any other pod.
 
 **`zero-downtime`** (implemented).
-- A pod in the release namespace sends one request every 200 ms to the most HTTP-like Service port (`--traffic-target`, `--traffic-path` to choose). ExternalName, headless and `externalIPs` Services are never chosen, so the traffic stays on the release's pods.
+- A pod in the release namespace sends one request every 200 ms to the most HTTP-like Service port (`--traffic-target`, `--traffic-path` to choose). ExternalName, headless and `externalIPs` Services are never chosen, and neither is a Service with an EndpointSlice the control plane did not write (a chart can add its own slice to a Service, or an Endpoints object that is mirrored into one, and kube-proxy sends traffic to its addresses too, whatever they are). The chosen Service's slices are read again right after the operation and at the end of the traffic tail; if it gained such an address, the run is `INCONCLUSIVE` and names it, since the traffic may have left the release's pods. This detects, it does not prevent: a slice that comes and goes between two reads is not seen, and keeping the traffic on the pods (the probe sending to pod IPs it checks itself, as the security model in §4 describes) comes with the v0.3 egress cut. `--traffic-target` is used as given and not read again.
 - Control: 20 s with no change, which must be clean; a control with failures runs once more before the run is inconclusive. Treatment: the same traffic during the version upgrade (with `--from-version`), or during a rolling restart of every Deployment and StatefulSet. Only failures from the start of the operation on count, measured on the traffic pod's own clock; a window with no requests is inconclusive.
 - Reports failed requests, the longest outage, and the settings that explain it: Recreate, a single replica, no readiness probe, no preStop.
 - This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
@@ -144,7 +145,7 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 
 **`helmbulance matrix`** (implemented). A command rather than a scenario, because each Kubernetes version needs its own cluster.
 - For each version (kind node images pinned by digest: 1.34, 1.35, 1.36, 1.37): create a cluster, install, wait for the pods, collect the API server's warnings from helm's stderr, delete the cluster.
-- Reports a failed install, pods that never become ready, pods that restart while they are watched (the release must stay clean for 30 s; restarts before helm's `--wait` returned are not counted, apps often restart once at first start), Jobs that gave up or are retrying after a failed attempt, and warnings about deprecated APIs.
+- Reports a failed install, pods that never become ready, pods that restart while they are watched (the release must stay clean for 30 s; restarts before helm's `--wait` returned are not counted, apps often restart once at first start), Jobs that gave up or are retrying after a failed attempt, and the API server's warnings: a deprecated or removed API is HB-K8S-003, any other warning (a duplicated environment variable, say) is HB-K8S-004 at low severity. Warnings are read in client-go's klog format and as `Warning: …` lines.
 - Known deprecations are also caught statically (`helm lint`, pluto); what the matrix adds is whether the chart actually runs on each version.
 
 **`reinstall`** (implemented).
@@ -157,10 +158,13 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 - PVCs deleted with the release are named in the summary, with a note that the result depends on the StorageClass reclaim policy. New credentials with no data left are a fresh install, not a finding.
 - The sandbox has one node, so the sentinel pod can mount a ReadWriteOnce claim next to the app. On several nodes it would need the app's node.
 
-**`gitops-render`** (v0.1).
-- Find `lookup` statically.
-- Install the chart, then compare a client-side render with a server-side dry run of the same values.
-- Secrets that differ would be regenerated on every Argo CD sync.
+**`gitops-render`** (implemented).
+- Install the chart and read the release's own Secrets. Render the same values three times: once with `helm template --dry-run=server`, where `lookup` reads the cluster as install and upgrade do, and twice with `helm template` and no cluster, as Argo CD renders.
+- A Secret key is a finding when the client-side render changes it while Helm keeps it: the server-side render gives the release's value, or leaves the Secret out, as a chart that renders it only `if not (lookup …)` does. A key the server-side render changes too is regenerated under Helm as well; `upgrade-without-values` reports that one.
+- Findings:
+  - HB-GR-001: the keys a sync would overwrite, with their readers and the D5 severity. Keys whose two client-side renders differ are named as changing on every sync; for a local chart, the template lines that call `lookup` are listed.
+- Values are compared as keyed hashes, like every Secret comparison here. The server-side render prints Secrets in clear, so it is not a reproduce line.
+- Flux's helm-controller installs through the Helm SDK, where `lookup` works, so this is about tools that render with `helm template`.
 
 **`network-isolation`** (v0.1, or v0.2 if time runs short).
 - **Treatment:** the release with its NetworkPolicies. **Control:** the same release with the chart's NetworkPolicy objects removed for a moment. No values key is needed.

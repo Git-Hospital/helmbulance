@@ -45,6 +45,9 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 		}
 	}()
 
+	if err := startClean(ctx, env, release, ns); err != nil {
+		return inconclusive(res, "could not clear what an earlier run left", err)
+	}
 	mark := len(env.Runner.Transcript())
 	if err := env.Helm.Install(ctx, release, ns, env.Chart, env.Values); err != nil {
 		return inconclusive(res, "the chart did not install", err)
@@ -249,21 +252,6 @@ var reinstallRunErrors = []string{
 	"context deadline exceeded", "timed out waiting for the condition", "signal: killed",
 	"errimagepull", "imagepullbackoff", "toomanyrequests", "connection refused", "i/o timeout",
 	"tls handshake timeout",
-}
-
-// timedOutWaiting reports whether the second install failed because `helm --wait` timed out with
-// the release applied, as opposed to a cancelled run, the chart's own webhook, or a pull or tool
-// error. Only then is the post-install evidence worth collecting.
-func timedOutWaiting(ctx context.Context, err error) bool {
-	if ctx.Err() != nil {
-		return false // the whole run was cancelled; collect nothing more
-	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "failed calling webhook") {
-		return false // the chart's own webhook failed: a finding, left to installFailed
-	}
-	return strings.Contains(msg, "timed out waiting for the condition") ||
-		strings.Contains(msg, "context deadline exceeded")
 }
 
 // installFailed is the result when the second install fails.

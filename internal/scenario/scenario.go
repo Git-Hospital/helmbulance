@@ -81,3 +81,13 @@ const cleanupTimeout = 10 * time.Minute
 func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 }
+
+// startClean removes what an earlier run left under these fixed names, when it was killed before
+// its cleanup (kill -9, a second Ctrl-C), so the next run on a reused --cluster starts from nothing
+// (#11). The uninstall comes first for the release's cluster-scoped objects, and fails harmlessly
+// when there is no release; deleting the namespace takes the rest, Helm's release record included.
+// --cluster only accepts a sandbox Helmbulance created, so these names are its own.
+func startClean(ctx context.Context, env *Env, release, ns string) error {
+	_ = env.Helm.Uninstall(ctx, release, ns)
+	return env.Kube.DeleteNamespace(ctx, ns)
+}

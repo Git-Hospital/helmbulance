@@ -1,0 +1,5 @@
+apiVersion: v2
+name: upgrade-fixture
+description: "Helmbulance fixture: v2 whose container exits 1 at start, so the upgrade's --wait times out on a crash loop (#28). Its fixed twin is upgrade-v2-ok."
+type: application
+version: 2.0.0
