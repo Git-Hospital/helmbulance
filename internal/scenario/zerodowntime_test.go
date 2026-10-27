@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,19 +16,25 @@ import (
 
 // fakeKubectl answers the calls zero-downtime makes. "logs <pod>" prints $FAKE_LOGS/<pod>, and
 // "logs --tail=1 <pod>", read just before the operation, prints the last line of $FAKE_LOGS/<pod>.before.
+// The n-th "get endpointslices" (0 when the target is chosen, 1 right after the operation, 2 at the
+// end of the tail) prints $FAKE_LOGS/slices.<n>, or no slices.
 const fakeKubectl = `#!/bin/sh
 for a in "$@"; do last="$a"; done
 case "$*" in
   *"get services"*) echo '{"items":[{"metadata":{"name":"web"},"spec":{"selector":{"app":"web"},"ports":[{"name":"http","port":80}]}}]}' ;;
   *"get deployments,statefulsets"*) echo '{"items":[]}' ;;
+  *"get endpointslices"*)
+    n=$(cat "$FAKE_LOGS/slices.n" 2>/dev/null || echo 0); echo $((n+1)) > "$FAKE_LOGS/slices.n"
+    if [ -f "$FAKE_LOGS/slices.$n" ]; then cat "$FAKE_LOGS/slices.$n"; else echo '{"items":[]}'; fi ;;
   *" logs --tail=1 "*) [ -f "$FAKE_LOGS/$last.before" ] && tail -n 1 "$FAKE_LOGS/$last.before" ;;
   *" logs "*) cat "$FAKE_LOGS/$last" ;;
 esac
 exit 0
 `
 
-// runZeroDowntime runs the scenario against fake kubectl and helm, with the given traffic logs.
-func runZeroDowntime(t *testing.T, logs map[string]string) Result {
+// runZeroDowntime runs the scenario against fake kubectl and helm, with the given traffic logs and
+// EndpointSlice reads (see fakeKubectl), after each opt changes the Env.
+func runZeroDowntime(t *testing.T, logs map[string]string, opts ...func(*Env)) Result {
 	t.Helper()
 	c, l, tl := controlDuration, trafficLead, trafficTail
 	t.Cleanup(func() { controlDuration, trafficLead, trafficTail = c, l, tl })
@@ -53,7 +60,49 @@ func runZeroDowntime(t *testing.T, logs map[string]string) Result {
 		Chart:  "./chart",
 		Log:    io.Discard,
 	}
+	for _, opt := range opts {
+		opt(env)
+	}
 	return ZeroDowntime{}.Run(t.Context(), env)
+}
+
+// A chart's own EndpointSlice on web, as the version under test, a hook or a pod with RBAC can add.
+const chartSlice = `{"items":[{"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web"}},"endpoints":[{"addresses":["203.0.113.9"]}]}]}`
+
+// Review round 2: the check before the operation does not see a slice the upgrade adds, so the
+// chosen Service is read again; a gained address makes the run neither PASS nor FAIL.
+func TestZeroDowntimeServiceGainsAnOutsideEndpoint(t *testing.T) {
+	for name, reads := range map[string]map[string]string{
+		"right after the operation": {"slices.1": chartSlice},
+		"at the end of the tail":    {"slices.2": chartSlice},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logs := map[string]string{"hb-traffic-control": "100 ok\n", "hb-traffic": "9999999999 ok\n"}
+			maps.Copy(logs, reads)
+			res := runZeroDowntime(t, logs)
+			if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "web gained endpoints the control plane did not write: 203.0.113.9") {
+				t.Errorf("verdict = %s (%s), want INCONCLUSIVE naming 203.0.113.9", res.Verdict, res.Summary)
+			}
+		})
+	}
+}
+
+func TestZeroDowntimeEndpointsUnreadableAfterTheOperation(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{"hb-traffic-control": "100 ok\n", "hb-traffic": "9999999999 ok\n", "slices.1": "not json"})
+	if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "could not read the endpoints of web again") {
+		t.Errorf("verdict = %s (%s), want INCONCLUSIVE", res.Verdict, res.Summary)
+	}
+}
+
+// --traffic-target is the user's choice, so it is used as given and not checked, then or later.
+func TestZeroDowntimeGivenTargetIsNotCheckedAgain(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control": "100 ok\n", "hb-traffic": "9999999999 ok\n",
+		"slices.0": chartSlice, "slices.1": chartSlice, "slices.2": chartSlice,
+	}, func(env *Env) { env.TrafficTarget = "web:80" })
+	if res.Verdict != Pass {
+		t.Errorf("verdict = %s (%s), want PASS", res.Verdict, res.Summary)
+	}
 }
 
 func TestZeroDowntimeRepeatsAFailedControlOnce(t *testing.T) {
