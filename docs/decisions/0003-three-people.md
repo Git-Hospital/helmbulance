@@ -10,7 +10,7 @@
 
 - **Ege:** the CLI and the scenarios (`cmd/`, `internal/`), as in 0001.
 - **Kadirhan:** CI, the GitHub Action, the corpus and the outbound gate (`.github/`, `action.yml`, `docs/corpus.md`), as in 0001.
-- **Arda: reviewer.** He reviews pull requests from both. Code he writes goes through a pull request like anyone else's.
+- **Arda: reviewer.** Arda reviews pull requests from both; code Arda writes goes through a pull request like anyone else's.
 
 Ege and Kadirhan stay the maintainers: they decide scope, the documents below, releases and anything posted upstream.
 
