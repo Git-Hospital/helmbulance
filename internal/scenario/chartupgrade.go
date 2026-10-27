@@ -50,6 +50,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		}
 	}()
 
+	if err := startClean(ctx, env, release, ns); err != nil {
+		return inconclusive(res, "could not clear what an earlier run left", err)
+	}
 	mark := len(env.Runner.Transcript())
 	if err := env.Helm.Install(ctx, release, ns, from, env.Values, "--version", env.FromVersion); err != nil {
 		return inconclusive(res, "the earlier version did not install", err)
