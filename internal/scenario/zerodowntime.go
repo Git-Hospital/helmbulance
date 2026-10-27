@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,8 +27,7 @@ type ZeroDowntime struct{}
 
 const (
 	zeroDowntimeNamespace = "hb-zero-downtime"
-	// The multi-arch index digest of the tag, so a re-pushed tag cannot change what runs.
-	trafficImage = "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+	trafficImage          = busyboxImage
 )
 
 // Variables, not constants, so tests can shorten them.
@@ -46,6 +47,8 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	res.Scenario = s.Name()
 	const release, ns = "hb-zd", zeroDowntimeNamespace
 	defer func() {
+		ctx, cancel := cleanupContext(ctx)
+		defer cancel()
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control-2")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic")
@@ -65,6 +68,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 			installChart = env.Chart
 		}
 		installExtra = []string{"--version", env.FromVersion}
+	}
+	if err := startClean(ctx, env, release, ns); err != nil {
+		return inconclusive(res, "could not clear what an earlier run left", err)
 	}
 	if err := env.Helm.Install(ctx, release, ns, installChart, env.Values, installExtra...); err != nil {
 		return inconclusive(res, "the chart did not install", err)
@@ -89,6 +95,13 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		path = "/"
 	}
 	url := "http://" + target + path
+	// When helmbulance chose the Service, its endpoints are read again after the operation: the
+	// version under test, a hook or a pod with RBAC can add a slice of its own at any time after
+	// target ran. This detects such a slice; it does not keep the traffic away from it.
+	service := ""
+	if env.TrafficTarget == "" {
+		service = target[:strings.LastIndex(target, ":")]
+	}
 
 	var control, firstControl oracle.TrafficStats
 	for i, pod := range []string{"hb-traffic-control", "hb-traffic-control-2"} {
@@ -131,8 +144,22 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		operation = "the upgrade from " + env.FromVersion
 		act = func() error { return env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values) }
 	}
-	var actErr error
+	var actErr, recheckErr error
 	var actStart int64
+	gained := map[string]bool{} // addresses the chosen Service gained in slices the control plane did not write
+	recheck := func() {
+		if service == "" || recheckErr != nil {
+			return
+		}
+		outside, err := env.Kube.OutsideEndpoints(ctx, ns)
+		if err != nil {
+			recheckErr = err
+			return
+		}
+		for _, addr := range outside[service] {
+			gained[addr] = true
+		}
+	}
 	log, err := s.measure(ctx, env, ns, "hb-traffic", url, func() error {
 		if err := sleep(ctx, trafficLead); err != nil {
 			return err
@@ -146,7 +173,12 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		}
 		actStart, _ = oracle.TrafficSecond(last)
 		actErr = act()
-		return sleep(ctx, trafficTail)
+		recheck()
+		if err := sleep(ctx, trafficTail); err != nil {
+			return err
+		}
+		recheck()
+		return nil
 	})
 	if err != nil {
 		return inconclusive(res, "the traffic during the operation could not run", err)
@@ -154,6 +186,14 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	treatment := oracle.ParseTrafficSince(log, actStart)
 	if actErr != nil {
 		return inconclusive(res, operation+" failed", actErr)
+	}
+	if recheckErr != nil {
+		return inconclusive(res, "could not read the endpoints of "+service+" again after "+operation, recheckErr)
+	}
+	if len(gained) > 0 {
+		return inconclusive(res, "the traffic may have left the release's pods during "+operation,
+			fmt.Errorf("%s gained endpoints the control plane did not write: %s",
+				service, strings.Join(slices.Sorted(maps.Keys(gained)), ", ")))
 	}
 	if treatment.Total == 0 {
 		return inconclusive(res, "no requests were sent during "+operation, fmt.Errorf("the traffic pod logged nothing after the operation started"))
@@ -195,7 +235,8 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 var errNoTarget = errors.New("no Service port looks like HTTP; give --traffic-target service:port")
 
 // target picks the Service and port to send traffic to: --traffic-target when given, otherwise
-// pickTarget's choice among the release's Services.
+// pickTarget's choice among the release's Services, minus any whose endpoints are not all pods
+// in the namespace.
 func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, error) {
 	if env.TrafficTarget != "" {
 		return env.TrafficTarget, nil
@@ -204,14 +245,19 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 	if err != nil {
 		return "", err
 	}
-	return pickTarget(services)
+	outside, err := env.Kube.OutsideEndpoints(ctx, ns)
+	if err != nil {
+		return "", err
+	}
+	return pickTarget(services, outside)
 }
 
 // pickTarget returns "service:port" for a port named http or web, then a common HTTP port number,
 // then any port with http in its name. Services whose traffic would not stay on the release's pods
 // are skipped: ExternalName (an outside host), headless (no port translation, so a request can
-// reach a pod that is not ready) and externalIPs.
-func pickTarget(services []kube.Service) (string, error) {
+// reach a pod that is not ready), externalIPs, and those with an address in outside (endpoints in
+// slices the control plane did not write, keyed by Service name).
+func pickTarget(services []kube.Service, outside map[string][]string) (string, error) {
 	score := func(p kube.ServicePort) int {
 		switch {
 		case p.Protocol != "" && p.Protocol != "TCP":
@@ -233,7 +279,7 @@ func pickTarget(services []kube.Service) (string, error) {
 	var cands []candidate
 	var skipped []string
 	for _, s := range services {
-		if why := leavesThePods(s); why != "" {
+		if why := leavesThePods(s, outside[s.Name]); why != "" {
 			skipped = append(skipped, s.Name+" ("+why+")")
 			continue
 		}
@@ -254,7 +300,8 @@ func pickTarget(services []kube.Service) (string, error) {
 }
 
 // leavesThePods says why traffic to s would not stay on the release's pods, or "" if it would.
-func leavesThePods(s kube.Service) string {
+// outside holds the addresses of s's endpoints that the control plane did not write.
+func leavesThePods(s kube.Service, outside []string) string {
 	switch {
 	case s.Type == "ExternalName":
 		return "ExternalName"
@@ -262,6 +309,8 @@ func leavesThePods(s kube.Service) string {
 		return "headless"
 	case len(s.ExternalIPs) > 0:
 		return "externalIPs"
+	case len(outside) > 0:
+		return "endpoints the control plane did not write: " + strings.Join(outside, ", ")
 	}
 	return ""
 }

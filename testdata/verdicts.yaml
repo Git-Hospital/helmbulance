@@ -11,6 +11,9 @@
 uncovered:
   HB-CU-002: no fixture yet for an upgrade to a new chart version that changes a Secret
   HB-CU-003: no fixture yet for a new chart version whose workloads do not become healthy
+  HB-K8S-004: no fixture yet for an API server warning, other than a deprecation, about an object the chart creates
+  HB-RI-002: no fixture yet for a volume that survives a reinstall and comes back without its data
+  HB-RI-003: no fixture yet for a chart that does not install again after helm uninstall
   HB-K8S-001: no fixture yet for a chart that does not install on one Kubernetes version
   HB-K8S-002: no fixture yet for a chart that installs on one Kubernetes version and does not become healthy
   HB-SCAN-002: no fixture yet for a checksum annotation that changes on the first upgrade
@@ -85,6 +88,69 @@ cases:
     args: [testdata/charts/upgrade-v2-ok, --scenario, chart-upgrade, --from, testdata/charts/upgrade-v1, --from-version, 1.0.0]
     exit: 0
     verdicts: {chart-upgrade: PASS}
+  # v2 crash-loops, so --wait times out (the full --timeout): a finding, not INCONCLUSIVE (#28).
+  # Its own fixed twin is the same chart as upgrade-v2-ok, because a pair takes exactly one twin.
+  - name: upgrade-v2-crashes
+    pair: upgrade-v2-crash
+    role: defect
+    command: test
+    args: [testdata/charts/upgrade-v2-crashes, --scenario, chart-upgrade, --from, testdata/charts/upgrade-v1, --from-version, 1.0.0]
+    exit: 1
+    verdicts: {chart-upgrade: FAIL}
+    findings:
+      HB-CU-001: []
+  - name: upgrade-v2-ok-for-crash
+    pair: upgrade-v2-crash
+    role: fixed
+    command: test
+    args: [testdata/charts/upgrade-v2-ok, --scenario, chart-upgrade, --from, testdata/charts/upgrade-v1, --from-version, 1.0.0]
+    exit: 0
+    verdicts: {chart-upgrade: PASS}
+
+  # reinstall: the credentials must still match the data that was kept
+  - name: reinstall-loses-creds
+    pair: reinstall-creds
+    role: defect
+    command: test
+    args: [testdata/charts/reinstall-loses-creds, --scenario, reinstall]
+    exit: 1
+    verdicts: {reinstall: FAIL}
+    findings:
+      HB-RI-001: []
+  - name: reinstall-keeps-creds
+    pair: reinstall-creds
+    role: fixed
+    command: test
+    args: [testdata/charts/reinstall-keeps-creds, --scenario, reinstall]
+    exit: 0
+    verdicts: {reinstall: PASS}
+  # Not a pair: a templated claim is deleted with the release, so new credentials lose nothing.
+  - name: reinstall-templated-pvc
+    pair: reinstall-creds
+    role: fixed
+    command: test
+    args: [testdata/charts/reinstall-templated-pvc, --scenario, reinstall]
+    exit: 0
+    verdicts: {reinstall: PASS}
+
+  # gitops-render: a password generated behind lookup changes on every client-side render. Its
+  # twin takes it from values.
+  - name: gitops-lookup-random
+    pair: gitops-secret
+    role: defect
+    command: test
+    args: [testdata/charts/gitops-lookup-random, --scenario, gitops-render]
+    exit: 1
+    verdicts: {gitops-render: FAIL}
+    findings:
+      HB-GR-001: []
+  - name: gitops-values-secret
+    pair: gitops-secret
+    role: fixed
+    command: test
+    args: [testdata/charts/gitops-values-secret, --scenario, gitops-render]
+    exit: 0
+    verdicts: {gitops-render: PASS}
 
   # zero-downtime
   - name: zd-recreate

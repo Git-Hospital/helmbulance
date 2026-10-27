@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/egezamb/helmbulance/internal/kube"
 	"github.com/egezamb/helmbulance/internal/oracle"
@@ -41,6 +40,8 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	const release, ns = "hb-chart", chartUpgradeNamespace
 	defer func() {
+		ctx, cancel := cleanupContext(ctx)
+		defer cancel()
 		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
 			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
 		}
@@ -49,6 +50,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		}
 	}()
 
+	if err := startClean(ctx, env, release, ns); err != nil {
+		return inconclusive(res, "could not clear what an earlier run left", err)
+	}
 	mark := len(env.Runner.Transcript())
 	if err := env.Helm.Install(ctx, release, ns, from, env.Values, "--version", env.FromVersion); err != nil {
 		return inconclusive(res, "the earlier version did not install", err)
@@ -79,33 +83,52 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not read pods", err)
 	}
+	jobsBefore, err := env.Kube.FailedJobs(ctx, ns)
+	if err != nil {
+		return inconclusive(res, "could not read Jobs", err)
+	}
+	// Each container's restarts and state before the upgrade, so a --wait timeout blames only
+	// crashes that came after it.
+	containersBefore, err := env.Kube.Containers(ctx, ns)
+	containersKnown := err == nil
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not read containers before the upgrade: %v\n", err)
+	}
 
 	// Treatment: the version under test.
 	mark = len(env.Runner.Transcript())
 	upgradeErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values)
 	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	// A new version whose pods crash ends in the same `--wait` timeout as a slow machine. The
+	// release was applied, so its containers say which it was: a crash or a container that cannot
+	// start is the chart's failure (D4); anything else stays INCONCLUSIVE (#28).
+	if timedOutWaiting(ctx, upgradeErr) {
+		if crashes := crashesAfterTimeout(ctx, env, ns, podsBefore, containersBefore, containersKnown); len(crashes) > 0 {
+			return upgradeFails(res, fromV, repro,
+				append([]string{"`helm upgrade --wait` timed out while containers of the new version crashed or could not start: " + helmMessage(upgradeErr)}, crashes...),
+				"Read the crashed container's logs (`kubectl logs --previous`) and the pod events in the "+
+					"failure bundle. Typical causes are a setting the new version requires, a changed command "+
+					"or port, a probe that fails, or a Secret or ConfigMap key the new version reads but the "+
+					"chart does not create.")
+		}
+	}
 	if IsEnvironmentError(ctx, upgradeErr) {
 		return inconclusive(res, "the upgrade did not finish", upgradeErr)
 	}
 	if upgradeErr != nil {
-		res.Verdict = Fail
-		res.Summary = "the upgrade from " + fromV + " fails"
-		res.Findings = append(res.Findings, Finding{
-			ID:       "HB-CU-001",
-			Title:    "Upgrading from " + fromV + " fails",
-			Severity: "high",
-			Evidence: []string{"`helm upgrade` failed: " + helmMessage(upgradeErr)},
-			Impact: "Users on " + fromV + " cannot upgrade with their existing values. A " +
-				"failed upgrade can leave the release in a failed state that needs a manual rollback.",
-			Fix: "If the error names an immutable field (selector, StatefulSet volumeClaimTemplates or " +
-				"serviceName), keep it unchanged or document the migration (for example deleting the " +
-				"StatefulSet with --cascade=orphan). If it is a values or schema error, accept the old " +
-				"value or document the change in the release notes.",
-			Reproduce: repro,
-		})
-		return res
+		return upgradeFails(res, fromV, repro, []string{"`helm upgrade` failed: " + helmMessage(upgradeErr)},
+			"If the error names an immutable field (selector, StatefulSet volumeClaimTemplates or "+
+				"serviceName), keep it unchanged or document the migration (for example deleting the "+
+				"StatefulSet with --cascade=orphan). If it is a values or schema error, accept the old "+
+				"value or document the change in the release notes.")
 	}
 
+	// Read pods before the Secret snapshot, which can take seconds to settle: a new pod gets its
+	// restart baseline here, so a crash in that wait still counts as after the upgrade.
+	podsUpgraded, err := env.Kube.Pods(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not read pods right after the upgrade: %v\n", err)
+	}
 	upgraded, err := snapshot()
 	if err != nil {
 		return secretsInconclusive(res, "after the upgrade", err)
@@ -141,7 +164,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		})
 	}
 
-	if unhealthy := unhealthyAfter(ctx, env, podsBefore); len(unhealthy) > 0 {
+	if unhealthy := unhealthyAfter(ctx, env, podsBefore, podsUpgraded, jobsBefore); len(unhealthy) > 0 {
 		res.Findings = append(res.Findings, Finding{
 			ID:        "HB-CU-003",
 			Title:     "Workloads are not healthy after the upgrade",
@@ -175,44 +198,96 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	return res
 }
 
+// upgradeFails is the HB-CU-001 result: the upgrade to the version under test did not succeed.
+func upgradeFails(res Result, fromV string, repro, evidence []string, fix string) Result {
+	res.Verdict = Fail
+	res.Summary = "the upgrade from " + fromV + " fails"
+	res.Findings = append(res.Findings, Finding{
+		ID:       "HB-CU-001",
+		Title:    "Upgrading from " + fromV + " fails",
+		Severity: "high",
+		Evidence: evidence,
+		Impact: "Users on " + fromV + " cannot upgrade with their existing values. A " +
+			"failed upgrade can leave the release in a failed state that needs a manual rollback.",
+		Fix:       fix,
+		Reproduce: repro,
+	})
+	return res
+}
+
 // unhealthyAfter waits for the release to settle and lists pods that are not ready or restarted
-// more than before the upgrade. Pods of a Deployment get a new ReplicaSet on upgrade, so restarts
-// are only compared for owners that keep their name (StatefulSets, DaemonSets).
-func unhealthyAfter(ctx context.Context, env *Env, before []kube.Pod) []string {
-	restartsBefore := map[string]int{}
+// more than before the upgrade, and Jobs that gave up since. A pod that survived the upgrade is
+// compared with its count from before it. A new pod is compared with its count at the first read
+// that sees it (upgraded, read as soon as helm --wait returned, or else the first Settle read), and
+// no lower than its workload's pods before the upgrade, since restarts during its own startup are
+// not the upgrade's doing; matrix counts the same way.
+func unhealthyAfter(ctx context.Context, env *Env, before, upgraded []kube.Pod, jobsBefore []string) []string {
+	baseline := map[string]int{}
+	// A new pod starts no lower than its workload's pods did before the upgrade: a pod that crashes
+	// once on its first start in both versions is the app's startup, however early it is read.
+	floor := map[string]int{}
 	for _, p := range before {
-		restartsBefore[p.Owner] += p.Restarts
+		baseline[p.UID] = p.Restarts
+		floor[workload(p.Owner)] = max(floor[workload(p.Owner)], p.Restarts)
 	}
-	var problems []string
-	deadline := time.Now().Add(90 * time.Second)
-	for {
+	firstSeen := func(pods []kube.Pod) {
+		for _, p := range pods {
+			if _, seen := baseline[p.UID]; !seen {
+				baseline[p.UID] = max(p.Restarts, floor[workload(p.Owner)])
+			}
+		}
+	}
+	firstSeen(upgraded)
+	return Settle(ctx, func() []string {
 		pods, err := env.Kube.Pods(ctx, chartUpgradeNamespace)
 		if err != nil {
 			return []string{"could not read pods: " + err.Error()}
 		}
-		problems = problems[:0]
-		restarts := map[string]int{}
-		for _, p := range pods {
-			restarts[p.Owner] += p.Restarts
-			if !p.Ready {
-				problems = append(problems, fmt.Sprintf("pod `%s` (%s) is not ready", p.Name, p.Owner))
-			}
+		firstSeen(pods)
+		jobs, err := env.Kube.FailedJobs(ctx, chartUpgradeNamespace)
+		if err != nil {
+			return []string{"could not read Jobs: " + err.Error()}
 		}
-		for owner, n := range restarts {
-			if n > restartsBefore[owner] && !strings.HasPrefix(owner, "ReplicaSet/") {
-				problems = append(problems, fmt.Sprintf("`%s` restarted %d more time(s) after the upgrade", owner, n-restartsBefore[owner]))
-			}
+		return append(podProblems(pods, baseline), newlyFailed(jobs, jobsBefore)...)
+	})
+}
+
+// podProblems lists pods that are not ready and pods that restarted more than their baseline, by
+// pod UID, so a Deployment's new pods are checked too. A finished Job pod is left to the Jobs' own
+// status, but a Job pod stuck Pending or crash-looping in place is judged here, since its Job stays
+// active with no failure for `Settle` to see.
+func podProblems(pods []kube.Pod, restartsBefore map[string]int) []string {
+	var problems []string
+	for _, p := range pods {
+		if p.FinishedJob() {
+			continue
 		}
-		if len(problems) == 0 || time.Now().After(deadline) {
-			sort.Strings(problems)
-			return problems
+		if !p.Ready {
+			problems = append(problems, fmt.Sprintf("pod `%s` (%s) is not ready", p.Name, p.Owner))
 		}
-		select {
-		case <-ctx.Done():
-			return problems
-		case <-time.After(10 * time.Second):
+		if n := p.Restarts - restartsBefore[p.UID]; n > 0 {
+			problems = append(problems, fmt.Sprintf("pod `%s` (%s) restarted %d more time(s) after the upgrade", p.Name, p.Owner, n))
 		}
 	}
+	sort.Strings(problems)
+	return problems
+}
+
+// newlyFailed lists the Jobs in now that had not failed before, by "Job/<name>": the text after
+// the name, such as a count of failed attempts, can change.
+func newlyFailed(now, before []string) []string {
+	had := map[string]bool{}
+	for _, j := range before {
+		name, _, _ := strings.Cut(j, ":")
+		had[name] = true
+	}
+	var out []string
+	for _, j := range now {
+		if name, _, _ := strings.Cut(j, ":"); !had[name] {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // helmMessage keeps the part of a helm error that explains it, without the command line.
