@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-app
+spec:
+  # Two replicas with maxUnavailable 1: Helm 3 counts the Deployment ready once replicas minus
+  # maxUnavailable new pods are Ready, so it needs one, and Helm 4 waits for the whole rollout. The
+  # new pods crash-loop, so both time out. (With one replica Helm 3 needs none and returns at once.)
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 0, maxUnavailable: 1}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+        tier: web
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65535}
+      containers:
+        - name: app
+          # The new version's command fails at start, so the pod crash-loops and never gets Ready.
+          image: busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+          command: ["false"]
+          # Like a real app's: without a readiness probe the container is Ready the moment it starts,
+          # and helm's --wait returns before the first crash.
+          readinessProbe:
+            exec: {command: ["true"]}
+            initialDelaySeconds: 3
+            periodSeconds: 2
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
