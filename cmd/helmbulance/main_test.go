@@ -52,6 +52,48 @@ func TestRefuseRemote(t *testing.T) {
 	}
 }
 
+// scan takes remote charts, so it refuses only a path that is not on disk (#50).
+func TestRefuseMissing(t *testing.T) {
+	cases := []struct {
+		refs    []string
+		refused bool
+	}{
+		{[]string{"../../testdata/charts/keeps-secret", ""}, false},
+		{[]string{"oci://x/y", "bitnami/redis"}, false},
+		{[]string{"./nonexistent"}, true},
+		{[]string{"~/chart"}, true},
+		{[]string{"nonexistent"}, true},
+		{[]string{"../../testdata/charts/upgrade-v2-ok", "../../testdata/charts/upgrade-v0"}, true},
+	}
+	for _, c := range cases {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseMissing(c.refs...) })
+		if refused != c.refused || refused != strings.Contains(out, "path not found") {
+			t.Errorf("refuseMissing(%q) = %v, %q; want %v", c.refs, refused, out, c.refused)
+		}
+	}
+}
+
+func TestScanExit(t *testing.T) {
+	for _, c := range []struct {
+		strict      bool
+		worst       string
+		interrupted bool
+		want        int
+	}{
+		{false, scenario.Fail, false, exitClean},
+		{false, scenario.Inconclusive, false, exitClean},
+		{true, scenario.Pass, false, exitClean},
+		{true, scenario.Fail, false, exitFindings},
+		{true, scenario.Inconclusive, false, exitIncomplete},
+		{true, scenario.Pass, true, exitIncomplete},
+	} {
+		if got := scanExit(c.strict, c.worst, c.interrupted); got != c.want {
+			t.Errorf("scanExit(strict %v, %s, interrupted %v) = %d, want %d", c.strict, c.worst, c.interrupted, got, c.want)
+		}
+	}
+}
+
 // version1 stands in for helm show chart: every chart is version 1.0.0.
 func version1(string) (string, error) { return "1.0.0", nil }
 

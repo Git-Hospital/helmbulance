@@ -138,7 +138,7 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 - This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
 - The traffic pod runs `busybox` pinned by digest, as a non-root user with no ServiceAccount token, no capabilities and a read-only root filesystem (Pod Security `restricted`). It still lives in the release namespace, so the chart's own mutating webhooks can change it.
 
-**`helmbulance scan`** (implemented). A static pre-screen: no cluster, seconds. It reports candidates, never findings; each names the `helmbulance test` run that confirms or rejects it. It exits 0 unless `--strict`.
+**`helmbulance scan`** (implemented). A static pre-screen: no cluster, seconds. It reports candidates, never findings; each names the `helmbulance test` run that confirms or rejects it. A chart or `--from` path that does not exist exits 2. Otherwise it exits 0 unless `--strict`: then 1 for a candidate, else 3 when a check could not run, as in §2 (#50).
 - **Immutable fields:** render `--from-version` as an install and the chart as an upgrade (`--is-upgrade`), compare selectors, StatefulSet `serviceName`/`volumeClaimTemplates`/`podManagementPolicy`, Job templates and PVC access modes. Hooks and Jobs named after `.Release.Revision` are skipped (a real upgrade gives them a new name).
 - **First-upgrade restart:** a pod-template checksum of an included template that keeps generated values with `lookup` (helpers it includes are followed one level).
 - **Regenerated Secrets:** render twice; keys that differ in a Secret that is not a hook and whose template (or helper) does not use `lookup`.
