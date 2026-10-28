@@ -37,6 +37,25 @@ cases:
     args: [testdata/charts/keeps-secret, --scenario, upgrade-without-values]
     exit: 0
     verdicts: {upgrade-without-values: PASS}
+  # The regenerated password crash-loops the database, so the control upgrade times out (#35): the
+  # timeout is the finding, not INCONCLUSIVE. Its twin is keeps-secret, because a pair takes exactly
+  # one twin.
+  - name: regenerates-db-password
+    pair: db-password-regeneration
+    role: defect
+    command: test
+    args: [testdata/charts/regenerates-db-password, --scenario, upgrade-without-values]
+    exit: 1
+    verdicts: {upgrade-without-values: FAIL}
+    findings:
+      HB-UV-001: [hb-upgrade-db/password]
+  - name: keeps-secret-for-db-password
+    pair: db-password-regeneration
+    role: fixed
+    command: test
+    args: [testdata/charts/keeps-secret, --scenario, upgrade-without-values]
+    exit: 0
+    verdicts: {upgrade-without-values: PASS}
   # More fixed twins, not pairs of their own: Secrets the release stops rendering or never renders,
   # and a Secret a workload rewrites, must not be findings.
   - name: generate-once

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egezamb/helmbulance/internal/execx"
 	"github.com/egezamb/helmbulance/internal/kube"
 	"github.com/egezamb/helmbulance/internal/oracle"
 )
@@ -95,6 +96,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		path = "/"
 	}
 	url := "http://" + target + path
+	shown := execx.RedactURLs(url) // the path can carry a token
 	// When helmbulance chose the Service, its endpoints are read again after the operation: the
 	// version under test, a hook or a pod with RBAC can add a slice of its own at any time after
 	// target ran. This detects such a slice; it does not keep the traffic away from it.
@@ -126,7 +128,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	if control.Failed > 0 {
 		return inconclusive(res, fmt.Sprintf("%d of %d requests to %s failed with nothing changing, in two controls (the second failed at second %s)",
-			control.Failed, control.Total, url, seconds(control.FailedAt)),
+			control.Failed, control.Total, shown, seconds(control.FailedAt)),
 			fmt.Errorf("set --traffic-path to a URL that answers 2xx, or check NetworkPolicies that block the traffic pod"))
 	}
 
@@ -208,7 +210,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	res.Summary = fmt.Sprintf("%d of %d requests failed during %s", treatment.Failed, treatment.Total, operation)
 	evidence := []string{
 		fmt.Sprintf("%d of %d requests to `%s` failed (%.1f%%) during %s; none failed in the %s control.",
-			treatment.Failed, treatment.Total, url, treatment.FailedPercent(), operation, controlDuration),
+			treatment.Failed, treatment.Total, shown, treatment.FailedPercent(), operation, controlDuration),
 		"Longest outage: " + outageText(treatment.LongestOutage) + ".",
 	}
 	if firstControl.Failed > 0 {

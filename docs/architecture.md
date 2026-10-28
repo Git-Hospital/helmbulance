@@ -30,7 +30,8 @@ It is not an application security scanner. A bug in the application's own code m
 - **Control before treatment.** Every assertion is checked twice: on an untouched release or a neutral operation (the control), and after the action (the treatment). A difference that already shows in the control is reported as such, not blamed on the action.
 - **Three verdicts.** `PASS`, `FAIL`, or `INCONCLUSIVE`.
   - A timeout, a failed install or a cluster that never settles is `INCONCLUSIVE`, never a finding. Errors that come from the run rather than the chart (helm's `--wait` timing out, a killed process, an image pull or registry rate limit, a cluster that does not answer) are always `INCONCLUSIVE`. A `FAIL` comes from the chart: an API or render rejection, a failing call to the chart's own admission webhook, or a check that failed.
-  - One timeout is read further. When `chart-upgrade`'s `--wait` times out, the release was applied, so its containers are read: a container of a new pod that crash-loops or cannot start (`CreateContainerConfigError`, `CreateContainerError`, `RunContainerError`, `InvalidImageName`) or restarted more often than the same container did in its workload's pods before the upgrade, or a container of a Ready pod from before that restarted since, makes it a `FAIL` (HB-CU-001) with each container's state and last exit as evidence. A first-start crash both versions have is the app's startup, as in the health check below. Image pulls and pods that are only not ready yet stay `INCONCLUSIVE` (#28).
+  - Some timeouts are read further. When `chart-upgrade`'s `--wait` times out, the release was applied, so its containers are read: a container of a new pod that crash-loops or cannot start (`CreateContainerConfigError`, `CreateContainerError`, `RunContainerError`, `InvalidImageName`) or restarted more often than the same container did in its workload's pods before the upgrade, or a container of a Ready pod from before that restarted since, makes it a `FAIL` (HB-CU-001) with each container's state and last exit as evidence. A first-start crash both versions have is the app's startup, as in the health check below. Image pulls and pods that are only not ready yet stay `INCONCLUSIVE` (#28).
+  - `upgrade-without-values` reads a `--wait` timeout through its Secrets. A regenerated password usually shows up as one: the app cannot log in to data set up with the old value and never gets ready. The upgrade was applied, so the Secrets are compared anyway. A key the control upgrade changed is HB-UV-001, and one the values-files upgrade changed is HB-UV-002, with the timeout and the new pods' crash-looping containers first in its evidence. With no changed key the timeout is unexplained and stays `INCONCLUSIVE`; after a control timeout the values-files upgrade does not run (#35).
   - `matrix` blames a Kubernetes version for a failed install only if the chart installed on another version, or if the error names a missing built-in API (`no matches for kind` in a group Kubernetes serves itself, such as `policy/v1beta1`), which a version removed. A missing kind from any other group needs a CRD, and kind clusters have none, so that failure is INCONCLUSIVE.
   - A scenario with nothing to test (no HTTP Service, no `--from-version`) is `SKIPPED`. It is not a verdict on the chart and counts for nothing: a run in which everything was skipped is `INCONCLUSIVE`.
   - Exit codes: 0 `PASS`, 1 `FAIL`, 2 usage or setup error, 3 `INCONCLUSIVE`.
@@ -61,6 +62,7 @@ chart + values ─▶ Chart model ─▶ Sandbox ─▶ Scenario engine ─▶ O
   - Reusing a cluster (`--cluster`) checks that fingerprint.
   - There is no flag to run scenarios against any other cluster. Lifecycle and network scenarios uninstall releases and open connections; they must never meet a real cluster.
 - **`--set` values** are masked in every transcript and report.
+- **What reports keep out:** the user info and query values of every URL (a chart URL with credentials, a `--traffic-path` with a token), `$HOME` (shown as `~`) and a state dir outside it. When helm writes an `Error:` line, only the last one goes into a summary or evidence; evidence is escaped like other cluster text.
 
 ### 3.2 Chart model
 
@@ -213,7 +215,7 @@ Every oracle has a fixture: a small chart with the defect and a fixed twin (`tes
 - **Exit codes:** `0` clean, `1` findings, `2` tool error, `3` incomplete (for example, the chart did not install).
 - **Redaction:**
   - Secret `data` and `stringData`, and Helm release Secrets in full.
-  - URL user info.
+  - URL user info and query values.
   - env and ConfigMap values whose names look secret.
   - Any known secret value found verbatim in logs or events.
 - **Escaping:** text that comes from the cluster (names, events, logs) is escaped and length-limited before it reaches Markdown, a terminal or a pull request comment.
