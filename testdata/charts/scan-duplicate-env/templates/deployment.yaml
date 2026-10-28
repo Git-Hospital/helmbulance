@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-app}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-app}
+    spec:
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.10
+          env:
+            # The defect: the chart's own entry stays when extraEnv sets the same name.
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Release.Name }}-db, key: password}}
+          {{- range $key, $value := .Values.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+          {{- end }}

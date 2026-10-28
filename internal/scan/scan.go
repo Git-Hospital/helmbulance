@@ -37,6 +37,7 @@ func Run(ctx context.Context, o Options) []scenario.Result {
 		immutableFields(ctx, o),
 		firstUpgradeRestart(o),
 		regeneratedSecrets(ctx, o),
+		duplicateEnv(ctx, o),
 	}
 }
 
