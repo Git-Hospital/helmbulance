@@ -241,7 +241,9 @@ func keptSecretReplaced(changes []oracle.Change, survivors map[string]bool, cons
 		Evidence: append([]string{"Still there after the uninstall: " + strings.Join(kept, ", ") + "."}, describe(replaced, consumers)...),
 		Impact: "The chart keeps this Secret on uninstall, so whatever was set up with it expects it " +
 			"back: an external database, a client, or credentials the operator edited in. The next " +
-			"install writes new values over it, and those readers are locked out.",
+			"install wrote new values over it (seen on the cluster). Anything still holding the old " +
+			"values no longer matches; the run does not check whether a reader then fails, since " +
+			"what it talks to is often outside the release.",
 		Fix: "Reuse the kept values with `lookup` when the Secret exists. A pre-install hook is " +
 			"deleted and created again on every install, so it needs this too. Or let users pass an " +
 			"existing Secret.",
