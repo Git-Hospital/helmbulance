@@ -52,16 +52,31 @@ func TestStatefulWorkloads(t *testing.T) {
 		{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"volumeClaimTemplates":[{"metadata":{"name":"data"}}]}},
 		{"kind":"StatefulSet","metadata":{"name":"cache"},"spec":{"template":{"spec":{"volumes":[{"name":"tmp","emptyDir":{}}]}}}},
 		{"kind":"Deployment","metadata":{"name":"single-db"},"spec":{"template":{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"d"}}]}}}},
-		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"volumes":[{"name":"cfg","secret":{"secretName":"s"}}]}}}}
+		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"volumes":[{"name":"cfg","secret":{"secretName":"s"}}]}}}},
+		`+claimJobs+`
 	]}`)
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FAKE_ARGS", args)
 	got, err := c.StatefulWorkloads(t.Context(), "ns")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]bool{"StatefulSet/db": true, "Deployment/single-db": true}; !reflect.DeepEqual(got, want) {
+	want := map[string]bool{"StatefulSet/db": true, "Deployment/single-db": true, "CronJob/backup": true, "Job/restore": true}
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("StatefulWorkloads = %v, want %v", got, want)
 	}
+	if a, _ := os.ReadFile(args); !strings.Contains(string(a), "get deployments,statefulsets,daemonsets,jobs,cronjobs ") {
+		t.Errorf("kubectl args = %q, want every workload kind", a)
+	}
 }
+
+// claimJobs are Jobs and CronJobs that mount the claim app-data (#80): a CronJob's pod template is
+// under spec.jobTemplate; a Job a CronJob started is that CronJob, and a finished Job mounts nothing
+// any more, so neither is listed on its own.
+const claimJobs = `{"kind":"CronJob","metadata":{"name":"backup"},"spec":{"jobTemplate":{"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}}}}},
+		{"kind":"Job","metadata":{"name":"restore"},"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}}},
+		{"kind":"Job","metadata":{"name":"backup-29000000","ownerReferences":[{"kind":"CronJob","name":"backup"}]},"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}}},
+		{"kind":"Job","metadata":{"name":"migrate"},"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}},"status":{"conditions":[{"type":"Complete","status":"True"}]}}`
 
 // Secrets reads helm.sh/resource-policy the way Helm does, and leaves out Helm's release records.
 func TestSecretsReadKeep(t *testing.T) {
@@ -120,15 +135,21 @@ func TestClaimUsers(t *testing.T) {
 	c := fakeKubectl(t, `{"items":[
 		{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"volumeClaimTemplates":[{"metadata":{"name":"data"}}]}},
 		{"kind":"Deployment","metadata":{"name":"app"},"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}}},
-		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"volumes":[{"name":"c","emptyDir":{}}]}}}}
+		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"volumes":[{"name":"c","emptyDir":{}}]}}}},
+		`+claimJobs+`
 	]}`)
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FAKE_ARGS", args)
 	got, err := c.ClaimUsers(t.Context(), "ns", []string{"data-db-0", "app-data", "orphan"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string][]string{"data-db-0": {"StatefulSet/db"}, "app-data": {"Deployment/app"}}
+	want := map[string][]string{"data-db-0": {"StatefulSet/db"}, "app-data": {"Deployment/app", "CronJob/backup", "Job/restore"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ClaimUsers = %v, want %v", got, want)
+	}
+	if a, _ := os.ReadFile(args); !strings.Contains(string(a), "get deployments,statefulsets,daemonsets,jobs,cronjobs ") {
+		t.Errorf("kubectl args = %q, want every workload kind", a)
 	}
 }
 
