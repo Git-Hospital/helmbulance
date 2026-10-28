@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/egezamb/helmbulance/internal/scenario"
 )
 
 // stderrOf runs f and returns what it wrote to os.Stderr.
@@ -46,6 +48,48 @@ func TestRefuseRemote(t *testing.T) {
 		}
 		if c.says == "" && out != "" {
 			t.Errorf("refuseRemote(%v, %q) printed %q, want nothing", c.allow, c.refs, out)
+		}
+	}
+}
+
+// scan takes remote charts, so it refuses only a path that is not on disk (#50).
+func TestRefuseMissing(t *testing.T) {
+	cases := []struct {
+		refs    []string
+		refused bool
+	}{
+		{[]string{"../../testdata/charts/keeps-secret", ""}, false},
+		{[]string{"oci://x/y", "bitnami/redis"}, false},
+		{[]string{"./nonexistent"}, true},
+		{[]string{"~/chart"}, true},
+		{[]string{"nonexistent"}, true},
+		{[]string{"../../testdata/charts/upgrade-v2-ok", "../../testdata/charts/upgrade-v0"}, true},
+	}
+	for _, c := range cases {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseMissing(c.refs...) })
+		if refused != c.refused || refused != strings.Contains(out, "path not found") {
+			t.Errorf("refuseMissing(%q) = %v, %q; want %v", c.refs, refused, out, c.refused)
+		}
+	}
+}
+
+func TestScanExit(t *testing.T) {
+	for _, c := range []struct {
+		strict      bool
+		worst       string
+		interrupted bool
+		want        int
+	}{
+		{false, scenario.Fail, false, exitClean},
+		{false, scenario.Inconclusive, false, exitClean},
+		{true, scenario.Pass, false, exitClean},
+		{true, scenario.Fail, false, exitFindings},
+		{true, scenario.Inconclusive, false, exitIncomplete},
+		{true, scenario.Pass, true, exitIncomplete},
+	} {
+		if got := scanExit(c.strict, c.worst, c.interrupted); got != c.want {
+			t.Errorf("scanExit(strict %v, %s, interrupted %v) = %d, want %d", c.strict, c.worst, c.interrupted, got, c.want)
 		}
 	}
 }
@@ -106,6 +150,27 @@ func TestCheckRotations(t *testing.T) {
 	for _, bad := range []string{"webhook-tls", "/tls.crt", "ca/", "ns/secret/key", "[ca/tls.crt"} {
 		if err := checkRotations([]string{bad}); err == nil {
 			t.Errorf("checkRotations(%q) = nil, want an error", bad)
+		}
+	}
+}
+
+// #49 (1): a run cut short by Ctrl-C or SIGTERM never exits 0, whatever the scenarios that finished
+// before it said. A finding they proved still exits 1.
+func TestExitCode(t *testing.T) {
+	for _, c := range []struct {
+		worst       string
+		interrupted bool
+		want        int
+	}{
+		{scenario.Pass, false, exitClean},
+		{scenario.Fail, false, exitFindings},
+		{scenario.Inconclusive, false, exitIncomplete},
+		{scenario.Pass, true, exitIncomplete},
+		{scenario.Fail, true, exitFindings},
+		{scenario.Inconclusive, true, exitIncomplete},
+	} {
+		if got := exitCode(c.worst, c.interrupted); got != c.want {
+			t.Errorf("exitCode(%s, interrupted %v) = %d, want %d", c.worst, c.interrupted, got, c.want)
 		}
 	}
 }

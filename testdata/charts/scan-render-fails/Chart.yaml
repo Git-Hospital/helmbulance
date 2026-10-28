@@ -1,0 +1,5 @@
+apiVersion: v2
+name: scan-render-fails
+description: "Helmbulance fixture. Never renders: scan cannot check anything, so --strict must exit 3, not 0 (#50)."
+type: application
+version: 0.1.0

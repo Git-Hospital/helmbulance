@@ -164,7 +164,8 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		})
 	}
 
-	if unhealthy := unhealthyAfter(ctx, env, podsBefore, podsUpgraded, jobsBefore); len(unhealthy) > 0 {
+	unhealthy, healthErr := unhealthyAfter(ctx, env, podsBefore, podsUpgraded, jobsBefore)
+	if len(unhealthy) > 0 {
 		res.Findings = append(res.Findings, Finding{
 			ID:        "HB-CU-003",
 			Title:     "Workloads are not healthy after the upgrade",
@@ -195,7 +196,21 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
 		unknownStatefulNote(statefulKnown, changes),
 		secrets.notComparedNote())
+	if healthErr != nil {
+		return healthUnread(res, healthErr)
+	}
 	return res
+}
+
+// healthUnread is the result when the workloads could not be watched until they settled: the run
+// was interrupted, or the cluster could not be read. A finding the Secrets already proved stands,
+// with the summary naming what was not checked; without one the result is INCONCLUSIVE, never PASS.
+func healthUnread(res Result, err error) Result {
+	if len(res.Findings) > 0 {
+		res.Summary += "; workload health was not checked: " + err.Error()
+		return res
+	}
+	return inconclusive(res, "the workloads were not checked until they settled", err)
 }
 
 // upgradeFails is the HB-CU-001 result: the upgrade to the version under test did not succeed.
@@ -221,7 +236,7 @@ func upgradeFails(res Result, fromV string, repro, evidence []string, fix string
 // that sees it (upgraded, read as soon as helm --wait returned, or else the first Settle read), and
 // no lower than its workload's pods before the upgrade, since restarts during its own startup are
 // not the upgrade's doing; matrix counts the same way.
-func unhealthyAfter(ctx context.Context, env *Env, before, upgraded []kube.Pod, jobsBefore []string) []string {
+func unhealthyAfter(ctx context.Context, env *Env, before, upgraded []kube.Pod, jobsBefore []string) ([]string, error) {
 	baseline := map[string]int{}
 	// A new pod starts no lower than its workload's pods did before the upgrade: a pod that crashes
 	// once on its first start in both versions is the app's startup, however early it is read.
@@ -238,17 +253,17 @@ func unhealthyAfter(ctx context.Context, env *Env, before, upgraded []kube.Pod, 
 		}
 	}
 	firstSeen(upgraded)
-	return Settle(ctx, func() []string {
+	return Settle(ctx, func() ([]string, error) {
 		pods, err := env.Kube.Pods(ctx, chartUpgradeNamespace)
 		if err != nil {
-			return []string{"could not read pods: " + err.Error()}
+			return nil, fmt.Errorf("could not read pods: %w", err)
 		}
 		firstSeen(pods)
 		jobs, err := env.Kube.FailedJobs(ctx, chartUpgradeNamespace)
 		if err != nil {
-			return []string{"could not read Jobs: " + err.Error()}
+			return nil, fmt.Errorf("could not read Jobs: %w", err)
 		}
-		return append(podProblems(pods, baseline), newlyFailed(jobs, jobsBefore)...)
+		return append(podProblems(pods, baseline), newlyFailed(jobs, jobsBefore)...), nil
 	})
 }
 

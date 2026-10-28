@@ -22,6 +22,14 @@ import (
 // `get pods` prints pods[n] (then the last one; an empty namespace when none is given).
 func runChartUpgrade(t *testing.T, upgradeErr string, pods ...string) Result {
 	t.Helper()
+	return runChartUpgradeWith(t, upgradeErr, 0, pods...)
+}
+
+// runChartUpgradeWith is runChartUpgrade with two more cases: an empty upgradeErr makes the upgrade
+// succeed, and cancelAt > 0 cancels the run once kubectl has answered that many `get pods`. A pods
+// entry that starts with "FAIL:" makes that `get pods` fail with the rest as its error.
+func runChartUpgradeWith(t *testing.T, upgradeErr string, cancelAt int, pods ...string) Result {
+	t.Helper()
 	bin := t.TempDir()
 	if len(pods) == 0 {
 		pods = []string{`{"items":[]}`}
@@ -36,7 +44,9 @@ case "$*" in
   *"get pods"*)
     n=$(cat "` + bin + `/n" 2>/dev/null || echo 0)
     f="` + bin + `/pods.$n"; [ -f "$f" ] || f="` + bin + `/pods.` + strconv.Itoa(len(pods)-1) + `"
-    cat "$f"; echo $((n+1)) > "` + bin + `/n" ;;
+    echo $((n+1)) > "` + bin + `/n"
+    case "$(cat "$f")" in FAIL:*) cut -c6- "$f" >&2; exit 1 ;; esac
+    cat "$f" ;;
   *) echo '{"items":[]}' ;;
 esac
 `
@@ -44,7 +54,7 @@ esac
 case "$*" in
   *"get metadata"*) echo '{"version":"1.0.0"}'; exit 0 ;;
   upgrade*--version*|install*|uninstall*) exit 0 ;;
-  upgrade*) echo "` + upgradeErr + `" >&2; exit 1 ;;
+  upgrade*) [ -z "` + upgradeErr + `" ] && exit 0; echo "` + upgradeErr + `" >&2; exit 1 ;;
 esac
 exit 0
 `
@@ -69,7 +79,57 @@ exit 0
 		FromVersion: "1.0.0",
 		Log:         io.Discard,
 	}
-	return ChartUpgrade{}.Run(t.Context(), env)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if cancelAt > 0 {
+		go func() {
+			for ctx.Err() == nil {
+				if n, _ := os.ReadFile(filepath.Join(bin, "n")); strings.TrimSpace(string(n)) == strconv.Itoa(cancelAt) {
+					cancel()
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}()
+	}
+	return ChartUpgrade{}.Run(ctx, env)
+}
+
+// #49 (1): an interrupt while the pods settle, after a clean upgrade, proved neither health nor a
+// problem. It was PASS, exit 0.
+func TestChartUpgradeInterruptedWhileSettling(t *testing.T) {
+	shortSettle(t, time.Hour, time.Hour)
+	pod := items(podJSON("web", 0, ""))
+	// Reads before Settle: pods before the upgrade, containers before it, pods right after it.
+	res := runChartUpgradeWith(t, "", 4, pod)
+	if res.Verdict != Inconclusive || len(res.Findings) > 0 || !strings.Contains(res.Summary, "interrupted") {
+		t.Errorf("verdict = %s with %d finding(s) (%s), want INCONCLUSIVE saying it was interrupted", res.Verdict, len(res.Findings), res.Summary)
+	}
+}
+
+// #49 (1): a cluster whose pods cannot be read until the deadline is not a chart whose workloads
+// are unhealthy. It was FAIL HB-CU-003, high.
+func TestChartUpgradeUnreadablePodsAreInconclusive(t *testing.T) {
+	shortSettle(t, 20*time.Millisecond, 5*time.Millisecond)
+	pod := items(podJSON("web", 0, ""))
+	res := runChartUpgradeWith(t, "", 0, pod, pod, pod, "FAIL:The connection to the server was refused")
+	if res.Verdict != Inconclusive || len(res.Findings) > 0 || !strings.Contains(res.Summary, "connection to the server was refused") {
+		t.Errorf("verdict = %s with %d finding(s) (%s), want INCONCLUSIVE with the read error", res.Verdict, len(res.Findings), res.Summary)
+	}
+}
+
+// A finding the Secrets already proved stands when the health check could not finish; the summary
+// says what was not checked. Without one the result is INCONCLUSIVE.
+func TestHealthUnread(t *testing.T) {
+	err := errors.New("interrupted while the pods settled: context canceled")
+	res := healthUnread(Result{Verdict: Pass, Summary: "upgraded"}, err)
+	if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "context canceled") {
+		t.Errorf("no finding: verdict = %s (%s), want INCONCLUSIVE with the reason", res.Verdict, res.Summary)
+	}
+	res = healthUnread(Result{Verdict: Fail, Summary: "1 problem(s)", Findings: []Finding{{ID: "HB-CU-002"}}}, err)
+	if res.Verdict != Fail || len(res.Findings) != 1 || !strings.Contains(res.Summary, "workload health was not checked") {
+		t.Errorf("with HB-CU-002: verdict = %s (%s), want FAIL kept and the health check named", res.Verdict, res.Summary)
+	}
 }
 
 func TestChartUpgradeTimeoutIsInconclusive(t *testing.T) {

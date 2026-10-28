@@ -28,6 +28,17 @@ ids() {
 check() {
   local name=$1 got=$2 want=$3 want_ids=$4 dir=$5 log=$6
   local got_ids
+  # A setup error (2) stops before the run, so it writes no report. The only one here is a missing
+  # path, and the message proves the run stopped for that and not for another usage error.
+  if [ "$want" = 2 ]; then
+    if [ "$got" = 2 ] && [ ! -e "$dir/report.json" ] && grep -q 'path not found' "$log"; then
+      echo "ok    $name (exit $got)"
+    else
+      echo "FAIL  $name (exit $got, want 2, no report.json and 'path not found')  log: $log"
+      failed=1
+    fi
+    return
+  fi
   # A run that wrote no report is never "no findings".
   if [ ! -s "$dir/report.json" ]; then
     echo "FAIL  $name (exit $got, want $want; no report.json)  log: $log"
@@ -86,8 +97,16 @@ scan() {
 }
 scan regenerates-secret 1 "HB-SCAN-003" testdata/charts/regenerates-secret
 scan keeps-secret       0 ""            testdata/charts/keeps-secret
+# A quoted default that renders another field unquoted (env value becomes valueFrom). Its twin renders scalars alike.
+scan scan-unquoted-env  1 "HB-SCAN-004" testdata/charts/scan-unquoted-env
+scan scan-typed-env     0 ""            testdata/charts/scan-typed-env
 scan upgrade-v2-breaks  1 "HB-SCAN-001" testdata/charts/upgrade-v2-breaks --from testdata/charts/upgrade-v1 --from-version 1.0.0
 scan upgrade-v2-ok      0 ""            testdata/charts/upgrade-v2-ok --from testdata/charts/upgrade-v1 --from-version 1.0.0
+# A check that could not run is never a clean pass (#50): a missing chart is a setup error, a chart
+# that does not render or a values file that does not exist leaves the scan INCONCLUSIVE.
+scan missing-chart      2 ""            ./testdata/charts/does-not-exist
+scan scan-render-fails  3 ""            testdata/charts/scan-render-fails
+scan missing-values     3 ""            testdata/charts/regenerates-secret -f testdata/charts/regenerates-secret/does-not-exist.yaml
 
 # Kubernetes matrix, on one version.
 matrix() {

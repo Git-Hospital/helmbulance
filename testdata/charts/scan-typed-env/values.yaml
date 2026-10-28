@@ -1,0 +1,5 @@
+extraEnv:
+  DB_PORT: "5432"
+  CACHE_ENABLED: "true"
+  TOKEN:
+    secretKeyRef: {name: app-token, key: token}
