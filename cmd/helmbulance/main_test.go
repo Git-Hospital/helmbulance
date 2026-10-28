@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/egezamb/helmbulance/internal/scenario"
 )
 
 // stderrOf runs f and returns what it wrote to os.Stderr.
@@ -106,6 +108,27 @@ func TestCheckRotations(t *testing.T) {
 	for _, bad := range []string{"webhook-tls", "/tls.crt", "ca/", "ns/secret/key", "[ca/tls.crt"} {
 		if err := checkRotations([]string{bad}); err == nil {
 			t.Errorf("checkRotations(%q) = nil, want an error", bad)
+		}
+	}
+}
+
+// #49 (1): a run cut short by Ctrl-C or SIGTERM never exits 0, whatever the scenarios that finished
+// before it said. A finding they proved still exits 1.
+func TestExitCode(t *testing.T) {
+	for _, c := range []struct {
+		worst       string
+		interrupted bool
+		want        int
+	}{
+		{scenario.Pass, false, exitClean},
+		{scenario.Fail, false, exitFindings},
+		{scenario.Inconclusive, false, exitIncomplete},
+		{scenario.Pass, true, exitIncomplete},
+		{scenario.Fail, true, exitFindings},
+		{scenario.Inconclusive, true, exitIncomplete},
+	} {
+		if got := exitCode(c.worst, c.interrupted); got != c.want {
+			t.Errorf("exitCode(%s, interrupted %v) = %d, want %d", c.worst, c.interrupted, got, c.want)
 		}
 	}
 }

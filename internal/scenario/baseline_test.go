@@ -77,9 +77,10 @@ func TestUnhealthyAfterRestartBaseline(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			shortSettle(t, 2*time.Second, 50*time.Millisecond)
 			env := fakePodReads(t, c.reads...)
-			got := strings.Join(unhealthyAfter(t.Context(), env, c.before, c.upgraded, nil), "; ")
-			if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
-				t.Errorf("unhealthyAfter = %q, want %q", got, c.want)
+			problems, err := unhealthyAfter(t.Context(), env, c.before, c.upgraded, nil)
+			got := strings.Join(problems, "; ")
+			if err != nil || c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
+				t.Errorf("unhealthyAfter = %q, %v; want %q", got, err, c.want)
 			}
 		})
 	}
@@ -91,10 +92,10 @@ func TestUnhealthyAfterSkipsJobsThatFailedBefore(t *testing.T) {
 	env := fakePodReads(t, podsJSON("p", 0))
 	t.Setenv("FAKE_JOBS", `{"items":[{"metadata":{"name":"old"},"status":{"conditions":[{"type":"Failed","status":"True","reason":"BackoffLimitExceeded"}]}}]}`)
 	before := []kube.Pod{{UID: "p"}}
-	if got := unhealthyAfter(t.Context(), env, before, nil, []string{"Job/old: BackoffLimitExceeded"}); len(got) != 0 {
-		t.Errorf("unhealthyAfter = %q, want nothing for a Job that failed before", got)
+	if got, err := unhealthyAfter(t.Context(), env, before, nil, []string{"Job/old: BackoffLimitExceeded"}); len(got) != 0 || err != nil {
+		t.Errorf("unhealthyAfter = %q, %v; want nothing for a Job that failed before", got, err)
 	}
-	if got := unhealthyAfter(t.Context(), env, before, nil, nil); len(got) != 1 {
-		t.Errorf("unhealthyAfter = %q, want the Job when it is new", got)
+	if got, err := unhealthyAfter(t.Context(), env, before, nil, nil); len(got) != 1 || err != nil {
+		t.Errorf("unhealthyAfter = %q, %v; want the Job when it is new", got, err)
 	}
 }
