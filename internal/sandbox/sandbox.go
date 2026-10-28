@@ -159,7 +159,8 @@ type namedContext struct {
 type namedCluster struct {
 	Name    string `yaml:"name"`
 	Cluster struct {
-		CAData string `yaml:"certificate-authority-data"`
+		CAData   string `yaml:"certificate-authority-data"`
+		Insecure bool   `yaml:"insecure-skip-tls-verify"`
 	} `yaml:"cluster"`
 }
 
@@ -192,6 +193,11 @@ func caFingerprint(path, name string) (string, error) {
 	ca := strings.TrimSpace(clusterEntry.Cluster.CAData)
 	if ca == "" {
 		return "", fmt.Errorf("%s: cluster %q has no certificate-authority-data", path, cluster)
+	}
+	// The CA identifies the cluster only while TLS checks the server against it. kind never
+	// skips that check, so a file that does could reach any server whatever its CA says.
+	if clusterEntry.Cluster.Insecure {
+		return "", fmt.Errorf("%s: cluster %q sets insecure-skip-tls-verify, so its CA proves nothing; refusing to use it", path, cluster)
 	}
 	sum := sha256.Sum256([]byte(ca))
 	return hex.EncodeToString(sum[:]), nil

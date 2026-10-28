@@ -137,6 +137,15 @@ func TestOpenRefusesAClusterWithoutCAData(t *testing.T) {
 	refused(t, config(sandbox, []pair{{sandbox, `""`}}, []pair{{sandbox, sandbox}}), "no certificate-authority-data")
 }
 
+// With TLS verification off, the CA no longer ties the file to the sandbox's server.
+func TestOpenRefusesInsecureSkipTLSVerify(t *testing.T) {
+	kc := strings.Replace(kindConfig, "    server: https://", "    insecure-skip-tls-verify: true\n    server: https://", 1)
+	if kc == kindConfig {
+		t.Fatal("the fixture did not change")
+	}
+	refused(t, kc, "insecure-skip-tls-verify")
+}
+
 func TestOpenRefusesAFileThatIsNotYAML(t *testing.T) {
 	writeCluster(t, "clusters: [\n")
 	if _, err := Open(name); err == nil {
