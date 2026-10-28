@@ -49,6 +49,53 @@ jobs:
             scenario: upgrade-without-values
             exit-code: 1
             findings: HB-UV-003
+          # HBC-02: the first upgrade after install restarts the filer and the S3 gateway although nothing
+          # changed (seaweedfs/seaweedfs#11719, found with Helmbulance). Fixed by #11720, first released in
+          # 4.50.0: the 4.49.0 chart points at an image tag that was never pushed, so it cannot install.
+          - id: HBC-02
+            chart: seaweedfs
+            version: 4.48.0
+            url: https://seaweedfs.github.io/seaweedfs/helm/seaweedfs-4.48.0.tgz
+            sha256: fa9beb4b68ee1e56129779643194968210381a33caf47fc177fd17d43efb686e
+            values: testdata/corpus/hbc-02-seaweedfs/values.yaml
+            scenario: upgrade-without-values
+            timeout: 10m
+            exit-code: 1
+            findings: HB-UV-003
+          - id: HBC-02
+            chart: seaweedfs
+            version: 4.50.0
+            url: https://seaweedfs.github.io/seaweedfs/helm/seaweedfs-4.50.0.tgz
+            sha256: d8eb55cf7ab64bacedf46eac00c96db3bfaa72357c3c6153da66226d3f36b90e
+            values: testdata/corpus/hbc-02-seaweedfs/values.yaml
+            scenario: upgrade-without-values
+            timeout: 10m
+            exit-code: 0
+            findings: ""
+          # HBC-03: haSharedSecret is generated anew on every render (twuni/docker-registry.helm#187). No
+          # published version fixes it: a lookup fix (#56) was declined in 2022.
+          - id: HBC-03
+            chart: docker-registry
+            version: 3.0.0
+            url: https://twuni.github.io/docker-registry.helm/docker-registry-3.0.0.tgz
+            sha256: 4279fca80994602f2b43edad632afed3608d88232d3f53fd86137647bb842304
+            values: ""
+            scenario: upgrade-without-values
+            exit-code: 1
+            findings: HB-UV-001 HB-UV-003
+          # HBC-04: rendered without cluster access, as Argo CD renders it, the admin password is new on
+          # every render (jenkinsci/helm-charts#1026). With cluster access the chart's lookup keeps it. No
+          # published version changes this.
+          - id: HBC-04
+            chart: jenkins
+            version: 5.10.0
+            url: https://github.com/jenkinsci/helm-charts/releases/download/jenkins-5.10.0/jenkins-5.10.0.tgz
+            sha256: ef1c1de44d20eff12e6b46ebde663c24054bef029be4597638011676b1b72df7
+            values: ""
+            scenario: gitops-render
+            timeout: 10m
+            exit-code: 1
+            findings: HB-GR-001
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,7 +116,7 @@ jobs:
           chart: corpus-chart.tgz
           values: ${{ matrix.values }}
           scenarios: ${{ matrix.scenario }}
-          timeout: 5m
+          timeout: ${{ matrix.timeout || '5m' }}
           report-dir: corpus-report
           fail-on: never
 
