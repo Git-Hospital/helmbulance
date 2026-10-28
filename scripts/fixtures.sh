@@ -72,6 +72,8 @@ run generate-once      0 ""                    testdata/charts/generate-once --s
 run runtime-secret     0 ""                    testdata/charts/runtime-secret -f testdata/charts/runtime-secret/values.yaml --scenario upgrade-without-values
 run drops-set-key      1 "HB-UV-002"           testdata/charts/drops-set-key --set "encryptionKey=$key" --scenario upgrade-without-values
 run keeps-set-key      0 ""                    testdata/charts/keeps-set-key --set "encryptionKey=$key" --scenario upgrade-without-values
+# Refuses to render without the key instead of dropping it: a safe refusal, PASS (D4, #49).
+run refuses-dropped-key 0 ""                   testdata/charts/refuses-dropped-key --set "encryptionKey=$key" --scenario upgrade-without-values
 run upgrade-v2-breaks  1 "HB-CU-001"           testdata/charts/upgrade-v2-breaks --scenario chart-upgrade --from testdata/charts/upgrade-v1 --from-version 1.0.0
 run upgrade-v2-ok      0 ""                    testdata/charts/upgrade-v2-ok --scenario chart-upgrade --from testdata/charts/upgrade-v1 --from-version 1.0.0
 # v2 crash-loops, so --wait times out (the full --timeout): a finding, not INCONCLUSIVE (#28). Its twin is upgrade-v2-ok.

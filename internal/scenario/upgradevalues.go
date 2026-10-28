@@ -124,7 +124,10 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	// --reset-values: without any values flag Helm would reuse the install values, --set included.
 	filesErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{Files: env.Values.Files}, "--reset-values")
 	if filesErr != nil && !timedOutWaiting(ctx, filesErr) {
-		return inconclusive(res, "the upgrade with the values files failed", filesErr)
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res = filesUpgradeFailed(ctx, res, filesErr)
+		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
+		return res
 	}
 	filesCmd := env.Runner.Transcript()[mark:]
 	filesOnly, err := snapshot()
@@ -138,6 +141,27 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 			crashesAfterTimeout(ctx, env, ns, podsTreated, nil, false))
 	}
 	res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
+	return res
+}
+
+// filesUpgradeFailed is the result when the upgrade with the values files fails without a --wait
+// timeout. The chart refusing at render time (`fail`, `required`) keeps its values safe, which is
+// what HB-UV-002's fix asks for: a PASS (D4). Any other failure leaves the treatment unproven. A
+// finding the control already proved stands, with the failure in its summary; without one the
+// result is INCONCLUSIVE (#49).
+func filesUpgradeFailed(ctx context.Context, res Result, err error) Result {
+	refused := RefusedAtRender(ctx, err)
+	switch {
+	case res.Verdict == Fail && refused:
+		res.Summary += "; the upgrade with the values files refuses safely: " + helmMessage(err)
+	case res.Verdict == Fail:
+		res.Summary += "; the upgrade with the values files failed: " + helmMessage(err)
+	case refused:
+		res.Verdict = Pass
+		res.Summary = "refuses safely when the release is upgraded from its values files only: " + helmMessage(err)
+	default:
+		return inconclusive(res, "the upgrade with the values files failed", err)
+	}
 	return res
 }
 

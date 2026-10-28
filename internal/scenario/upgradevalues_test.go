@@ -17,13 +17,15 @@ import (
 // fakeUpgradeTools answers upgrade-without-values. Pod reads, in order, show pod-template-hash
 // revisions[0], revisions[1], …, then the last one. The n-th Secret read fails when n is in
 // failSecretRead, and from read SECRET_CHANGES_FROM on the key has another value; the second no-op
-// upgrade or the treatment fail when told to, and the control or the treatment time out in --wait.
+// upgrade or the treatment fail when told to, the treatment refuses at render time, and the control
+// or the treatment time out in --wait.
 const fakeUpgradeTools = `#!/bin/sh
 count() { n=$(cat "$FAKE_DIR/$1" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$FAKE_DIR/$1"; echo $n; }
 timeout() { echo "Error: UPGRADE FAILED: context deadline exceeded" >&2; exit 1; }
 case "$(basename "$0") $*" in
   "helm upgrade"*"--reset-values"*) [ -n "$TIMEOUT_TREATMENT" ] && timeout
-    [ -n "$FAIL_TREATMENT" ] && { echo "Error: treatment failed" >&2; exit 1; }; exit 0 ;;
+    [ -n "$FAIL_TREATMENT" ] && { echo "Error: treatment failed" >&2; exit 1; }
+    [ -n "$REFUSE_TREATMENT" ] && { echo "Error: UPGRADE FAILED: execution error at (chart/templates/secret.yaml:6:21): encryptionKey is required" >&2; exit 1; }; exit 0 ;;
   "helm upgrade"*) n=$(count upgrade); [ "$n" = 1 ] && [ -n "$TIMEOUT_CONTROL" ] && timeout
     [ "$n" = 1 ] && [ -n "$FAIL_CONTROL" ] && { echo "Error: UPGRADE FAILED: rendered manifests contain a resource that already exists" >&2; exit 1; }
     [ "$n" = 2 ] && [ -n "$FAIL_SECOND_UPGRADE" ] && { echo "Error: busy" >&2; exit 1; }; exit 0 ;;
@@ -50,7 +52,7 @@ func runUpgradeValues(t *testing.T, env map[string]string) Result {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_DIR", dir)
 	for _, k := range []string{"REVISIONS", "FAIL_TREATMENT", "FAIL_SECOND_UPGRADE", "FAIL_SECRET_READ",
-		"SECRET_CHANGES_FROM", "TIMEOUT_CONTROL", "TIMEOUT_TREATMENT", "FAIL_CONTROL"} {
+		"SECRET_CHANGES_FROM", "TIMEOUT_CONTROL", "TIMEOUT_TREATMENT", "FAIL_CONTROL", "REFUSE_TREATMENT"} {
 		t.Setenv(k, env[k])
 	}
 	hasher, err := oracle.NewHasher()
@@ -150,6 +152,42 @@ func TestUpgradeValuesTimeout(t *testing.T) {
 				if first != (f.ID == c.timedOut) {
 					t.Errorf("%s evidence %q: timeout first = %t, want %t", f.ID, f.Evidence, first, !first)
 				}
+			}
+			if res.Verdict != c.verdict || strings.Join(ids, " ") != c.ids || !strings.Contains(res.Summary, c.inSummary) {
+				t.Errorf("verdict %s, findings %q, summary %q; want %s, %q, summary with %q",
+					res.Verdict, ids, res.Summary, c.verdict, c.ids, c.inSummary)
+			}
+		})
+	}
+}
+
+// A treatment that fails without a --wait timeout changed nothing. A render refusal is the chart
+// keeping its values safe, a PASS (D4); anything else proves nothing. Either way an HB-UV-001 the
+// control proved stands, with the failure in the summary (#49).
+func TestUpgradeValuesTreatmentFails(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       map[string]string
+		verdict   string
+		ids       string
+		inSummary string
+	}{
+		{"refuses", map[string]string{"REVISIONS": "a", "REFUSE_TREATMENT": "1"},
+			Pass, "", "refuses safely when the release is upgraded from its values files only: UPGRADE FAILED: execution error at ("},
+		{"fails otherwise", map[string]string{"REVISIONS": "a", "FAIL_TREATMENT": "1"},
+			Inconclusive, "", "the upgrade with the values files failed"},
+		// Install reads Secrets 1-2, the control 3-4.
+		{"control regenerated, treatment refuses", map[string]string{"REVISIONS": "a", "REFUSE_TREATMENT": "1", "SECRET_CHANGES_FROM": "3"},
+			Fail, "HB-UV-001", "; the upgrade with the values files refuses safely: UPGRADE FAILED: execution error at ("},
+		{"control regenerated, treatment fails otherwise", map[string]string{"REVISIONS": "a", "FAIL_TREATMENT": "1", "SECRET_CHANGES_FROM": "3"},
+			Fail, "HB-UV-001", "; the upgrade with the values files failed: treatment failed"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := runUpgradeValues(t, c.env)
+			var ids []string
+			for _, f := range res.Findings {
+				ids = append(ids, f.ID)
 			}
 			if res.Verdict != c.verdict || strings.Join(ids, " ") != c.ids || !strings.Contains(res.Summary, c.inSummary) {
 				t.Errorf("verdict %s, findings %q, summary %q; want %s, %q, summary with %q",
