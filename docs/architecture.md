@@ -59,7 +59,7 @@ chart + values ─▶ Chart model ─▶ Sandbox ─▶ Scenario engine ─▶ O
 - **kubectl** is used for reads in v0.1. client-go replaces it where watching or ephemeral containers need it.
 - **The tool's own clusters only.**
   - Every sandbox gets its own kubeconfig (mode 0600, in `~/.helmbulance/clusters/<name>/`), and the SHA-256 of the cluster CA is recorded when the cluster is created.
-  - Reusing a cluster (`--cluster`) checks that fingerprint.
+  - Reusing a cluster (`--cluster`) checks that fingerprint on the cluster the kubeconfig's `current-context` points at, which must be `kind-<name>`: helm and kubectl follow it, so another cluster merged into the file is refused (#47). The name must be one the tool makes (`helmbulance-` and 8 hex characters).
   - There is no flag to run scenarios against any other cluster. Lifecycle and network scenarios uninstall releases and open connections; they must never meet a real cluster.
 - **`--set` values** are masked in every transcript and report.
 - **What reports keep out:** the user info and query values of every URL (a chart URL with credentials, a `--traffic-path` with a token), `$HOME` (shown as `~`) and a state dir outside it. When helm writes an `Error:` line, only the last one goes into a summary or evidence; evidence is escaped like other cluster text.
