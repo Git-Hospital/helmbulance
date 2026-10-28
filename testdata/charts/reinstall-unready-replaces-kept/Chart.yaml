@@ -1,0 +1,5 @@
+apiVersion: v2
+name: reinstall-unready-replaces-kept
+description: "Helmbulance fixture. reinstall-replaces-kept-hook whose client never becomes ready: the kept Secret is still replaced by the next install (HB-RI-004)."
+type: application
+version: 0.1.0

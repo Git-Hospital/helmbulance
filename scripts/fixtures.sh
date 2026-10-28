@@ -28,13 +28,14 @@ ids() {
 check() {
   local name=$1 got=$2 want=$3 want_ids=$4 dir=$5 log=$6
   local got_ids
-  # A setup error (2) stops before the run, so it writes no report. The only one here is a missing
-  # path, and the message proves the run stopped for that and not for another usage error.
+  # A setup error (2) stops before the run, so it writes no report. The only ones here are a missing
+  # chart or values file, and the message proves the run stopped for that and not for another
+  # usage error.
   if [ "$want" = 2 ]; then
-    if [ "$got" = 2 ] && [ ! -e "$dir/report.json" ] && grep -q 'path not found' "$log"; then
+    if [ "$got" = 2 ] && [ ! -e "$dir/report.json" ] && grep -qE 'path not found|values file not found' "$log"; then
       echo "ok    $name (exit $got)"
     else
-      echo "FAIL  $name (exit $got, want 2, no report.json and 'path not found')  log: $log"
+      echo "FAIL  $name (exit $got, want 2, no report.json and 'not found')  log: $log"
       failed=1
     fi
     return
@@ -54,10 +55,12 @@ check() {
   fi
 }
 
+# A fixture that never becomes ready waits out the whole --timeout on each install, so it sets a
+# shorter one: wait_for=45s run ...
 run() {
   local name=$1 want=$2 want_ids=$3
   shift 3
-  ./bin/helmbulance test "$@" ${extra[@]+"${extra[@]}"} --timeout 3m --report-dir "$out/$name" >"$out/$name.log" 2>&1
+  ./bin/helmbulance test "$@" ${extra[@]+"${extra[@]}"} --timeout "${wait_for:-3m}" --report-dir "$out/$name" >"$out/$name.log" 2>&1
   check "$name" $? "$want" "$want_ids" "$out/$name" "$out/$name.log"
 }
 
@@ -81,6 +84,14 @@ run reinstall-keeps-creds 0 ""                  testdata/charts/reinstall-keeps-
 run reinstall-loses-creds-projected 1 "HB-RI-001" testdata/charts/reinstall-loses-creds-projected --scenario reinstall
 # Its twin: the items mount only a key that does not change, so the new password reaches no kept data (#73).
 run reinstall-projected-items-other-key 0 "" testdata/charts/reinstall-projected-items-other-key --scenario reinstall
+# A pre-install hook Secret kept on uninstall is created again, with new values, by the next install (HB-RI-004). Its twin reuses them with lookup.
+run reinstall-replaces-kept-hook 1 "HB-RI-004"  testdata/charts/reinstall-replaces-kept-hook --scenario reinstall
+run reinstall-reuses-kept-hook 0 ""             testdata/charts/reinstall-reuses-kept-hook --scenario reinstall
+# The same hook without keep: Helm leaves it, but the chart never asked to keep it, so a new one is not a finding (#43).
+run reinstall-replaces-plain-hook 0 ""          testdata/charts/reinstall-replaces-plain-hook --scenario reinstall
+# The kept-hook pair with a client that never becomes ready: the replaced kept Secret is still seen; its twin proves nothing (#43).
+wait_for=45s run reinstall-unready-replaces-kept 1 "HB-RI-004" testdata/charts/reinstall-unready-replaces-kept --scenario reinstall
+wait_for=45s run reinstall-unready-reuses-kept 3 ""            testdata/charts/reinstall-unready-reuses-kept --scenario reinstall
 # Not a pair: a templated claim is deleted with the release, so new credentials lose nothing.
 run reinstall-templated-pvc 0 ""                testdata/charts/reinstall-templated-pvc --scenario reinstall
 # A password generated behind lookup is new on every helm template render, as under Argo CD. Its twin takes it from values.
@@ -101,13 +112,16 @@ scan keeps-secret       0 ""            testdata/charts/keeps-secret
 # A quoted default that renders another field unquoted (env value becomes valueFrom). Its twin renders scalars alike.
 scan scan-unquoted-env  1 "HB-SCAN-004" testdata/charts/scan-unquoted-env
 scan scan-typed-env     0 ""            testdata/charts/scan-typed-env
+# A value that sets a variable the chart also sets names it twice (Helm 4 rejects it). Its twin leaves its own entry out.
+scan scan-duplicate-env 1 "HB-SCAN-005" testdata/charts/scan-duplicate-env --set extraEnv.DB_PASSWORD=from-values
+scan scan-single-env    0 ""            testdata/charts/scan-single-env --set extraEnv.DB_PASSWORD=from-values
 scan upgrade-v2-breaks  1 "HB-SCAN-001" testdata/charts/upgrade-v2-breaks --from testdata/charts/upgrade-v1 --from-version 1.0.0
 scan upgrade-v2-ok      0 ""            testdata/charts/upgrade-v2-ok --from testdata/charts/upgrade-v1 --from-version 1.0.0
-# A check that could not run is never a clean pass (#50): a missing chart is a setup error, a chart
-# that does not render or a values file that does not exist leaves the scan INCONCLUSIVE.
+# A check that could not run is never a clean pass (#50): a missing chart or values file is a setup
+# error (#68), and a chart that does not render leaves the scan INCONCLUSIVE.
 scan missing-chart      2 ""            ./testdata/charts/does-not-exist
 scan scan-render-fails  3 ""            testdata/charts/scan-render-fails
-scan missing-values     3 ""            testdata/charts/regenerates-secret -f testdata/charts/regenerates-secret/does-not-exist.yaml
+scan missing-values     2 ""            testdata/charts/regenerates-secret -f testdata/charts/regenerates-secret/does-not-exist.yaml
 
 # Kubernetes matrix, on one version.
 matrix() {

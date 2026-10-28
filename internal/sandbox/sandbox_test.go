@@ -137,6 +137,15 @@ func TestOpenRefusesAClusterWithoutCAData(t *testing.T) {
 	refused(t, config(sandbox, []pair{{sandbox, `""`}}, []pair{{sandbox, sandbox}}), "no certificate-authority-data")
 }
 
+// With TLS verification off, the CA no longer ties the file to the sandbox's server.
+func TestOpenRefusesInsecureSkipTLSVerify(t *testing.T) {
+	kc := strings.Replace(kindConfig, "    server: https://", "    insecure-skip-tls-verify: true\n    server: https://", 1)
+	if kc == kindConfig {
+		t.Fatal("the fixture did not change")
+	}
+	refused(t, kc, "insecure-skip-tls-verify")
+}
+
 func TestOpenRefusesAFileThatIsNotYAML(t *testing.T) {
 	writeCluster(t, "clusters: [\n")
 	if _, err := Open(name); err == nil {
@@ -183,22 +192,23 @@ func TestNewClusterNamesPassOpensCheck(t *testing.T) {
 	}
 }
 
-// A cluster kind made but whose kubeconfig cannot be recorded is deleted, not left running:
-// the caller never gets a cluster to delete.
-func TestCreateDeletesAClusterItCannotRecord(t *testing.T) {
+// fakeKind puts a kind first on PATH that logs its arguments to the returned file. On create it
+// writes kubeconfig where --kubeconfig says and exits with createExit.
+func fakeKind(t *testing.T, kubeconfig string, createExit int) string {
+	t.Helper()
 	bin, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
 	kc := filepath.Join(t.TempDir(), "kubeconfig")
-	if err := os.WriteFile(kc, []byte(merged("kind-prod", "kind-prod")), 0o600); err != nil {
+	if err := os.WriteFile(kc, []byte(kubeconfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The fake kind logs its arguments, and on create writes kc where --kubeconfig says.
-	script := `#!/bin/sh
+	script := fmt.Sprintf(`#!/bin/sh
 echo "$*" >> "$FAKE_CALLS"
 if [ "$1" = create ]; then
   while [ $# -gt 0 ]; do [ "$1" = --kubeconfig ] && out=$2; shift; done
   cp "$FAKE_KUBECONFIG" "$out"
+  exit %d
 fi
-`
+`, createExit)
 	if err := os.WriteFile(filepath.Join(bin, "kind"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -206,13 +216,20 @@ fi
 	t.Setenv("FAKE_CALLS", calls)
 	t.Setenv("FAKE_KUBECONFIG", kc)
 	t.Setenv("HELMBULANCE_STATE_DIR", t.TempDir())
+	return calls
+}
 
+// createFails runs Create against the fake kind and checks that it failed with an error that says
+// why, deleted the cluster and removed its state directory: the caller never gets a cluster to
+// delete, so anything left would keep running.
+func createFails(t *testing.T, calls, why string) {
+	t.Helper()
 	c, err := NewCluster()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Create(t.Context(), &execx.Runner{}, ""); err == nil || !strings.Contains(err.Error(), "current-context") {
-		t.Fatalf("Create = %v, want the current-context error", err)
+	if err := c.Create(t.Context(), &execx.Runner{}, ""); err == nil || !strings.Contains(err.Error(), why) {
+		t.Fatalf("Create = %v, want an error with %q", err, why)
 	}
 	b, _ := os.ReadFile(calls)
 	if !strings.Contains(string(b), "delete cluster --name "+c.Name) {
@@ -221,4 +238,15 @@ fi
 	if _, err := os.Stat(c.dir); !os.IsNotExist(err) {
 		t.Errorf("state directory %s is still there (%v)", c.dir, err)
 	}
+}
+
+// kind made the cluster, but its kubeconfig cannot be recorded.
+func TestCreateDeletesAClusterItCannotRecord(t *testing.T) {
+	createFails(t, fakeKind(t, merged("kind-prod", "kind-prod"), 0), "current-context")
+}
+
+// kind itself failed, for example killed by the SIGTERM a Ctrl-C sends to its process group,
+// after its node container had started (#54).
+func TestCreateDeletesTheClusterWhenKindFails(t *testing.T) {
+	createFails(t, fakeKind(t, kindConfig, 1), "exit status 1")
 }

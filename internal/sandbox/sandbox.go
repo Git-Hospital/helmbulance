@@ -69,19 +69,22 @@ func NewCluster() (*Cluster, error) {
 }
 
 // Create brings up the reserved cluster with kind and records its CA fingerprint. On failure it
-// removes the cluster's state directory, and the cluster too once kind made it: the caller only
-// deletes a cluster that Create returned without error.
+// deletes the cluster and its state directory: the caller only deletes a cluster that Create
+// returned without error.
 func (c *Cluster) Create(ctx context.Context, r *execx.Runner, nodeImage string) error {
 	args := []string{"create", "cluster", "--name", c.Name, "--kubeconfig", c.Kubeconfig, "--wait", "180s"}
 	if nodeImage != "" {
 		args = append(args, "--image", nodeImage)
 	}
-	if _, err := r.Run(ctx, "kind", args...); err != nil {
-		_ = os.RemoveAll(c.dir)
-		return err
+	_, err := r.Run(ctx, "kind", args...)
+	if err == nil {
+		err = c.record()
 	}
-	if err := c.record(); err != nil {
-		// Without cancellation, so a Ctrl-C during creation still removes the cluster.
+	if err != nil {
+		// kind can fail after its node container started, most often because a Ctrl-C reached it:
+		// kind has no signal handler, so it dies before its own delete-on-failure and leaves a
+		// privileged container running (#54). kind delete succeeds on a cluster that does not
+		// exist, so it runs on every failure, without cancellation so it still runs after Ctrl-C.
 		if derr := c.Delete(context.WithoutCancel(ctx), r); derr != nil {
 			return errors.Join(err, derr)
 		}
@@ -159,7 +162,8 @@ type namedContext struct {
 type namedCluster struct {
 	Name    string `yaml:"name"`
 	Cluster struct {
-		CAData string `yaml:"certificate-authority-data"`
+		CAData   string `yaml:"certificate-authority-data"`
+		Insecure bool   `yaml:"insecure-skip-tls-verify"`
 	} `yaml:"cluster"`
 }
 
@@ -192,6 +196,11 @@ func caFingerprint(path, name string) (string, error) {
 	ca := strings.TrimSpace(clusterEntry.Cluster.CAData)
 	if ca == "" {
 		return "", fmt.Errorf("%s: cluster %q has no certificate-authority-data", path, cluster)
+	}
+	// The CA identifies the cluster only while TLS checks the server against it. kind never
+	// skips that check, so a file that does could reach any server whatever its CA says.
+	if clusterEntry.Cluster.Insecure {
+		return "", fmt.Errorf("%s: cluster %q sets insecure-skip-tls-verify, so its CA proves nothing; refusing to use it", path, cluster)
 	}
 	sum := sha256.Sum256([]byte(ca))
 	return hex.EncodeToString(sum[:]), nil

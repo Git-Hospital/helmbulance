@@ -1,0 +1,5 @@
+apiVersion: v2
+name: reinstall-replaces-kept-hook
+description: "Helmbulance fixture. Credentials for a database outside the release, in a Secret kept on uninstall but created by a pre-install hook, which Helm replaces on the next install."
+type: application
+version: 0.1.0

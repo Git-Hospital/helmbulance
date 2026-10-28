@@ -35,6 +35,9 @@ type secretReader struct {
 	release, ns string
 	owned       map[string]bool
 	notCompared map[string]bool
+	// kept and keptErr are what readKept found right after `helm uninstall`.
+	kept    map[string]bool
+	keptErr error
 }
 
 func newSecretReader(ctx context.Context, env *Env, release, ns string) *secretReader {
@@ -61,6 +64,24 @@ func (r *secretReader) snapshot() (oracle.SecretSnapshot, error) {
 		}
 		return r.env.Hasher.Snapshot(ownedOnly(secrets, owned)), nil
 	}, settleInterval, settleReads)
+}
+
+// readKept records the release's Secrets that are still in the namespace right after `helm
+// uninstall` and carry helm.sh/resource-policy: keep. Helm leaves every hook too, keep or not, but
+// a hook without keep is deleted by the next install's before-hook-creation and made again, the
+// same as a Secret uninstall deleted: the chart never asked to keep it (#43 review item 1).
+func (r *secretReader) readKept() {
+	secrets, err := r.env.Kube.Secrets(r.ctx, r.ns)
+	if err != nil {
+		r.keptErr = err
+		return
+	}
+	r.kept = map[string]bool{}
+	for _, s := range secrets {
+		if r.owned[s.Name] && s.Keep {
+			r.kept[s.Name] = true
+		}
+	}
 }
 
 // notComparedNote names the Secrets that were in the namespace but never rendered by the release.

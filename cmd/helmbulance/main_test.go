@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"io"
 	"os"
 	"strings"
@@ -94,6 +95,28 @@ func TestScanExit(t *testing.T) {
 	}
 }
 
+// A -f value is a file, a URL or "-", never a chart repository, so a missing file is refused
+// even when it has a slash and no "./", which refuseMissing would take for repo/chart (#68).
+func TestRefuseMissingValues(t *testing.T) {
+	for _, c := range []struct {
+		files   []string
+		refused bool
+	}{
+		{nil, false},
+		{[]string{"../../testdata/charts/keeps-secret/values.yaml"}, false},
+		{[]string{"-"}, false},
+		{[]string{"https://example.invalid/values.yaml"}, false},
+		{[]string{"valuse.yaml"}, true},
+		{[]string{"../../testdata/charts/keeps-secret/values.yaml", "testdata/charts/x/values.yaml"}, true},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseMissingValues(c.files) })
+		if refused != c.refused || refused != strings.Contains(out, "values file not found") {
+			t.Errorf("refuseMissingValues(%q) = %v, %q; want %v", c.files, refused, out, c.refused)
+		}
+	}
+}
+
 // version1 stands in for helm show chart: every chart is version 1.0.0.
 func version1(string) (string, error) { return "1.0.0", nil }
 
@@ -171,6 +194,46 @@ func TestExitCode(t *testing.T) {
 	} {
 		if got := exitCode(c.worst, c.interrupted); got != c.want {
 			t.Errorf("exitCode(%s, interrupted %v) = %d, want %d", c.worst, c.interrupted, got, c.want)
+		}
+	}
+}
+
+// Flags count on both sides of the chart, and nothing else is left over silently (#54).
+func TestParseArgs(t *testing.T) {
+	for _, c := range []struct {
+		args   []string
+		chart  string
+		ok     bool
+		strict bool
+		files  string
+		out    string
+	}{
+		{[]string{"./c", "--strict"}, "./c", true, true, "", ""},
+		{[]string{"--strict", "./c"}, "./c", true, true, "", ""},
+		{[]string{"--report-dir", "out", "./c", "--strict"}, "./c", true, true, "", "out"},
+		{[]string{"-f", "a.yaml", "./c", "-f", "b.yaml"}, "./c", true, false, "a.yaml,b.yaml", ""},
+		{[]string{"--strict"}, "", true, true, "", ""},
+		// A shell glob after one -f: b.yaml would be dropped, and the flags after it.
+		{[]string{"./c", "-f", "a.yaml", "b.yaml", "--strict"}, "", false, false, "", ""},
+		{[]string{"--strict", "./c", "./d"}, "", false, false, "", ""},
+		{[]string{"./c", "--", "--strict"}, "", false, false, "", ""},
+		{[]string{"./c", "--no-such-flag"}, "", false, false, "", ""},
+	} {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var files multiFlag
+		fs.Var(&files, "f", "")
+		strict := fs.Bool("strict", false, "")
+		out := fs.String("report-dir", "", "")
+		var chart string
+		var ok bool
+		msg := stderrOf(t, func() { chart, ok = parseArgs(fs, c.args) })
+		if ok != c.ok || chart != c.chart {
+			t.Errorf("parseArgs(%q) = %q, %v; want %q, %v (stderr %q)", c.args, chart, ok, c.chart, c.ok, msg)
+			continue
+		}
+		if ok && (*strict != c.strict || files.String() != c.files || *out != c.out) {
+			t.Errorf("parseArgs(%q): strict %v, -f %q, --report-dir %q; want %v, %q, %q", c.args, *strict, files.String(), *out, c.strict, c.files, c.out)
 		}
 	}
 }

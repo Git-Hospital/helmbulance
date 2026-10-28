@@ -63,6 +63,22 @@ func TestStatefulWorkloads(t *testing.T) {
 	}
 }
 
+// Secrets reads helm.sh/resource-policy the way Helm does, and leaves out Helm's release records.
+func TestSecretsReadKeep(t *testing.T) {
+	c := fakeKubectl(t, `{"items":[
+		{"metadata":{"name":"kept","annotations":{"helm.sh/resource-policy":" Keep "}},"type":"Opaque","data":{"k":"dg=="}},
+		{"metadata":{"name":"hook","annotations":{"helm.sh/hook":"pre-install"}},"type":"Opaque","data":{}},
+		{"metadata":{"name":"sh.helm.release.v1.hb.v1"},"type":"helm.sh/release.v1","data":{}}]}`)
+	got, err := c.Secrets(t.Context(), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Secret{{Name: "hook", Data: map[string][]byte{}}, {Name: "kept", Data: map[string][]byte{"k": []byte("v")}, Keep: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Secrets = %+v, want %+v", got, want)
+	}
+}
+
 func TestPVCs(t *testing.T) {
 	c := fakeKubectl(t, `{"items":[
 		{"metadata":{"name":"data-db-0","uid":"u1"},"status":{"phase":"Bound"}},
