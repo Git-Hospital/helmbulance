@@ -83,6 +83,9 @@ scan() {
 }
 scan regenerates-secret 1 "HB-SCAN-003" testdata/charts/regenerates-secret
 scan keeps-secret       0 ""            testdata/charts/keeps-secret
+# A quoted default that renders another field unquoted (env value becomes valueFrom). Its twin renders scalars alike.
+scan scan-unquoted-env  1 "HB-SCAN-004" testdata/charts/scan-unquoted-env
+scan scan-typed-env     0 ""            testdata/charts/scan-typed-env
 scan upgrade-v2-breaks  1 "HB-SCAN-001" testdata/charts/upgrade-v2-breaks --from testdata/charts/upgrade-v1 --from-version 1.0.0
 scan upgrade-v2-ok      0 ""            testdata/charts/upgrade-v2-ok --from testdata/charts/upgrade-v1 --from-version 1.0.0
 

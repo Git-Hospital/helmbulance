@@ -1,0 +1,5 @@
+apiVersion: v2
+name: scan-unquoted-env
+description: "Helmbulance fixture. Only a string env value renders as value; an unquoted number goes to valueFrom, which the API server rejects. Seen in seaweedfs's extraEnvironmentVars."
+type: application
+version: 0.1.0
