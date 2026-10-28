@@ -111,7 +111,7 @@ func test(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart, *from) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+	if refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 	if err := checkRotations(rotations); err != nil {
@@ -264,6 +264,21 @@ func refuseMissing(refs ...string) bool {
 	return false
 }
 
+// refuseMissingValues stops a run on a -f values file that is not on disk. helm reads -f as a file,
+// a URL or "-" for standard input, never as a chart repository, so unlike a chart ref any other
+// value must exist. Without this, test and matrix started a cluster first, and scan reported that it
+// could not render the chart (#68).
+func refuseMissingValues(files []string) bool {
+	for _, f := range files {
+		if f == "-" || strings.Contains(f, "://") || helm.IsLocal(f) {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "values file not found: %s\n", f)
+		return true
+	}
+	return false
+}
+
 // refuseFromVersion stops a run whose --from-version cannot take effect. helm ignores --version for
 // a chart on disk, so without --from a local chart would be upgraded to itself and the upgrade
 // would pass without testing anything, and a local --from installs the version in its Chart.yaml
@@ -335,7 +350,7 @@ func matrixCmd(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart) {
+	if refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
@@ -408,7 +423,7 @@ func scanCmd(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseMissing(chart, *from) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+	if refuseMissing(chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
