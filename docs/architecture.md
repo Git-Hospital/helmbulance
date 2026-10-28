@@ -297,4 +297,5 @@ docs/                   architecture, scenario reference, case studies
 | v0.1 | CLI, kind sandbox, `upgrade-without-values` (done), `reinstall`, `gitops-render`, `network-isolation` (TCP, CNI canary, port discovery), Markdown and JSON, fixtures, a composite GitHub Action that runs the CLI |
 | v0.2 | `secret-rotation`, `immutable-fields`, `process-kill`, SARIF, double-run confirmation of failures, signed releases with SBOM |
 | v0.3 | `probe-abuse` with egress isolation outside the cluster, third-party chart mode, application plug-ins, optional AI hypotheses |
-| Later | Running against popular community charts and sending fixes upstream; a hosted service only if there is demand |
+| Ongoing | Running against popular community charts and sending fixes upstream (README, "Found in public charts") |
+| Later | A hosted service, only if there is demand |
