@@ -14,19 +14,25 @@ import (
 	"github.com/egezamb/helmbulance/internal/kube"
 )
 
-// fakeKubectl answers the calls zero-downtime makes. "logs <pod>" prints $FAKE_LOGS/<pod>, and
-// "logs --tail=1 <pod>", read just before the operation, prints the last line of $FAKE_LOGS/<pod>.before.
+// fakeKubectl answers the calls zero-downtime makes. "logs <pod>" prints $FAKE_LOGS/<pod>. The n-th
+// "logs --tail=1 <pod>" (0 just before the operation, then one before each workload after the first
+// is restarted) prints the last line of $FAKE_LOGS/<pod>.before.<n>, or of $FAKE_LOGS/<pod>.before.
+// The workloads are $FAKE_LOGS/workloads, or one Deployment behind web. "rollout" calls are appended to $FAKE_LOGS/calls.
 // The n-th "get endpointslices" (0 when the target is chosen, 1 right after the operation, 2 at the
 // end of the tail) prints $FAKE_LOGS/slices.<n>, or no slices.
 const fakeKubectl = `#!/bin/sh
 for a in "$@"; do last="$a"; done
 case "$*" in
   *"get services"*) echo '{"items":[{"metadata":{"name":"web"},"spec":{"selector":{"app":"web"},"ports":[{"name":"http","port":80}]}}]}' ;;
-  *"get deployments,statefulsets"*) echo '{"items":[]}' ;;
+  *"get deployments,statefulsets"*) cat "$FAKE_LOGS/workloads" 2>/dev/null || echo '{"items":[{"kind":"Deployment","metadata":{"name":"web"},"spec":{"replicas":2,"template":{"metadata":{"labels":{"app":"web"}}}}}]}' ;;
+  *" rollout "*) echo "$*" | sed 's/.* rollout /rollout /' >> "$FAKE_LOGS/calls" ;;
   *"get endpointslices"*)
     n=$(cat "$FAKE_LOGS/slices.n" 2>/dev/null || echo 0); echo $((n+1)) > "$FAKE_LOGS/slices.n"
     if [ -f "$FAKE_LOGS/slices.$n" ]; then cat "$FAKE_LOGS/slices.$n"; else echo '{"items":[]}'; fi ;;
-  *" logs --tail=1 "*) [ -f "$FAKE_LOGS/$last.before" ] && tail -n 1 "$FAKE_LOGS/$last.before" ;;
+  *" logs --tail=1 "*)
+    n=$(cat "$FAKE_LOGS/tail.n" 2>/dev/null || echo 0); echo $((n+1)) > "$FAKE_LOGS/tail.n"
+    f="$FAKE_LOGS/$last.before.$n"; [ -f "$f" ] || f="$FAKE_LOGS/$last.before"
+    [ -f "$f" ] && tail -n 1 "$f" ;;
   *" logs "*) cat "$FAKE_LOGS/$last" ;;
 esac
 exit 0
@@ -230,5 +236,88 @@ func TestZeroDowntimeFixSaysWhatAPDBDoes(t *testing.T) {
 	fix := res.Findings[0].Fix
 	if strings.Contains(fix, "PodDisruptionBudget") && !strings.Contains(fix, "evictions, not rollouts") {
 		t.Errorf("fix offers a PodDisruptionBudget for a rollout gap: %s", fix)
+	}
+}
+
+// web serves the target Service; db does not, and web's pods would depend on it.
+const twoWorkloads = `{"items":[
+	{"kind":"Deployment","metadata":{"name":"web"},"spec":{"replicas":2,"strategy":{"type":"RollingUpdate"},"template":{"metadata":{"labels":{"app":"web"}},"spec":{"containers":[{"readinessProbe":{},"lifecycle":{"preStop":{}}}]}}}},
+	{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"replicas":1,"updateStrategy":{"type":"RollingUpdate"},"template":{"metadata":{"labels":{"app":"db"}},"spec":{"containers":[{}]}}}}
+]}`
+
+// The rolling restart replaces one workload at a time and blames each failure on the workload that
+// was restarting then, not on the one behind the Service (#10): here web restarts cleanly from second
+// 300, and the requests fail after db starts restarting at second 310.
+func TestZeroDowntimeBlamesTheWorkloadThatWasRestarting(t *testing.T) {
+	logDir := ""
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":           twoWorkloads,
+		"hb-traffic-control":  "100 ok\n",
+		"hb-traffic.before.0": "300 ok\n",
+		"hb-traffic.before.1": "310 ok\n",
+		"hb-traffic":          "300 ok\n305 ok\n310 ok\n311 fail\n312 fail\n313 ok\n",
+	}, func(env *Env) { logDir = os.Getenv("FAKE_LOGS") })
+	if res.Verdict != Fail || len(res.Findings) != 1 {
+		t.Fatalf("verdict = %s (%s), want FAIL", res.Verdict, res.Summary)
+	}
+	ev := strings.Join(res.Findings[0].Evidence, "\n")
+	for _, want := range []string{
+		"While `StatefulSet/db` restarted (1 pod): 2 of 4 requests failed",
+		"`StatefulSet/db` does not serve `web`",
+		"`StatefulSet/db` has no readiness probe",
+	} {
+		if !strings.Contains(ev, want) {
+			t.Errorf("evidence does not contain %q:\n%s", want, ev)
+		}
+	}
+	if strings.Contains(ev, "While `Deployment/web`") || strings.Contains(ev, "`Deployment/web` has") {
+		t.Errorf("evidence blames web, which restarted without a failure:\n%s", ev)
+	}
+	calls, _ := os.ReadFile(filepath.Join(logDir, "calls"))
+	want := "rollout restart deployment/web\nrollout status deployment/web --timeout 1m0s\n" +
+		"rollout restart statefulset/db\nrollout status statefulset/db --timeout 1m0s\n"
+	if string(calls) != want {
+		t.Errorf("rollout calls =\n%s\nwant one workload at a time:\n%s", calls, want)
+	}
+}
+
+// A PASS says how much was replaced, so an empty restart is not mistaken for a clean one (#10).
+func TestZeroDowntimePassCountsTheReplacedPods(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":          twoWorkloads,
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "300 ok\n",
+		"hb-traffic":         "300 ok\n301 ok\n",
+	})
+	if res.Verdict != Pass || !strings.Contains(res.Summary, "2 workloads, 3 pods") {
+		t.Errorf("verdict = %s (%s), want PASS naming 2 workloads, 3 pods", res.Verdict, res.Summary)
+	}
+}
+
+// A release whose Service has no Deployment, StatefulSet or DaemonSet behind it has nothing to
+// replace, so a restart without failures would be an empty PASS (#10).
+func TestZeroDowntimeNothingToRestartIsSkipped(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":          `{"items":[]}`,
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic":         "300 ok\n",
+	})
+	if res.Verdict != Skipped || !strings.Contains(res.Summary, "nothing would be replaced") {
+		t.Errorf("verdict = %s (%s), want SKIPPED", res.Verdict, res.Summary)
+	}
+}
+
+// With one workload, its window is the whole operation: no second line repeats the first.
+func TestZeroDowntimeOneWorkloadHasNoWindowLine(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "300 ok\n",
+		"hb-traffic":         "300 ok\n301 fail\n",
+	})
+	if len(res.Findings) != 1 {
+		t.Fatalf("verdict = %s (%s), want one finding", res.Verdict, res.Summary)
+	}
+	if ev := strings.Join(res.Findings[0].Evidence, "\n"); strings.Contains(ev, "While `") {
+		t.Errorf("evidence repeats the whole operation as a window:\n%s", ev)
 	}
 }

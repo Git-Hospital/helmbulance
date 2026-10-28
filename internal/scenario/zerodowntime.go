@@ -22,8 +22,9 @@ import (
 // Service, from inside the cluster, as other workloads would. Control: 20 s with no change, which
 // must be clean, and is run once more if it is not, so one slow request on a busy machine does not
 // end the run. Treatment: the same traffic while the release is upgraded from --from-version, or,
-// without it, while every Deployment and StatefulSet is restarted (what any upgrade that changes
-// the pods does). Failed requests from the start of the operation on are the downtime users see.
+// without it, while every Deployment, StatefulSet and DaemonSet is restarted, one at a time (what
+// any upgrade that changes the pods does). Failed requests from the start of the operation on are
+// the downtime users see; in a restart, each is blamed on the workload being replaced then.
 type ZeroDowntime struct{}
 
 const (
@@ -140,14 +141,47 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not read the Services", err)
 	}
-	operation := "a rolling restart of every Deployment and StatefulSet"
-	act := func() error { return env.Kube.RolloutRestart(ctx, ns, workloads, env.Helm.Timeout.String()) }
+	var actErr, recheckErr error
+	var actStart int64
+	// restarts holds the second, in the traffic pod's clock, at which each workload's restart began.
+	// One workload is restarted at a time, so a failure is blamed on the one being replaced then,
+	// not on whatever the Service selects (#10).
+	var restarts []int64
+	pods := 0
+	for _, w := range workloads {
+		pods += w.Replicas
+	}
+	operation := fmt.Sprintf("a rolling restart of %s, %s, one at a time", count(len(workloads), "workload"), count(pods, "pod"))
+	act := func() error {
+		for i, w := range workloads {
+			start := actStart
+			if i > 0 {
+				last, err := env.Kube.LastLogLine(ctx, ns, "hb-traffic")
+				if err != nil {
+					return err
+				}
+				// Without a line the window starts where the previous one did.
+				if t, ok := oracle.TrafficSecond(last); ok {
+					start = t
+				} else {
+					start = restarts[i-1]
+				}
+			}
+			restarts = append(restarts, start)
+			if err := env.Kube.RestartWorkload(ctx, ns, w, env.Helm.Timeout.String()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if env.FromVersion != "" {
 		operation = "the upgrade from " + env.FromVersion
 		act = func() error { return env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values) }
+	} else if len(workloads) == 0 {
+		res.Verdict = Skipped
+		res.Summary = "no Deployment, StatefulSet or DaemonSet to restart, so nothing would be replaced"
+		return res
 	}
-	var actErr, recheckErr error
-	var actStart int64
 	gained := map[string]bool{} // addresses the chosen Service gained in slices the control plane did not write
 	recheck := func() {
 		if service == "" || recheckErr != nil {
@@ -217,11 +251,19 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		evidence = append(evidence, fmt.Sprintf("The first control lost %d of %d requests with nothing changing and was repeated; the cluster itself dropped requests before the operation.",
 			firstControl.Failed, firstControl.Total))
 	}
+	blamed := serving(workloads, services, target)
+	if lines, failing := restartWindows(log, restarts, workloads, services, target); len(failing) > 0 {
+		// With one workload its window is the whole operation, which the first line already gives.
+		if len(restarts) > 1 {
+			evidence = append(evidence, lines...)
+		}
+		blamed = failing
+	}
 	res.Findings = append(res.Findings, Finding{
 		ID:       "HB-ZD-001",
 		Title:    "Requests fail while the pods are replaced",
 		Severity: "medium",
-		Evidence: append(evidence, causes(serving(workloads, services, target))...),
+		Evidence: append(evidence, causes(blamed)...),
 		Impact: "Users and other services see errors on every upgrade or restart, even when nothing " +
 			"is wrong with the new version.",
 		Fix: "Run at least two replicas with a RollingUpdate that keeps them available " +
@@ -392,12 +434,7 @@ func outageText(d time.Duration) string {
 // serving narrows the workloads to those behind the Service the traffic went to, so the causes
 // listed are the ones users of that Service feel. Falls back to all workloads if none match.
 func serving(workloads []kube.Workload, services []kube.Service, target string) []kube.Workload {
-	name, _, _ := strings.Cut(target, ":")
-	name, _, _ = strings.Cut(name, ".")
-	for _, s := range services {
-		if s.Name != name {
-			continue
-		}
+	if s, ok := targetService(services, target); ok {
 		var out []kube.Workload
 		for _, w := range workloads {
 			if w.Serves(s) {
@@ -409,4 +446,53 @@ func serving(workloads []kube.Workload, services []kube.Service, target string) 
 		}
 	}
 	return workloads
+}
+
+// targetService finds the Service a target (service[.namespace...]:port) names.
+func targetService(services []kube.Service, target string) (kube.Service, bool) {
+	name, _, _ := strings.Cut(target, ":")
+	name, _, _ = strings.Cut(name, ".")
+	for _, s := range services {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return kube.Service{}, false
+}
+
+// restartWindows splits the treatment log at the second each workload's restart began and returns
+// an evidence line for each workload whose window had failures, and those workloads. A request in
+// the second the next restart began counts for the next one.
+func restartWindows(log string, restarts []int64, workloads []kube.Workload, services []kube.Service, target string) ([]string, []kube.Workload) {
+	svc, known := targetService(services, target)
+	var lines []string
+	var failing []kube.Workload
+	for i, start := range restarts {
+		var until int64
+		if i+1 < len(restarts) {
+			until = restarts[i+1]
+		}
+		st := oracle.ParseTrafficBetween(log, start, until)
+		if st.Failed == 0 {
+			continue
+		}
+		w := workloads[i]
+		ref := w.Kind + "/" + w.Name
+		line := fmt.Sprintf("While `%s` restarted (%s): %d of %d requests failed; longest outage %s.",
+			ref, count(w.Replicas, "pod"), st.Failed, st.Total, outageText(st.LongestOutage))
+		if known && !w.Serves(svc) {
+			line += fmt.Sprintf(" `%s` does not serve `%s`; the pods behind `%s` depend on it.", ref, svc.Name, svc.Name)
+		}
+		lines = append(lines, line)
+		failing = append(failing, w)
+	}
+	return lines, failing
+}
+
+// count writes n with its noun: "1 pod", "3 pods".
+func count(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return strconv.Itoa(n) + " " + noun + "s"
 }

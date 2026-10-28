@@ -421,7 +421,7 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 type Workload struct {
 	Kind, Name     string
 	Replicas       int
-	Strategy       string // RollingUpdate or Recreate (Deployments), RollingUpdate or OnDelete (StatefulSets)
+	Strategy       string // RollingUpdate or Recreate (Deployments), RollingUpdate or OnDelete (StatefulSets, DaemonSets)
 	MaxUnavailable string
 	HasReadiness   bool
 	HasPreStop     bool
@@ -441,9 +441,10 @@ func (w Workload) Serves(s Service) bool {
 	return true
 }
 
-// Workloads returns the Deployments and StatefulSets in ns.
+// Workloads returns the Deployments, StatefulSets and DaemonSets in ns. A DaemonSet's replicas are
+// the nodes it is scheduled on.
 func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "deployments,statefulsets", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "deployments,statefulsets,daemonsets", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -478,6 +479,9 @@ func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
 					} `json:"spec"`
 				} `json:"template"`
 			} `json:"spec"`
+			Status struct {
+				DesiredNumberScheduled int `json:"desiredNumberScheduled"` // DaemonSets
+			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
@@ -490,8 +494,11 @@ func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
 		if item.Spec.Replicas != nil {
 			w.Replicas = *item.Spec.Replicas
 		}
-		if item.Kind == "StatefulSet" {
+		if item.Kind == "StatefulSet" || item.Kind == "DaemonSet" {
 			w.Strategy = item.Spec.UpdateStrategy.Type
+		}
+		if item.Kind == "DaemonSet" {
+			w.Replicas = item.Status.DesiredNumberScheduled
 		}
 		if mu := item.Spec.Strategy.RollingUpdate.MaxUnavailable; mu != nil {
 			w.MaxUnavailable = fmt.Sprint(mu)
@@ -509,22 +516,15 @@ func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
 	return workloads, nil
 }
 
-// RolloutRestart replaces the pods of every Deployment and StatefulSet in ns and waits until the
-// rollouts finish.
-func (c *Client) RolloutRestart(ctx context.Context, ns string, workloads []Workload, timeout string) error {
-	for _, w := range workloads {
-		ref := strings.ToLower(w.Kind) + "/" + w.Name
-		if _, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "rollout", "restart", ref); err != nil {
-			return err
-		}
+// RestartWorkload replaces the pods of one workload and waits until its rollout finishes, so a
+// caller that restarts workloads one at a time knows which one was being replaced when (#10).
+func (c *Client) RestartWorkload(ctx context.Context, ns string, w Workload, timeout string) error {
+	ref := strings.ToLower(w.Kind) + "/" + w.Name
+	if _, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "rollout", "restart", ref); err != nil {
+		return err
 	}
-	for _, w := range workloads {
-		ref := strings.ToLower(w.Kind) + "/" + w.Name
-		if _, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "rollout", "status", ref, "--timeout", timeout); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "rollout", "status", ref, "--timeout", timeout)
+	return err
 }
 
 // StartPod runs a pod with a shell script and returns once it is created.
