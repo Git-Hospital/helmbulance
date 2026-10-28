@@ -111,7 +111,7 @@ func test(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart, *from) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+	if refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 	if err := checkRotations(rotations); err != nil {
@@ -208,13 +208,7 @@ func test(args []string) int {
 	}
 	fmt.Printf("Report: %s/report.md\n", *out)
 
-	switch rep.Worst() {
-	case scenario.Fail:
-		return exitFindings
-	case scenario.Inconclusive:
-		return exitIncomplete
-	}
-	return exitClean
+	return exitCode(rep.Worst(), ctx.Err() != nil)
 }
 
 func pick(names []string) ([]scenario.Scenario, error) {
@@ -242,19 +236,45 @@ func pick(names []string) ([]scenario.Scenario, error) {
 // charts (architecture §4) do not exist yet: a privileged pod in the sandbox is root on the Docker
 // host. This guards against running one by accident; it is not a protection.
 func refuseRemote(allow bool, refs ...string) bool {
+	if refuseMissing(refs...) {
+		return true
+	}
 	for _, ref := range refs {
 		if ref == "" || helm.IsLocal(ref) {
 			continue
-		}
-		if helm.IsPath(ref) {
-			fmt.Fprintf(os.Stderr, "path not found: %s\n", ref)
-			return true
 		}
 		if !allow {
 			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote (flags go before the chart).\n", ref)
 			return true
 		}
 		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", ref)
+	}
+	return false
+}
+
+// refuseMissing stops a run on a ref that helm reads only as a path and that is not on disk. That
+// is a typo, and a run on it would only report that it could not render the chart (#50).
+func refuseMissing(refs ...string) bool {
+	for _, ref := range refs {
+		if ref != "" && !helm.IsLocal(ref) && helm.IsPath(ref) {
+			fmt.Fprintf(os.Stderr, "path not found: %s\n", ref)
+			return true
+		}
+	}
+	return false
+}
+
+// refuseMissingValues stops a run on a -f values file that is not on disk. helm reads -f as a file,
+// a URL or "-" for standard input, never as a chart repository, so unlike a chart ref any other
+// value must exist. Without this, test and matrix started a cluster first, and scan reported that it
+// could not render the chart (#68).
+func refuseMissingValues(files []string) bool {
+	for _, f := range files {
+		if f == "-" || strings.Contains(f, "://") || helm.IsLocal(f) {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "values file not found: %s\n", f)
+		return true
 	}
 	return false
 }
@@ -330,7 +350,7 @@ func matrixCmd(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart) {
+	if refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
@@ -375,13 +395,7 @@ func matrixCmd(args []string) int {
 		return exitError
 	}
 	fmt.Printf("Report: %s/report.md\n", *out)
-	switch rep.Worst() {
-	case scenario.Fail:
-		return exitFindings
-	case scenario.Inconclusive:
-		return exitIncomplete
-	}
-	return exitClean
+	return exitCode(rep.Worst(), ctx.Err() != nil)
 }
 
 // scanCmd runs the static pre-screen. It reports candidates, not findings, so it exits 0 unless
@@ -393,7 +407,7 @@ func scanCmd(args []string) int {
 	fs.Var(&sets, "set", "value, key=value (repeatable). Values of four or more characters are hidden in reports.")
 	from := fs.String("from", "", "chart to compare against for immutable fields (repo/chart, oci://… or a path); defaults to the chart")
 	fromVersion := fs.String("from-version", "", "version users upgrade from; enables the immutable-field check. A local chart also needs --from")
-	strict := fs.Bool("strict", false, "exit 1 when there are candidates")
+	strict := fs.Bool("strict", false, "exit 1 when there are candidates, otherwise 3 when a check could not run")
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
 	var chart string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -409,7 +423,7 @@ func scanCmd(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+	if refuseMissing(chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
@@ -439,10 +453,16 @@ func scanCmd(args []string) int {
 		return exitError
 	}
 	fmt.Printf("Report: %s/report.md\n", *out)
-	if *strict && rep.Worst() == scenario.Fail {
-		return exitFindings
+	return scanExit(*strict, rep.Worst(), ctx.Err() != nil)
+}
+
+// scanExit is 0 without --strict: scan reports candidates, not findings. With --strict it follows
+// test, so a check that could not run is 3, not a clean pass (#50).
+func scanExit(strict bool, worst string, interrupted bool) int {
+	if !strict {
+		return exitClean
 	}
-	return exitClean
+	return exitCode(worst, interrupted)
 }
 
 // localPaths are the paths hidden in reports and transcripts: $HOME, which holds the user name,
@@ -505,4 +525,17 @@ func checkRotations(patterns []string) error {
 		}
 	}
 	return nil
+}
+
+// exitCode maps the worst verdict to the exit code. A run cut short by Ctrl-C or SIGTERM never
+// exits 0, even when every scenario that finished passed: the run did not check what it was asked
+// to (#49). A finding proved before the interrupt still exits 1.
+func exitCode(worst string, interrupted bool) int {
+	switch {
+	case worst == scenario.Fail:
+		return exitFindings
+	case worst == scenario.Inconclusive || interrupted:
+		return exitIncomplete
+	}
+	return exitClean
 }
