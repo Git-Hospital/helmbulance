@@ -75,7 +75,7 @@ func TestUnhealthyAfterRestartBaseline(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			shortSettle(t, 2*time.Second, 50*time.Millisecond)
+			shortSettle(t, 500*time.Millisecond, 50*time.Millisecond)
 			env := fakePodReads(t, c.reads...)
 			got := strings.Join(unhealthyAfter(t.Context(), env, c.before, c.upgraded, nil), "; ")
 			if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
@@ -87,7 +87,7 @@ func TestUnhealthyAfterRestartBaseline(t *testing.T) {
 
 // A Job that had already failed before the upgrade is the earlier version's, not this upgrade's.
 func TestUnhealthyAfterSkipsJobsThatFailedBefore(t *testing.T) {
-	shortSettle(t, 2*time.Second, 50*time.Millisecond)
+	shortSettle(t, 500*time.Millisecond, 50*time.Millisecond)
 	env := fakePodReads(t, podsJSON("p", 0))
 	t.Setenv("FAKE_JOBS", `{"items":[{"metadata":{"name":"old"},"status":{"conditions":[{"type":"Failed","status":"True","reason":"BackoffLimitExceeded"}]}}]}`)
 	before := []kube.Pod{{UID: "p"}}
