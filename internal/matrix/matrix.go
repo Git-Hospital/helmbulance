@@ -96,7 +96,15 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	warnings := apiWarnings(stderr)
 
 	if err != nil {
-		return installFailed(ctx, res, version, err, warnings, repro)
+		var crashes []string
+		if scenario.TimedOutWaiting(ctx, err) {
+			containers, readErr := k.Containers(ctx, ns)
+			if readErr != nil {
+				fmt.Fprintf(o.Log, "could not read containers after the timeout: %v\n", readErr)
+			}
+			crashes = scenario.StartFailures(containers)
+		}
+		return installFailed(ctx, res, version, err, crashes, warnings, repro)
 	}
 
 	bad, healthErr := unhealthy(ctx, k, ns)
@@ -208,9 +216,20 @@ func installFailure(r scenario.Result) bool {
 	return r.Verdict == scenario.Fail && len(r.Findings) > 0 && r.Findings[0].ID == "HB-K8S-001"
 }
 
-// installFailed is the result when helm install failed on Kubernetes version. A timeout, a pull
-// error or a cluster that did not answer says nothing about the version, so it is INCONCLUSIVE.
-func installFailed(ctx context.Context, res scenario.Result, version string, err error, warnings, repro []string) scenario.Result {
+// installFailed is the result when helm install failed on Kubernetes version.
+//   - After a `--wait` timeout the release was applied, so it is judged like an install that
+//     finished: crashes are the containers that crash or cannot start (HB-K8S-002), and the
+//     install's API warnings stand (#49).
+//   - Otherwise a timeout, a pull error or a cluster that did not answer says nothing about the
+//     version, so it is INCONCLUSIVE.
+func installFailed(ctx context.Context, res scenario.Result, version string, err error, crashes, warnings, repro []string) scenario.Result {
+	if scenario.TimedOutWaiting(ctx, err) && (len(crashes) > 0 || len(warnings) > 0) {
+		var bad []string
+		if len(crashes) > 0 {
+			bad = append([]string{"`helm install --wait` timed out while containers crashed or could not start: " + helmMessage(err)}, crashes...)
+		}
+		return judge(res, version, bad, fmt.Errorf("`helm install --wait` timed out: %s", helmMessage(err)), warnings, repro)
+	}
 	if scenario.IsEnvironmentError(ctx, err) {
 		res.Verdict = scenario.Inconclusive
 		res.Summary = "the install did not finish on Kubernetes " + version + ": " + helmMessage(err)

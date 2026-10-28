@@ -115,5 +115,7 @@ matrix() {
 }
 matrix deprecated-api 1 "HB-K8S-003" testdata/charts/deprecated-api
 matrix current-api    0 ""           testdata/charts/current-api
+# Its container exits 1 at start, so the install's --wait times out on a crash loop: HB-K8S-002, not INCONCLUSIVE (#49).
+matrix crashes-on-install 1 "HB-K8S-002" testdata/charts/upgrade-v2-crashes --timeout 1m
 
 exit $failed
