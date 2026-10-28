@@ -26,8 +26,12 @@ Each job compares the exit code and the set of finding IDs with the row below. A
 | | | | 4.50.0 (fix) | exit 0 | 28 Oct 2026, as expected |
 | HBC-03 | docker-registry | [twuni/docker-registry.helm#187](https://github.com/twuni/docker-registry.helm/issues/187), no published fix | 3.0.0 (defect) | exit 1: HB-UV-001, HB-UV-003 | 28 Oct 2026, as expected |
 | HBC-04 | jenkins | [jenkinsci/helm-charts#1026](https://github.com/jenkinsci/helm-charts/issues/1026), no published fix | 5.10.0 (defect) | exit 1: HB-GR-001 (`gitops-render`) | 28 Oct 2026, as expected |
+| HBC-05 | jupyterhub | [jupyterhub/zero-to-jupyterhub-k8s#3996](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/3996), fix [#3997](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/pull/3997) not released | 4.4.2 (defect) | exit 1: HB-UV-003 | 28 Oct 2026, as expected |
+| HBC-06 | semaphore | [semaphoreui/charts#34](https://github.com/semaphoreui/charts/issues/34), fix [#35](https://github.com/semaphoreui/charts/pull/35) not released | 16.2.2 (defect) | exit 1: HB-UV-003 | 28 Oct 2026, as expected |
+| HBC-07 | docker-registry-ui | [Joxit/helm-charts#22](https://github.com/Joxit/helm-charts/pull/22) (open fix, not released) | 1.1.3 → 1.1.4 (defect) | exit 1: HB-CU-001 (`chart-upgrade`) | 28 Oct 2026, as expected |
+| HBC-08 | yugabyte | [yugabyte/charts#240](https://github.com/yugabyte/charts/issues/240), no fix | 2026.1.1 → 2026.1.2 (defect) | exit 1: HB-CU-001 (`chart-upgrade`) | 28 Oct 2026, as expected |
 
-"Seen" is from `helmbulance test <archive> --scenario <scenario> [-f testdata/corpus/<entry>/values.yaml]` on kind. HBC-01 ran with Helm v4.0.4; HBC-02 to HBC-04 with Helm v4.3.0 and kind v0.33.0 (Kubernetes 1.37), all on arm64.
+"Seen" is from `helmbulance test <archive> --scenario <scenario> [-f testdata/corpus/<entry>/values.yaml]` on kind, with `--from <older archive> --from-version <version>` for `chart-upgrade`. HBC-01 ran with Helm v4.0.4; HBC-02 to HBC-08 with Helm v4.3.0 and kind v0.33.0 (Kubernetes 1.37), all on arm64.
 
 ### HBC-01: grafana regenerates the admin password
 
@@ -55,7 +59,19 @@ Each job compares the exit code and the set of finding IDs with the row below. A
 - This is the drift reported in #1026, which was filed against Helm 3.14 and Kustomize. The chart documents `existingSecret` for GitOps, so upstream may see it as documented behaviour (decision 0001, earlier candidate targets).
 - No published fix. The install takes most of the 5 minutes, so the entry has a 10 minute timeout.
 
+### HBC-05 and HBC-06: jupyterhub and semaphore restart on the first upgrade
+
+- The same pattern as HBC-02, described in [first-upgrade-restart](case-studies/first-upgrade-restart.md): a `checksum/secret` annotation hashes a second render of a Secret template that keeps generated values with `lookup`, so the hash changes once, at the first upgrade. HB-UV-003 names `Deployment/hub` and `Deployment/proxy` (jupyterhub 4.4.2) and the Semaphore Deployment (16.2.2). The Secrets keep their values, so there is no HB-UV-001.
+- jupyterhub runs without the image pre-puller and the user scheduler, and with a ClusterIP proxy Service (`testdata/corpus/hbc-05-jupyterhub/values.yaml`), as in the upstream report.
+- Both fixes are open pull requests; when one is released, its version becomes the entry's fixed twin.
+
+### HBC-07 and HBC-08: an immutable selector breaks the upgrade
+
+- **docker-registry-ui 1.1.3 → 1.1.4:** the Deployment selector holds `app.kubernetes.io/version`, so any `appVersion` change is rejected: `spec.selector: Invalid value … field is immutable`, HB-CU-001. `helmbulance scan` lists it first (HB-SCAN-001); see [the sweep](case-studies/sweep-2026-10.md).
+- **yugabyte 2026.1.1 → 2026.1.2:** with the default `oldNamingStyle: true`, the master and tserver StatefulSet selectors go from `{app, release}` to `{app}`, and both are rejected as immutable: HB-CU-001. A one-master, one-tserver universe with small requests and no LoadBalancer Services (`testdata/corpus/hbc-08-yugabyte/values.yaml`). See [the case study](case-studies/yugabyte-2026.1.2.md).
+- These two entries use the workflow's `from-url`, `from-sha256` and `from-version` fields: the older archive is pinned like the newer one, and `chart-upgrade` upgrades from it.
+
 ## What the corpus has shown so far
 
-- **Known defects found:** 4 of 4 (HBC-01 to HBC-04). D8 asks for at least 5 of 6, so two more entries are needed; the candidates that need `chart-upgrade` (yugabyte 2026.1.1 to 2026.1.2, docker-registry-ui 1.1.3 to 1.1.4) wait for a `from-version` input in this workflow.
+- **Known defects found:** 8 of 8 (HBC-01 to HBC-08), across three scenarios: `upgrade-without-values` (HB-UV-001, HB-UV-003), `gitops-render` (HB-GR-001) and `chart-upgrade` (HB-CU-001). D8 asks for at least 5 of 6.
 - **Findings on a fixed version:** 1 (HB-UV-003 on grafana 6.9.3); none on seaweedfs 4.50.0. It is a second defect that the fix did not touch, not a false finding. For D8 this means "a finding on the fixed version" has to be read per finding ID.

@@ -96,6 +96,57 @@ jobs:
             timeout: 10m
             exit-code: 1
             findings: HB-GR-001
+          # HBC-05: the first upgrade after install restarts the hub and the proxy although nothing changed
+          # (jupyterhub/zero-to-jupyterhub-k8s#3996, found with Helmbulance; fix #3997 not released yet).
+          - id: HBC-05
+            chart: jupyterhub
+            version: 4.4.2
+            url: https://jupyterhub.github.io/helm-chart/jupyterhub-4.4.2.tgz
+            sha256: 0ddfa517050d16f2e1b50c62b5b6377b12574f9a2b88f3b352bd211ef3173c3e
+            values: testdata/corpus/hbc-05-jupyterhub/values.yaml
+            scenario: upgrade-without-values
+            exit-code: 1
+            findings: HB-UV-003
+          # HBC-06: the same restart, for Semaphore (semaphoreui/charts#34, found with Helmbulance; fix #35
+          # not released yet).
+          - id: HBC-06
+            chart: semaphore
+            version: 16.2.2
+            url: https://github.com/semaphoreui/charts/releases/download/semaphore-16.2.2/semaphore-16.2.2.tgz
+            sha256: a7802961495579054262740908e71effa9d8d5858a15ef187d2de77498b35945
+            values: ""
+            scenario: upgrade-without-values
+            exit-code: 1
+            findings: HB-UV-003
+          # HBC-07: the Deployment selector holds the app version, so 1.1.3 to 1.1.4 fails on an immutable
+          # field (found by `helmbulance scan`; the open fix Joxit/helm-charts#22 is not released yet).
+          - id: HBC-07
+            chart: docker-registry-ui
+            version: 1.1.4
+            url: https://github.com/Joxit/helm-charts/releases/download/docker-registry-ui-1.1.4/docker-registry-ui-1.1.4.tgz
+            sha256: fa585f1ed6345d1fe2097460097438c321e06f2c3818ffc1b77a5596f578052d
+            from-url: https://github.com/Joxit/helm-charts/releases/download/docker-registry-ui-1.1.3/docker-registry-ui-1.1.3.tgz
+            from-sha256: efe5c85c022c4f3bf53ef1da01990840fff5a578ceaa0ab68c584aad63d8b129
+            from-version: 1.1.3
+            values: ""
+            scenario: chart-upgrade
+            exit-code: 1
+            findings: HB-CU-001
+          # HBC-08: patch release 2026.1.2 changes the StatefulSet selectors, so every upgrade from 2026.1.1
+          # fails with the default oldNamingStyle (yugabyte/charts#240, found with Helmbulance; no fix yet).
+          - id: HBC-08
+            chart: yugabyte
+            version: 2026.1.2
+            url: https://charts.yugabyte.com/yugabyte-2026.1.2.tgz
+            sha256: bb8a12e9476e7624f98f9f63ba7867231f6379b463ffe2d4fea8d9903e7729c5
+            from-url: https://charts.yugabyte.com/yugabyte-2026.1.1.tgz
+            from-sha256: e651769b33ab737fd562ad6446ea394bb60fae5db0385991c4aeff073ef3f13e
+            from-version: 2026.1.1
+            values: testdata/corpus/hbc-08-yugabyte/values.yaml
+            scenario: chart-upgrade
+            timeout: 10m
+            exit-code: 1
+            findings: HB-CU-001
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,9 +156,16 @@ jobs:
         env:
           URL: ${{ matrix.url }}
           SHA256: ${{ matrix.sha256 }}
+          FROM_URL: ${{ matrix.from-url }}
+          FROM_SHA256: ${{ matrix.from-sha256 }}
         run: |
           curl -fsSLo corpus-chart.tgz "$URL"
           echo "$SHA256  corpus-chart.tgz" | sha256sum -c -
+          # chart-upgrade entries also pin the version they upgrade from.
+          if [ -n "$FROM_URL" ]; then
+            curl -fsSLo corpus-from.tgz "$FROM_URL"
+            echo "$FROM_SHA256  corpus-from.tgz" | sha256sum -c -
+          fi
 
       - name: Run Helmbulance
         id: hb
@@ -116,6 +174,8 @@ jobs:
           chart: corpus-chart.tgz
           values: ${{ matrix.values }}
           scenarios: ${{ matrix.scenario }}
+          from: ${{ matrix.from-url && 'corpus-from.tgz' || '' }}
+          from-version: ${{ matrix.from-version }}
           timeout: ${{ matrix.timeout || '5m' }}
           report-dir: corpus-report
           fail-on: never
