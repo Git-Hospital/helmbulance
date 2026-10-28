@@ -79,6 +79,8 @@ run reinstall-loses-creds 1 "HB-RI-001"         testdata/charts/reinstall-loses-
 run reinstall-keeps-creds 0 ""                  testdata/charts/reinstall-keeps-creds --scenario reinstall
 # The same defect with the password read through a projected volume, which reinstall did not see (#46).
 run reinstall-loses-creds-projected 1 "HB-RI-001" testdata/charts/reinstall-loses-creds-projected --scenario reinstall
+# Its twin: the items mount only a key that does not change, so the new password reaches no kept data (#73).
+run reinstall-projected-items-other-key 0 "" testdata/charts/reinstall-projected-items-other-key --scenario reinstall
 # Not a pair: a templated claim is deleted with the release, so new credentials lose nothing.
 run reinstall-templated-pvc 0 ""                testdata/charts/reinstall-templated-pvc --scenario reinstall
 # A password generated behind lookup is new on every helm template render, as under Argo CD. Its twin takes it from values.
