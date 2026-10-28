@@ -54,10 +54,12 @@ check() {
   fi
 }
 
+# A fixture that never becomes ready waits out the whole --timeout on each install, so it sets a
+# shorter one: wait_for=45s run ...
 run() {
   local name=$1 want=$2 want_ids=$3
   shift 3
-  ./bin/helmbulance test "$@" ${extra[@]+"${extra[@]}"} --timeout 3m --report-dir "$out/$name" >"$out/$name.log" 2>&1
+  ./bin/helmbulance test "$@" ${extra[@]+"${extra[@]}"} --timeout "${wait_for:-3m}" --report-dir "$out/$name" >"$out/$name.log" 2>&1
   check "$name" $? "$want" "$want_ids" "$out/$name" "$out/$name.log"
 }
 
@@ -80,6 +82,11 @@ run reinstall-keeps-creds 0 ""                  testdata/charts/reinstall-keeps-
 # A pre-install hook Secret kept on uninstall is created again, with new values, by the next install (HB-RI-004). Its twin reuses them with lookup.
 run reinstall-replaces-kept-hook 1 "HB-RI-004"  testdata/charts/reinstall-replaces-kept-hook --scenario reinstall
 run reinstall-reuses-kept-hook 0 ""             testdata/charts/reinstall-reuses-kept-hook --scenario reinstall
+# The same hook without keep: Helm leaves it, but the chart never asked to keep it, so a new one is not a finding (#43).
+run reinstall-replaces-plain-hook 0 ""          testdata/charts/reinstall-replaces-plain-hook --scenario reinstall
+# The kept-hook pair with a client that never becomes ready: the replaced kept Secret is still seen; its twin proves nothing (#43).
+wait_for=45s run reinstall-unready-replaces-kept 1 "HB-RI-004" testdata/charts/reinstall-unready-replaces-kept --scenario reinstall
+wait_for=45s run reinstall-unready-reuses-kept 3 ""            testdata/charts/reinstall-unready-reuses-kept --scenario reinstall
 # Not a pair: a templated claim is deleted with the release, so new credentials lose nothing.
 run reinstall-templated-pvc 0 ""                testdata/charts/reinstall-templated-pvc --scenario reinstall
 # A password generated behind lookup is new on every helm template render, as under Argo CD. Its twin takes it from values.
