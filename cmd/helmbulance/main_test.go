@@ -84,10 +84,13 @@ func TestScanExit(t *testing.T) {
 	}{
 		{false, scenario.Fail, false, exitClean},
 		{false, scenario.Inconclusive, false, exitClean},
+		{false, scenario.Pass, true, exitIncomplete},
+		{false, scenario.Fail, true, exitIncomplete},
 		{true, scenario.Pass, false, exitClean},
 		{true, scenario.Fail, false, exitFindings},
 		{true, scenario.Inconclusive, false, exitIncomplete},
 		{true, scenario.Pass, true, exitIncomplete},
+		{true, scenario.Fail, true, exitFindings},
 	} {
 		if got := scanExit(c.strict, c.worst, c.interrupted); got != c.want {
 			t.Errorf("scanExit(strict %v, %s, interrupted %v) = %d, want %d", c.strict, c.worst, c.interrupted, got, c.want)
