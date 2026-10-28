@@ -1,0 +1,5 @@
+apiVersion: v2
+name: reinstall-reuses-kept-hook
+description: "Helmbulance fixture. Fixed twin of reinstall-replaces-kept-hook: the hook reuses the kept Secret's values with lookup."
+type: application
+version: 0.1.0

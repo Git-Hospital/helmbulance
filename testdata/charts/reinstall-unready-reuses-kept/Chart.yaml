@@ -1,0 +1,5 @@
+apiVersion: v2
+name: reinstall-unready-reuses-kept
+description: "Helmbulance fixture. reinstall-reuses-kept-hook whose client never becomes ready: nothing changed and nothing ran, so the result is INCONCLUSIVE."
+type: application
+version: 0.1.0
