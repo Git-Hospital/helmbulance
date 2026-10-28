@@ -38,8 +38,10 @@ These replace the two-person rules in 0001 wherever they differ.
 
 ## Access
 
-- Everyone on the repository needs at least write access, since the ruleset counts approvals only from people with write access.
-- Admin stays with the maintainers. The organisation's default repository permission was `admin`, which gave every member admin on every repository; on 27 October Ege lowered it to `write`. Ege and Kadirhan are organisation owners; Arda is a member with write access.
+- **Joining the organisation gives no write access.** The organisation's default repository permission is `read`, and members cannot create repositories (Ege, 28 October). Before that it was `admin` and then, from 27 October, `write`, so every new member could push to every repository.
+- **Write access is granted per repository, per person,** once both maintainers agree that the person works on that repository under these rules. Arda has write on this repository only, granted on 28 October; on the other Git-Hospital repositories Arda can read.
+- Everyone who reviews here needs write access on this repository, since the ruleset counts approvals only from people with write access.
+- Admin stays with the maintainers. Ege and Kadirhan are organisation owners; nobody else gets the owner role or admin on a repository.
 
 ## Updates to 0001
 
