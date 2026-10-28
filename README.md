@@ -44,7 +44,7 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 
 ## Found in public charts
 
-Every row was reproduced on kind before it went anywhere. Status on 28 October 2026.
+Every row was reproduced with Helmbulance before it was listed: on a kind cluster, and for `gitops-render` by rendering the chart without cluster access, as Argo CD does. Status on 28 October 2026.
 
 **Reported by us**
 
@@ -53,18 +53,18 @@ Every row was reproduced on kind before it went anywhere. Status on 28 October 2
 | SeaweedFS | The first `helm upgrade` after install restarted the filer and the S3 gateway although nothing changed. | `upgrade-without-values` (HB-UV-003) | [#11719](https://github.com/seaweedfs/seaweedfs/issues/11719), fix [#11720](https://github.com/seaweedfs/seaweedfs/pull/11720) merged |
 | JupyterHub | The same restart, for the hub and the proxy. | `upgrade-without-values` (HB-UV-003) | [#3996](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/3996), fix [#3997](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/pull/3997) open |
 | Semaphore | The same restart. | `upgrade-without-values` (HB-UV-003) | [#34](https://github.com/semaphoreui/charts/issues/34), fix [#35](https://github.com/semaphoreui/charts/pull/35) open |
-| yugabyte | Patch release 2026.1.2 changes a StatefulSet selector, so every upgrade from 2026.1.0 or 2026.1.1 fails. | `scan` (HB-SCAN-001), confirmed by `chart-upgrade` (HB-CU-001) | [#240](https://github.com/yugabyte/charts/issues/240) open |
-| SeaweedFS | A number or boolean written without quotes in `extraEnvironmentVars` (`WEED_MYSQL_PORT: 3306`) rendered as `valueFrom` and failed the install. | `scan` (HB-SCAN-004, in review in [#42](https://github.com/Git-Hospital/helmbulance/pull/42)) | fix [#12137](https://github.com/seaweedfs/seaweedfs/pull/12137) approved |
-| SeaweedFS | With the MySQL filer store, an uninstall and install wrote a new database password and locked the filer out of its database. | `reinstall` (HB-RI-004, in review in [#43](https://github.com/Git-Hospital/helmbulance/pull/43)) | fix [#12138](https://github.com/seaweedfs/seaweedfs/pull/12138) open |
+| yugabyte | Patch release 2026.1.2 changes a StatefulSet selector, so with the default `oldNamingStyle: true` every upgrade from 2026.1.0 or 2026.1.1 fails. | `scan` (HB-SCAN-001), confirmed by `chart-upgrade` (HB-CU-001) | [#240](https://github.com/yugabyte/charts/issues/240) open |
+| SeaweedFS | A number or boolean written without quotes in `extraEnvironmentVars` (`WEED_MYSQL_PORT: 3306`) rendered as `valueFrom` and failed the install. | found by hand; caught by `scan` (HB-SCAN-004, in review in [#42](https://github.com/Git-Hospital/helmbulance/pull/42)) | fix [#12137](https://github.com/seaweedfs/seaweedfs/pull/12137) approved |
+| SeaweedFS | With the MySQL filer store, an uninstall and install wrote a new database password and locked the filer out of its database. | found by hand; caught by `reinstall` (HB-RI-004, in review in [#43](https://github.com/Git-Hospital/helmbulance/pull/43)) | fix [#12138](https://github.com/seaweedfs/seaweedfs/pull/12138) open |
 
 **Reported by others, reproduced with Helmbulance**
 
 | Chart | What broke | Found by | Upstream |
 |---|---|---|---|
-| Jenkins 5.10.0 | Without cluster access the admin password is new on every render, so Argo CD replaces it on every sync. | `gitops-render` (HB-GR-001) | [#1026](https://github.com/jenkinsci/helm-charts/issues/1026) open |
+| Jenkins 5.10.0 | Rendered without cluster access, as Argo CD renders it, the admin password is new on every render, so every sync replaces it. With cluster access the chart's `lookup` keeps it. | `gitops-render` (HB-GR-001) | [#1026](https://github.com/jenkinsci/helm-charts/issues/1026) open |
 | docker-registry 3.0.0 | `haSharedSecret` changes on every upgrade. | `upgrade-without-values` (HB-UV-001) | [#187](https://github.com/twuni/docker-registry.helm/issues/187) open |
 | docker-registry-ui 1.1.4 | The Deployment selector contains the app version, so every `appVersion` change breaks the upgrade. | `scan` (HB-SCAN-001) | the open fix [#22](https://github.com/Joxit/helm-charts/pull/22) verified, results posted there |
-| grafana 6.9.2 | The admin password changes on every upgrade. Kept as the first pair of the [known-bug corpus](docs/corpus.md). | `upgrade-without-values` (HB-UV-001) | [#10](https://github.com/grafana/helm-charts/issues/10), fixed by [#62](https://github.com/grafana/helm-charts/pull/62) |
+| grafana 6.9.2 | The admin password changes on every upgrade. Kept as the first pair of the [known-bug corpus](docs/corpus.md). | `upgrade-without-values` (HB-UV-001) | admin password fixed by [#62](https://github.com/grafana/helm-charts/pull/62); [#10](https://github.com/grafana/helm-charts/issues/10), which reports the restart, still open |
 
 ## Case study: Open Archiver
 
