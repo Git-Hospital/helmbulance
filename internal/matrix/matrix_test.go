@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/egezamb/helmbulance/internal/scenario"
@@ -123,5 +124,21 @@ func TestBuiltInGroup(t *testing.T) {
 		if got := builtInGroup(msg); got != want {
 			t.Errorf("builtInGroup(%q) = %v, want %v", msg, got, want)
 		}
+	}
+}
+
+// #49 (1): an install whose health could not be read to the end, interrupted or with the cluster
+// unreadable, is INCONCLUSIVE, not FAIL HB-K8S-002 or PASS. API warnings come from the install
+// itself, so they stand.
+func TestHealthNotRead(t *testing.T) {
+	err := errors.New("interrupted while the pods settled: context canceled")
+	res := judge(scenario.Result{Scenario: "k8s-1.37"}, "1.37", nil, err, nil, nil)
+	if res.Verdict != scenario.Inconclusive || len(res.Findings) > 0 || !strings.Contains(res.Summary, "context canceled") {
+		t.Errorf("no warnings: verdict = %s with %d finding(s) (%s), want INCONCLUSIVE with the reason", res.Verdict, len(res.Findings), res.Summary)
+	}
+	warning := []string{"policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+"}
+	res = judge(scenario.Result{Scenario: "k8s-1.37"}, "1.37", nil, err, warning, nil)
+	if res.Verdict != scenario.Fail || len(res.Findings) != 1 || !strings.Contains(res.Summary, "health was not checked") {
+		t.Errorf("with a warning: verdict = %s with %d finding(s) (%s), want FAIL with the warning and the health check named", res.Verdict, len(res.Findings), res.Summary)
 	}
 }
