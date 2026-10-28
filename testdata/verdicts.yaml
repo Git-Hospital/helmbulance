@@ -208,6 +208,7 @@ cases:
       scan:immutable-fields: SKIPPED
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: FAIL
+      scan:unquoted-values: PASS
     findings:
       HB-SCAN-003: [Secret/hb-secret, password]
   - name: scan-keeps-secret
@@ -220,6 +221,34 @@ cases:
       scan:immutable-fields: SKIPPED
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+
+  # A quoted default that renders another field unquoted (an env value becomes valueFrom). Its twin
+  # renders scalars alike.
+  - name: scan-unquoted-env
+    pair: scan-unquoted-values
+    role: defect
+    command: scan
+    args: [testdata/charts/scan-unquoted-env, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: FAIL
+    findings:
+      HB-SCAN-004: [extraEnv.DB_PORT, "env[DB_PORT].valueFrom"]
+  - name: scan-typed-env
+    pair: scan-unquoted-values
+    role: fixed
+    command: scan
+    args: [testdata/charts/scan-typed-env, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
 
   - name: scan-upgrade-v2-breaks
     pair: scan-upgrade-v2
@@ -231,6 +260,7 @@ cases:
       scan:immutable-fields: FAIL
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
     findings:
       HB-SCAN-001: [Deployment/hb-app, spec.selector]
   - name: scan-upgrade-v2-ok
@@ -243,6 +273,7 @@ cases:
       scan:immutable-fields: PASS
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
 
   # Kubernetes matrix, on one version.
   - name: matrix-deprecated-api

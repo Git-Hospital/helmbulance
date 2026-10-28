@@ -37,6 +37,7 @@ func Run(ctx context.Context, o Options) []scenario.Result {
 		immutableFields(ctx, o),
 		firstUpgradeRestart(o),
 		regeneratedSecrets(ctx, o),
+		unquotedValues(ctx, o),
 	}
 }
 
@@ -302,6 +303,194 @@ func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 		Reproduce: []string{fmt.Sprintf("helmbulance test %s --scenario upgrade-without-values   # HB-UV-001", o.Chart)},
 	}}
 	return res
+}
+
+// maxUnquoted caps how many default values unquotedValues tries, one render each.
+const maxUnquoted = 60
+
+// quotedScalar is a default that is a string a user would write without quotes: a whole number
+// other than 0, or "true". "0" and "false" are left out, since templates test them for truth and
+// the unquoted value is falsy where the string is not; that difference is the user's intent.
+var quotedScalar = regexp.MustCompile(`^(true|-?[1-9][0-9]{0,8})$`)
+
+// unquotedValues sets each default that is a quoted number or "true" to the number or boolean a
+// user writes without quotes, renders the chart again, and compares the fields each object has,
+// not their values. A field under another name, such as an env `valueFrom: 3306` where the string
+// rendered `value: "3306"`, is one the API server rejects or a setting that silently stops
+// applying.
+func unquotedValues(ctx context.Context, o Options) (res scenario.Result) {
+	res.Scenario = "scan:unquoted-values"
+	bin := o.Helm
+	if bin == "" {
+		bin = "helm"
+	}
+	out, err := o.Runner.Run(ctx, bin, "show", "values", o.Chart)
+	if err != nil {
+		res.Verdict = scenario.Inconclusive
+		res.Summary = "could not read the chart's values: " + err.Error()
+		return res
+	}
+	var defaults map[string]any
+	if err := yaml.Unmarshal(out, &defaults); err != nil {
+		res.Verdict = scenario.Inconclusive
+		res.Summary = "could not parse the chart's values: " + err.Error()
+		return res
+	}
+	candidates := quotedScalars(defaults, nil)
+	if len(candidates) == 0 {
+		res.Verdict = scenario.Pass
+		res.Summary = "no default is a quoted number or \"true\""
+		return res
+	}
+	base, err := render(ctx, o, o.Chart)
+	if err != nil {
+		res.Verdict = scenario.Inconclusive
+		res.Summary = "could not render the chart: " + err.Error()
+		return res
+	}
+	before := shapes(base)
+	tried := candidates
+	if len(tried) > maxUnquoted {
+		tried = tried[:maxUnquoted]
+	}
+	var evidence, repro []string
+	for _, c := range tried {
+		objs, err := render(ctx, o, o.Chart, "--set-json", c.key+"="+c.value)
+		if err != nil {
+			continue // a refusal, such as a values.schema.json type, is the right answer
+		}
+		if gone, added := shapeDiff(before, shapes(objs)); len(gone)+len(added) > 0 {
+			evidence = append(evidence, fmt.Sprintf("`%s`: quoted, %s; unquoted (%s), %s", c.key,
+				fieldList(gone), c.value, fieldList(added)))
+			repro = append(repro, fmt.Sprintf("helm install hb %s --set %s=%s   # quoted in values.yaml, unquoted here", o.Chart, c.key, c.value))
+		}
+	}
+	summaryNote := ""
+	if len(candidates) > len(tried) {
+		summaryNote = fmt.Sprintf(" (the first %d of %d quoted defaults)", len(tried), len(candidates))
+	}
+	if len(evidence) == 0 {
+		res.Verdict = scenario.Pass
+		res.Summary = fmt.Sprintf("%d quoted default(s) render the same unquoted%s", len(tried), summaryNote)
+		return res
+	}
+	res.Verdict = scenario.Fail
+	res.Summary = fmt.Sprintf("%d value(s) that render differently unquoted (candidates)%s", len(evidence), summaryNote)
+	if len(repro) > 3 {
+		repro = repro[:3]
+	}
+	res.Findings = []scenario.Finding{{
+		ID:       "HB-SCAN-004",
+		Title:    "Candidate: an unquoted number or boolean changes what the chart renders",
+		Severity: "candidate",
+		Evidence: evidence,
+		Impact: "Users write `port: 3306` or `enabled: true` without quotes, in a values file or with " +
+			"`--set`. Here that renders a different field than the quoted default: one the API server " +
+			"rejects, so the install fails, or a setting that silently stops applying.",
+		Fix: "Render a scalar the same whatever its YAML type (`toString` or `toJson` it) and branch on " +
+			"kind only for maps, or declare the type in values.schema.json so Helm rejects the wrong one " +
+			"with a clear message.",
+		Reproduce: repro,
+	}}
+	return res
+}
+
+// scalar is one default value: its --set-json key and the unquoted JSON to try.
+type scalar struct{ key, value string }
+
+// quotedScalars lists the string defaults that look like a number or true, in key order. Keys that
+// --set-json cannot address plainly (a dot, a bracket, a comma, an equals sign) are skipped.
+func quotedScalars(values map[string]any, path []string) []scalar {
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []scalar
+	for _, k := range keys {
+		if strings.ContainsAny(k, ".[],=\\") {
+			continue
+		}
+		p := append(append([]string{}, path...), k)
+		switch v := values[k].(type) {
+		case map[string]any:
+			out = append(out, quotedScalars(v, p)...)
+		case string:
+			if quotedScalar.MatchString(v) {
+				out = append(out, scalar{key: strings.Join(p, "."), value: v})
+			}
+		}
+	}
+	return out
+}
+
+// shapes is the set of field paths each rendered object has, without the values. A list of maps
+// with a name is indexed by name, so an entry that moves keeps its path.
+func shapes(objs []object) map[string]bool {
+	set := map[string]bool{}
+	for _, o := range objs {
+		walkShape(o.Kind+"/"+o.Name+" ", o.Doc, set)
+	}
+	return set
+}
+
+func walkShape(prefix string, v any, set map[string]bool) {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, child := range x {
+			p := prefix + "." + k
+			if strings.HasSuffix(prefix, " ") {
+				p = prefix + k
+			}
+			set[p] = true
+			walkShape(p, child, set)
+		}
+	case []any:
+		for i, child := range x {
+			idx := fmt.Sprint(i)
+			if m, ok := child.(map[string]any); ok {
+				if n, ok := m["name"].(string); ok {
+					idx = n
+				}
+			}
+			p := prefix + "[" + idx + "]"
+			set[p] = true
+			walkShape(p, child, set)
+		}
+	}
+}
+
+// shapeDiff lists the field paths only before has (gone) and only after has (added), sorted.
+func shapeDiff(before, after map[string]bool) (gone, added []string) {
+	for p := range before {
+		if !after[p] {
+			gone = append(gone, p)
+		}
+	}
+	for p := range after {
+		if !before[p] {
+			added = append(added, p)
+		}
+	}
+	sort.Strings(gone)
+	sort.Strings(added)
+	return gone, added
+}
+
+// fieldList names up to two field paths, in backticks, or "nothing" for none.
+func fieldList(paths []string) string {
+	if len(paths) == 0 {
+		return "nothing"
+	}
+	var shown []string
+	for i, p := range paths {
+		if i == 2 {
+			shown = append(shown, fmt.Sprintf("and %d more", len(paths)-2))
+			break
+		}
+		shown = append(shown, "`"+p+"`")
+	}
+	return strings.Join(shown, ", ")
 }
 
 // sourceContains reports whether the template a manifest came from contains text.

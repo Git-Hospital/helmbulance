@@ -208,13 +208,7 @@ func test(args []string) int {
 	}
 	fmt.Printf("Report: %s/report.md\n", *out)
 
-	switch rep.Worst() {
-	case scenario.Fail:
-		return exitFindings
-	case scenario.Inconclusive:
-		return exitIncomplete
-	}
-	return exitClean
+	return exitCode(rep.Worst(), ctx.Err() != nil)
 }
 
 func pick(names []string) ([]scenario.Scenario, error) {
@@ -375,13 +369,7 @@ func matrixCmd(args []string) int {
 		return exitError
 	}
 	fmt.Printf("Report: %s/report.md\n", *out)
-	switch rep.Worst() {
-	case scenario.Fail:
-		return exitFindings
-	case scenario.Inconclusive:
-		return exitIncomplete
-	}
-	return exitClean
+	return exitCode(rep.Worst(), ctx.Err() != nil)
 }
 
 // scanCmd runs the static pre-screen. It reports candidates, not findings, so it exits 0 unless
@@ -505,4 +493,17 @@ func checkRotations(patterns []string) error {
 		}
 	}
 	return nil
+}
+
+// exitCode maps the worst verdict to the exit code. A run cut short by Ctrl-C or SIGTERM never
+// exits 0, even when every scenario that finished passed: the run did not check what it was asked
+// to (#49). A finding proved before the interrupt still exits 1.
+func exitCode(worst string, interrupted bool) int {
+	switch {
+	case worst == scenario.Fail:
+		return exitFindings
+	case worst == scenario.Inconclusive || interrupted:
+		return exitIncomplete
+	}
+	return exitClean
 }

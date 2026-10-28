@@ -1,0 +1,5 @@
+apiVersion: v2
+name: scan-typed-env
+description: "Helmbulance fixture. Fixed twin of scan-unquoted-env: only a map renders as valueFrom, any other value as value."
+type: application
+version: 0.1.0

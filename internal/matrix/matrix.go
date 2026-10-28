@@ -99,7 +99,16 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 		return installFailed(ctx, res, version, err, warnings, repro)
 	}
 
-	if bad := unhealthy(ctx, k, ns); len(bad) > 0 {
+	bad, healthErr := unhealthy(ctx, k, ns)
+	return judge(res, version, bad, healthErr, warnings, repro)
+}
+
+// judge gives the result of an install that succeeded: unhealthy workloads (HB-K8S-002), then API
+// warnings, then PASS. Workloads that could not be watched until they settled, because the run was
+// interrupted or the cluster could not be read, prove nothing either way: the warnings, which come
+// from the install itself, stand, and without them the result is INCONCLUSIVE (#49).
+func judge(res scenario.Result, version string, bad []string, healthErr error, warnings, repro []string) scenario.Result {
+	if len(bad) > 0 {
 		res.Verdict = scenario.Fail
 		res.Summary = "installs on Kubernetes " + version + " but does not become healthy"
 		res.Findings = append(res.Findings, scenario.Finding{
@@ -117,7 +126,15 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	if findings := warningFindings(version, warnings, repro); len(findings) > 0 {
 		res.Verdict = scenario.Fail
 		res.Summary = fmt.Sprintf("runs on Kubernetes %s, with %d API warning(s)", version, len(warnings))
+		if healthErr != nil {
+			res.Summary = fmt.Sprintf("installs on Kubernetes %s, with %d API warning(s); workload health was not checked: %v", version, len(warnings), healthErr)
+		}
 		res.Findings = append(res.Findings, findings...)
+		return res
+	}
+	if healthErr != nil {
+		res.Verdict = scenario.Inconclusive
+		res.Summary = "installed on Kubernetes " + version + ", but the workloads were not checked until they settled: " + healthErr.Error()
 		return res
 	}
 	res.Verdict = scenario.Pass
@@ -275,18 +292,18 @@ func warningFindings(version string, warnings, repro []string) []scenario.Findin
 
 // unhealthy waits for pods to settle and lists those that are not ready. Restarts alone are not
 // counted: many apps restart once at first start while their database comes up.
-func unhealthy(ctx context.Context, k *kube.Client, ns string) []string {
+func unhealthy(ctx context.Context, k *kube.Client, ns string) ([]string, error) {
 	// Restarts at the first read: a pod that crashes and comes back while Settle watches is a
 	// problem even if it is ready again.
 	var first map[string]int
-	return scenario.Settle(ctx, func() []string {
+	return scenario.Settle(ctx, func() ([]string, error) {
 		pods, err := k.Pods(ctx, ns)
 		if err != nil {
-			return []string{"could not read pods: " + err.Error()}
+			return nil, fmt.Errorf("could not read pods: %w", err)
 		}
 		jobs, err := k.FailedJobs(ctx, ns)
 		if err != nil {
-			return []string{"could not read Jobs: " + err.Error()}
+			return nil, fmt.Errorf("could not read Jobs: %w", err)
 		}
 		if first == nil {
 			first = map[string]int{}
@@ -294,7 +311,7 @@ func unhealthy(ctx context.Context, k *kube.Client, ns string) []string {
 				first[p.UID] = p.Restarts
 			}
 		}
-		return append(append(notReady(pods), restartedSince(pods, first)...), jobs...)
+		return append(append(notReady(pods), restartedSince(pods, first)...), jobs...), nil
 	})
 }
 
