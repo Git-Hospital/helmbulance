@@ -1,0 +1,5 @@
+apiVersion: v2
+name: scan-duplicate-env
+description: "Helmbulance fixture. The chart sets DB_PASSWORD from its own Secret and also renders extraEnv, so a value that sets DB_PASSWORD names it twice. Seen in seaweedfs's filer mysql credentials."
+type: application
+version: 0.1.0

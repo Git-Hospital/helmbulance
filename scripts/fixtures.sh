@@ -108,6 +108,9 @@ scan keeps-secret       0 ""            testdata/charts/keeps-secret
 # A quoted default that renders another field unquoted (env value becomes valueFrom). Its twin renders scalars alike.
 scan scan-unquoted-env  1 "HB-SCAN-004" testdata/charts/scan-unquoted-env
 scan scan-typed-env     0 ""            testdata/charts/scan-typed-env
+# A value that sets a variable the chart also sets names it twice (Helm 4 rejects it). Its twin leaves its own entry out.
+scan scan-duplicate-env 1 "HB-SCAN-005" testdata/charts/scan-duplicate-env --set extraEnv.DB_PASSWORD=from-values
+scan scan-single-env    0 ""            testdata/charts/scan-single-env --set extraEnv.DB_PASSWORD=from-values
 scan upgrade-v2-breaks  1 "HB-SCAN-001" testdata/charts/upgrade-v2-breaks --from testdata/charts/upgrade-v1 --from-version 1.0.0
 scan upgrade-v2-ok      0 ""            testdata/charts/upgrade-v2-ok --from testdata/charts/upgrade-v1 --from-version 1.0.0
 # A check that could not run is never a clean pass (#50): a missing chart or values file is a setup

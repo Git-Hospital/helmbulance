@@ -38,6 +38,7 @@ func Run(ctx context.Context, o Options) []scenario.Result {
 		firstUpgradeRestart(o),
 		regeneratedSecrets(ctx, o),
 		unquotedValues(ctx, o),
+		duplicateEnv(ctx, o),
 	}
 }
 
