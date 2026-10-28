@@ -150,6 +150,15 @@ func TestSecretConsumersSeesEveryReader(t *testing.T) {
 	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "a", "key": "password"}}}]}]}}}},
 	  {"kind": "CronJob", "metadata": {"name": "backup"}, "spec": {"jobTemplate": {"spec": {"template": {"spec": {
 	    "volumes": [{"name": "p", "projected": {"sources": [{"secret": {"name": "f"}}]}}]}}}}}},
+	  {"kind": "Job", "metadata": {"name": "init"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "h", "key": "password"}}}]}]}}},
+	   "status": {"conditions": [{"type": "Complete", "status": "True"}]}},
+	  {"kind": "Job", "metadata": {"name": "broken"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "h", "key": "password"}}}]}]}}},
+	   "status": {"conditions": [{"type": "Failed", "status": "True"}]}},
+	  {"kind": "Job", "metadata": {"name": "retrying"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "i", "key": "password"}}}]}]}}},
+	   "status": {"conditions": [{"type": "Failed", "status": "False"}]}},
 	  {"kind": "Job", "metadata": {"name": "backup-29351234", "ownerReferences": [{"kind": "CronJob", "name": "backup"}]},
 	   "spec": {"template": {"spec": {
 	    "volumes": [{"name": "p", "projected": {"sources": [{"secret": {"name": "f"}}]}}]}}}}
@@ -173,6 +182,7 @@ func TestSecretConsumersSeesEveryReader(t *testing.T) {
 		"d/password": {"StatefulSet/mq"},
 		"e/*":        {"StatefulSet/mq"},
 		"f/*":        {"CronJob/backup"}, // not again as the Job the CronJob started
+		"i/password": {"Job/retrying"},   // a finished Job (init, broken) reads nothing again
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SecretConsumers =\n%v\nwant\n%v", got, want)

@@ -72,7 +72,9 @@ func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 // SecretConsumers maps "secret/key" to the workloads (kind/name) whose pod template reads it
 // through env, envFrom, a secret volume or a projected volume. Jobs and CronJobs count too: a
 // migration Job or a backup CronJob that reads a moved key is a reader like any other (#46); a Job
-// a CronJob started is that CronJob, so it is not listed again. A volume with items mounts only
+// a CronJob started is that CronJob, so it is not listed again. A finished Job (Complete or Failed)
+// is left out: it reads nothing again, and a post-install hook Job stays behind with the old
+// template after an upgrade, which would make a moved key look removed (#73). A volume with items mounts only
 // those keys, and one without maps "secret/*", as it mounts the whole Secret. Used to explain the
 // impact of a changed key.
 func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]string, error) {
@@ -96,6 +98,9 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 					} `json:"spec"`
 				} `json:"jobTemplate"` // a CronJob's pod template is one level further down
 			} `json:"spec"`
+			Status struct {
+				Conditions []condition `json:"conditions"`
+			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
@@ -120,7 +125,7 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 		}
 	}
 	for _, item := range list.Items {
-		if item.Kind == "Job" && ownedBy(item.Metadata.OwnerReferences, "CronJob") {
+		if item.Kind == "Job" && (ownedBy(item.Metadata.OwnerReferences, "CronJob") || finished(item.Status.Conditions)) {
 			continue
 		}
 		workload := item.Kind + "/" + item.Metadata.Name
@@ -228,6 +233,22 @@ type ownerRef struct {
 func ownedBy(refs []ownerRef, kind string) bool {
 	for _, r := range refs {
 		if r.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// condition is one entry of a Job's status.conditions.
+type condition struct {
+	Type   string `json:"type"`
+	Status string `json:"status"`
+}
+
+// finished reports whether a Job has ended for good: its Complete or Failed condition is True.
+func finished(conds []condition) bool {
+	for _, c := range conds {
+		if (c.Type == "Complete" || c.Type == "Failed") && c.Status == "True" {
 			return true
 		}
 	}
