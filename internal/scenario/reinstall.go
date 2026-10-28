@@ -85,14 +85,20 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
 		return inconclusive(res, "the uninstall failed", err)
 	}
-	survivors, err := secrets.survivors()
-	if err != nil {
-		fmt.Fprintf(env.Log, "could not list the Secrets left after the uninstall: %v\n", err)
+	secrets.readKept()
+	if secrets.keptErr != nil {
+		fmt.Fprintf(env.Log, "could not list the Secrets left after the uninstall: %v\n", secrets.keptErr)
 	}
 	secondInstall := env.Helm.Install(ctx, release, ns, env.Chart, env.Values)
-	repro = concat(repro, sentinelRepro("write a marker into each volume before the uninstall", "echo marker > /pvc/marker")...)
+	// The sentinel steps only mean something with a volume to write to (#43 review item 6).
+	if len(volumes) > 0 {
+		repro = concat(repro, sentinelRepro("write a marker into each volume before the uninstall", "echo marker > /pvc/marker")...)
+	}
 	repro = concat(repro, transcriptRepro(env, mark)...)
-	repro = concat(repro, sentinelRepro("read it back after the reinstall", "cat /pvc/marker")...)
+	if len(volumes) > 0 {
+		repro = concat(repro, sentinelRepro("read it back after the reinstall", "cat /pvc/marker")...)
+	}
+	ran := firstInstall == nil
 	if secondInstall != nil {
 		// A `helm install --wait` that timed out still applied the release; its pods just never
 		// became ready, which is exactly how a reinstall that broke the credentials behind kept data
@@ -100,27 +106,28 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 		// INCONCLUSIVE. Other failures (a render refusal, the chart's webhook, a pull or tool error)
 		// are not this case and go to installFailed.
 		if timedOutWaiting(ctx, secondInstall) {
-			res = s.analyze(ctx, env, res, release, ns, secrets, before, volumes, survivors, repro)
+			res = s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, repro)
 			switch {
 			case len(res.Findings) > 0:
 				res.Findings[0].Evidence = append([]string{
 					"The reinstall's `helm install --wait` timed out before the release was ready: " + helmMessage(secondInstall),
 				}, res.Findings[0].Evidence...)
-				return res
+				return unreadyFirstInstall(res, firstInstall)
 			case res.Verdict == Inconclusive:
 				return res
 			default:
 				return inconclusive(res, "the reinstall did not finish, and no credential change was proven", secondInstall)
 			}
 		}
-		return s.installFailed(ctx, res, secondInstall, repro)
+		return unreadyFirstInstall(s.installFailed(ctx, res, secondInstall, repro), firstInstall)
 	}
-	return unreadyFirstInstall(s.analyze(ctx, env, res, release, ns, secrets, before, volumes, survivors, repro), firstInstall)
+	return unreadyFirstInstall(s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, repro), firstInstall)
 }
 
 // unreadyFirstInstall qualifies a result whose first install was applied but never became ready.
-// Findings stand, with the timeout as context; without one the run proves nothing, since the
-// release never ran.
+// Findings stand, with the timeout as context. Without one the run proves nothing, since the
+// release never ran: that includes a reinstall that refuses at render time (#43 review item 7).
+// What the run saw stays in the summary.
 func unreadyFirstInstall(res Result, firstInstall error) Result {
 	if firstInstall == nil {
 		return res
@@ -128,21 +135,39 @@ func unreadyFirstInstall(res Result, firstInstall error) Result {
 	switch {
 	case len(res.Findings) > 0:
 		res.Findings[0].Evidence = append([]string{
-			"The first `helm install --wait` ran out before the release was ready, but the release was applied, so its Secrets were compared: " + helmMessage(firstInstall),
+			"The first `helm install --wait` ran out before the release was ready; the release was applied all the same: " + helmMessage(firstInstall),
 		}, res.Findings[0].Evidence...)
 		return res
 	case res.Verdict == Inconclusive:
 		return res
 	default:
-		return inconclusive(res, "the release never became ready, and no change to its kept Secrets was proven", firstInstall)
+		seen := res.Summary
+		res = inconclusive(res, "the release never became ready, and no change to its kept Secrets was proven", firstInstall)
+		res.Summary = withNotes(res.Summary, note("seen all the same", []string{seen}))
+		return res
 	}
+}
+
+// unobservedCredentials drops HB-RI-001 when the first install never became ready. HB-RI-001 says
+// data written with the old credentials now meets new ones, but a release that never ran wrote
+// nothing with them; only Helmbulance's sentinel was there (#43 review item 2). It returns the
+// changes HB-RI-001 covered, so they can still be checked as kept Secrets (HB-RI-004, which needs no
+// running reader) and are otherwise named in the summary. HB-RI-002 stays: the sentinel is ours, so
+// a lost one is seen.
+func unobservedCredentials(findings []Finding, changes, unrelated, certs []oracle.Change) ([]Finding, []oracle.Change) {
+	rest := slices.DeleteFunc(slices.Clone(findings), func(f Finding) bool { return f.ID == "HB-RI-001" })
+	if len(rest) == len(findings) {
+		return findings, nil
+	}
+	return rest, withoutRefs(changes, append(slices.Clone(unrelated), certs...))
 }
 
 // analyze compares the release's Secrets and the volume sentinels after the reinstall and builds the
 // verdict. It runs after a clean reinstall and, for the evidence it can still gather, after a
-// `--wait` timeout, since the release is applied in both.
+// `--wait` timeout, since the release is applied in both. ran is false when the first install never
+// became ready.
 func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, ns string,
-	secrets *secretReader, before oracle.SecretSnapshot, volumes []volume, survivors map[string]bool, repro []string) Result {
+	secrets *secretReader, before oracle.SecretSnapshot, volumes []volume, ran bool, repro []string) Result {
 	after, err := secrets.snapshot()
 	if err != nil {
 		return secretsInconclusive(res, "after the reinstall", err)
@@ -185,11 +210,29 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 			fmt.Errorf("mapping Secret readers or claim users failed, so a credential change next to kept data cannot be ruled in or out"))
 	}
 
-	var unrelated, certs []oracle.Change
+	var unrelated, certs, unobserved []oracle.Change
 	res.Findings, unrelated, certs = reinstallFindings(volumes, changes, consumers, stateful, statefulKnown, claimUsers, repro)
-	if f, ok := keptSecretReplaced(unrelated, survivors, consumers, stateful, statefulKnown, repro); ok {
+	if !ran {
+		res.Findings, unobserved = unobservedCredentials(res.Findings, changes, unrelated, certs)
+	}
+	kept := secrets.kept
+	if f, ok := keptSecretReplaced(append(slices.Clone(unrelated), unobserved...), kept, consumers, stateful, statefulKnown, repro); ok {
 		res.Findings = append(res.Findings, f)
-		unrelated = slices.DeleteFunc(unrelated, func(c oracle.Change) bool { return survivors[secretOf(c)] })
+		unrelated = slices.DeleteFunc(unrelated, func(c oracle.Change) bool { return kept[secretOf(c)] })
+		unobserved = slices.DeleteFunc(unobserved, func(c oracle.Change) bool { return kept[secretOf(c)] })
+	}
+	// Without the list of Secrets left after the uninstall, a changed one might have been kept, and
+	// HB-RI-004 was never checked: that is not a PASS (#43 review item 3).
+	var unchecked []oracle.Change
+	if secrets.keptErr != nil {
+		for _, c := range append(slices.Clone(unrelated), unobserved...) {
+			if keyClass(c) != oracle.ClassTLS {
+				unchecked = append(unchecked, c)
+			}
+		}
+		if len(unchecked) > 0 && len(res.Findings) == 0 {
+			return inconclusive(res, "could not tell which Secrets outlived the uninstall", secrets.keptErr)
+		}
 	}
 	if len(keptClaims) == 0 {
 		unrelated = nil // the summary already says new Secrets are expected
@@ -206,6 +249,8 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 		note("keys added by the reinstall, not a finding", describe(added, consumers)),
 		note("certificates reissued, read by a workload that kept data, not a finding", describe(certs, consumers)),
 		note("changed, but read by no workload whose volume kept its data", describe(unrelated, consumers)),
+		note("changed next to a volume that kept its data, but the release never became ready, so nothing was written with the old values (not HB-RI-001)", describe(unobserved, consumers)),
+		note("not checked as kept Secrets, since the Secrets left after the uninstall could not be listed", describe(unchecked, consumers)),
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
 		note("no sentinel could be written to", claimsIn(volumes, "unwritable")),
 		note("not bound, so not checked", claimsIn(volumes, "unbound")),
@@ -213,8 +258,8 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 	return res
 }
 
-// keptSecretReplaced reports the changes to Secrets that outlived `helm uninstall` (kept with
-// helm.sh/resource-policy: keep, or a hook Helm does not delete) and that the next install replaced.
+// keptSecretReplaced reports the changes to Secrets that outlived `helm uninstall` because they carry
+// helm.sh/resource-policy: keep, plain or as a hook, and that the next install replaced.
 // The chart keeps them so whatever was set up with them works again after a reinstall: an external
 // database, a client, a value the operator edited in. Reissued certificates are left out, as in
 // HB-RI-001. Changes HB-RI-001 already reports are not passed in.

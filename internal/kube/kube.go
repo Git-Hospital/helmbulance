@@ -23,6 +23,9 @@ type Client struct {
 type Secret struct {
 	Name string
 	Data map[string][]byte
+	// Keep is true when the Secret carries helm.sh/resource-policy: keep, so `helm uninstall`
+	// leaves it on purpose.
+	Keep bool
 }
 
 // skippedSecretTypes are Secrets that change for reasons unrelated to the chart.
@@ -41,7 +44,8 @@ func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 	var list struct {
 		Items []struct {
 			Metadata struct {
-				Name string `json:"name"`
+				Name        string            `json:"name"`
+				Annotations map[string]string `json:"annotations"`
 			} `json:"metadata"`
 			Type string            `json:"type"`
 			Data map[string]string `json:"data"`
@@ -55,7 +59,9 @@ func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 		if skippedSecretTypes[item.Type] {
 			continue
 		}
-		s := Secret{Name: item.Metadata.Name, Data: map[string][]byte{}}
+		// Helm trims and lower-cases the policy before comparing it, so "Keep " keeps too.
+		keep := strings.ToLower(strings.TrimSpace(item.Metadata.Annotations["helm.sh/resource-policy"])) == "keep"
+		s := Secret{Name: item.Metadata.Name, Data: map[string][]byte{}, Keep: keep}
 		for k, v := range item.Data {
 			b, err := base64.StdEncoding.DecodeString(v)
 			if err != nil {

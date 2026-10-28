@@ -19,6 +19,12 @@ func timedOutWaiting(ctx context.Context, err error) bool {
 	if strings.Contains(msg, "failed calling webhook") {
 		return false
 	}
+	// A pre-install or pre-upgrade hook that failed or timed out ends before the manifest is applied,
+	// with the same waiter's words: Helm 4 wraps it as "failed pre-install: resource Job/ns/x not
+	// ready. status: Failed" (#43 review item 5).
+	if strings.Contains(msg, "failed pre-install") || strings.Contains(msg, "failed pre-upgrade") {
+		return false
+	}
 	// Helm 4's kstatus wait stops as soon as a resource reports Failed, such as a pod that exited,
 	// without waiting out the timeout; the release is applied all the same.
 	return strings.Contains(msg, "timed out waiting for the condition") ||

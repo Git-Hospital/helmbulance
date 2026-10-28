@@ -240,6 +240,9 @@ func TestTimedOutWaiting(t *testing.T) {
 		"Error: UPGRADE FAILED: cannot patch db with kind StatefulSet: spec: Forbidden: field is immutable":             false,
 		"Failed to pull image: toomanyrequests: rate limit":                                                             false,
 		"Error: INSTALLATION FAILED: execution error at (demo/templates/secret.yaml:3:4)":                               false,
+		// A failed pre-install or pre-upgrade hook stops before the manifest is applied.
+		"Error: INSTALLATION FAILED: failed pre-install: resource Job/ns/x not ready. status: Failed, message: x": false,
+		"Error: UPGRADE FAILED: failed pre-upgrade: context deadline exceeded":                                    false,
 	} {
 		if got := timedOutWaiting(t.Context(), errors.New(msg)); got != want {
 			t.Errorf("timedOutWaiting(%q) = %v, want %v", msg, got, want)

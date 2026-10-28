@@ -119,8 +119,8 @@ func TestSentinelRepro(t *testing.T) {
 	}
 }
 
-// A Secret the uninstall left (kept, or a hook) that the reinstall rewrote is HB-RI-004, even with
-// no volume: what it was set up for, such as an external database, is outside the release.
+// A Secret the uninstall left with keep that the reinstall rewrote is HB-RI-004, even with no
+// volume: what it was set up for, such as an external database, is outside the release.
 func TestKeptSecretReplaced(t *testing.T) {
 	survivors := map[string]bool{"hb-reinstall-db-secret": true}
 	consumers := map[string][]string{"hb-reinstall-db-secret/*": {"StatefulSet/hb-reinstall-filer"}}
@@ -171,13 +171,35 @@ func TestUnreadyFirstInstall(t *testing.T) {
 	if got.Verdict != Fail || len(got.Findings[0].Evidence) != 2 || !strings.Contains(got.Findings[0].Evidence[0], "first `helm install --wait`") {
 		t.Errorf("with a finding: %+v, want FAIL with the timeout first in the evidence", got)
 	}
-	if got := unreadyFirstInstall(Result{Verdict: Pass, Summary: "ok"}, wait); got.Verdict != Inconclusive {
-		t.Errorf("no finding: verdict = %s, want INCONCLUSIVE", got.Verdict)
+	if got := unreadyFirstInstall(Result{Verdict: Pass, Summary: "ok"}, wait); got.Verdict != Inconclusive || !strings.HasSuffix(got.Summary, "; seen all the same: ok") {
+		t.Errorf("no finding: %s %q, want INCONCLUSIVE that keeps what was seen", got.Verdict, got.Summary)
 	}
 	if got := unreadyFirstInstall(Result{Verdict: Inconclusive, Summary: "x"}, wait); got.Summary != "x" {
 		t.Errorf("an INCONCLUSIVE result was rewritten: %q", got.Summary)
 	}
 	if got := unreadyFirstInstall(Result{Verdict: Pass, Summary: "ok"}, nil); got.Verdict != Pass {
 		t.Errorf("a ready install: verdict = %s, want PASS", got.Verdict)
+	}
+}
+
+// Without a ready first install, HB-RI-001 goes and hands back the changes it covered; HB-RI-002,
+// the lost sentinel, stays.
+func TestUnobservedCredentials(t *testing.T) {
+	pw := oracle.Change{Ref: "db/password", Kind: oracle.Changed}
+	other := oracle.Change{Ref: "app/token", Kind: oracle.Changed}
+	cert := oracle.Change{Ref: "db/tls.crt", Kind: oracle.Changed}
+	findings := []Finding{{ID: "HB-RI-001"}, {ID: "HB-RI-002"}}
+	rest, unobserved := unobservedCredentials(findings, []oracle.Change{pw, other, cert}, []oracle.Change{other}, []oracle.Change{cert})
+	if len(rest) != 1 || rest[0].ID != "HB-RI-002" {
+		t.Errorf("findings = %+v, want only HB-RI-002", rest)
+	}
+	if len(unobserved) != 1 || unobserved[0] != pw {
+		t.Errorf("unobserved = %+v, want only %s", unobserved, pw.Ref)
+	}
+	if findings[0].ID != "HB-RI-001" {
+		t.Error("the caller's findings were changed")
+	}
+	if rest, unobserved := unobservedCredentials(findings[1:], []oracle.Change{other}, []oracle.Change{other}, nil); len(rest) != 1 || unobserved != nil {
+		t.Errorf("without HB-RI-001: %+v, %+v; want the findings unchanged and nothing back", rest, unobserved)
 	}
 }
