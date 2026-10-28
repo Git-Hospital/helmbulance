@@ -7,7 +7,9 @@ import (
 
 // notTheChart lists error texts that come from the run, not from the chart: helm's --wait timing
 // out (Helm 3 and 4 word it differently), a killed process, an image that could not be pulled, a
-// registry rate limit, or a cluster that did not answer.
+// registry rate limit, a cluster that did not answer, etcd under load or electing a leader, or a
+// chart host that could not be resolved or did not serve the chart when helm downloaded it again
+// (#49). chart-upgrade, reinstall and matrix all go through IsEnvironmentError.
 var notTheChart = []string{
 	"context deadline exceeded",
 	"timed out waiting for the condition",
@@ -18,6 +20,9 @@ var notTheChart = []string{
 	"connection refused",
 	"i/o timeout",
 	"tls handshake timeout",
+	"etcdserver:",
+	"no such host",
+	"failed to fetch",
 }
 
 // IsEnvironmentError reports whether err says more about the run than about the chart: the run was
