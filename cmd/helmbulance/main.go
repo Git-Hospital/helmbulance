@@ -96,16 +96,9 @@ func test(args []string) int {
 	trafficPath := fs.String("traffic-path", "/", "path that zero-downtime requests; it must answer 2xx")
 	allowRemote := fs.Bool("allow-remote", false, "run a chart from a repository, OCI registry or URL; it runs without the third-party protections, which arrive in v0.3")
 
-	// Accept the chart path before or after the flags.
-	var chart string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		chart, args = args[0], args[1:]
-	}
-	if err := fs.Parse(args); err != nil {
+	chart, ok := parseArgs(fs, args)
+	if !ok {
 		return exitError
-	}
-	if chart == "" && fs.NArg() > 0 {
-		chart = fs.Arg(0)
 	}
 	if chart == "" {
 		usage()
@@ -231,6 +224,31 @@ func pick(names []string) ([]scenario.Scenario, error) {
 	return out, nil
 }
 
+// parseArgs parses the flags on both sides of the chart and returns the chart. Go's flag parsing
+// stops at the first argument that is not a flag, so without the second parse every flag after the
+// chart was dropped without a word (#54). Any other argument is refused: a values file that a
+// shell glob expanded after one -f would otherwise be ignored, and the flags after it with it.
+func parseArgs(fs *flag.FlagSet, args []string) (string, bool) {
+	var chart string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		chart, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return "", false
+	}
+	if chart == "" && fs.NArg() > 0 {
+		chart = fs.Arg(0)
+		if err := fs.Parse(fs.Args()[1:]); err != nil {
+			return "", false
+		}
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument %q: give one chart, and -f once for each values file\n", fs.Arg(0))
+		return "", false
+	}
+	return chart, true
+}
+
 // refuseRemote stops a run on a chart that is not on disk unless --allow-remote was given. A chart
 // from a repository, OCI registry or URL is someone else's, and the protections for third-party
 // charts (architecture §4) do not exist yet: a privileged pod in the sandbox is root on the Docker
@@ -245,7 +263,7 @@ func refuseRemote(allow bool, refs ...string) bool {
 			return true
 		}
 		if !allow {
-			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote (flags go before the chart).\n", ref)
+			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote.\n", ref)
 			return true
 		}
 		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", ref)
@@ -310,15 +328,9 @@ func matrixCmd(args []string) int {
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install")
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
 	allowRemote := fs.Bool("allow-remote", false, "run a chart from a repository, OCI registry or URL; it runs without the third-party protections, which arrive in v0.3")
-	var chart string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		chart, args = args[0], args[1:]
-	}
-	if err := fs.Parse(args); err != nil {
+	chart, ok := parseArgs(fs, args)
+	if !ok {
 		return exitError
-	}
-	if chart == "" && fs.NArg() > 0 {
-		chart = fs.Arg(0)
 	}
 	if chart == "" {
 		usage()
@@ -383,15 +395,9 @@ func scanCmd(args []string) int {
 	fromVersion := fs.String("from-version", "", "version users upgrade from; enables the immutable-field check. A local chart also needs --from")
 	strict := fs.Bool("strict", false, "exit 1 when there are candidates")
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
-	var chart string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		chart, args = args[0], args[1:]
-	}
-	if err := fs.Parse(args); err != nil {
+	chart, ok := parseArgs(fs, args)
+	if !ok {
 		return exitError
-	}
-	if chart == "" && fs.NArg() > 0 {
-		chart = fs.Arg(0)
 	}
 	if chart == "" {
 		usage()
