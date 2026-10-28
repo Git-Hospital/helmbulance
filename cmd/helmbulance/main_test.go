@@ -94,6 +94,28 @@ func TestScanExit(t *testing.T) {
 	}
 }
 
+// A -f value is a file, a URL or "-", never a chart repository, so a missing file is refused
+// even when it has a slash and no "./", which refuseMissing would take for repo/chart (#68).
+func TestRefuseMissingValues(t *testing.T) {
+	for _, c := range []struct {
+		files   []string
+		refused bool
+	}{
+		{nil, false},
+		{[]string{"../../testdata/charts/keeps-secret/values.yaml"}, false},
+		{[]string{"-"}, false},
+		{[]string{"https://example.invalid/values.yaml"}, false},
+		{[]string{"valuse.yaml"}, true},
+		{[]string{"../../testdata/charts/keeps-secret/values.yaml", "testdata/charts/x/values.yaml"}, true},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseMissingValues(c.files) })
+		if refused != c.refused || refused != strings.Contains(out, "values file not found") {
+			t.Errorf("refuseMissingValues(%q) = %v, %q; want %v", c.files, refused, out, c.refused)
+		}
+	}
+}
+
 // version1 stands in for helm show chart: every chart is version 1.0.0.
 func version1(string) (string, error) { return "1.0.0", nil }
 
