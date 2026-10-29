@@ -93,6 +93,11 @@ run reinstall-templated-pvc 0 ""                testdata/charts/reinstall-templa
 # A password generated behind lookup is new on every helm template render, as under Argo CD. Its twin takes it from values.
 run gitops-lookup-random 1 "HB-GR-001"          testdata/charts/gitops-lookup-random --scenario gitops-render
 run gitops-values-secret 0 ""                   testdata/charts/gitops-values-secret --scenario gitops-render
+# Helm keeps these on upgrade, but Argo CD renders an install and runs the hook on every sync (#45).
+run gitops-install-hook  1 "HB-GR-001"          testdata/charts/gitops-install-hook --scenario gitops-render
+run gitops-install-only  1 "HB-GR-001"          testdata/charts/gitops-install-only --scenario gitops-render
+# A hook that also runs on upgrade changes under Helm too: upgrade-without-values reports it, not this.
+run gitops-upgrade-hook  0 ""                   testdata/charts/gitops-upgrade-hook --scenario gitops-render
 run zd-recreate        1 "HB-ZD-001"           testdata/charts/zd-recreate --scenario zero-downtime
 run zd-rolling         0 ""                    testdata/charts/zd-rolling --scenario zero-downtime
 
