@@ -156,6 +156,53 @@ func TestMissingCRDIsNotBlamedOnAVersion(t *testing.T) {
 	}
 }
 
+// A crash at install is a Kubernetes version's fault only if the chart ran healthy on another
+// version tested (#78). Kadir's case: a pod waiting in CreateContainerConfigError on every version.
+func TestCrashAtInstallIsBlamedOnlyWhenAnotherVersionRan(t *testing.T) {
+	crash := []string{"pod `web-1` (ReplicaSet/web-7d9), container `app`: CreateContainerConfigError"}
+	crashed := func(v string) scenario.Result {
+		return installFailed(t.Context(), scenario.Result{Scenario: "k8s-" + v}, v, errors.New(installTimeout), crash, nil, nil)
+	}
+	healthyWithWarning := result("1.36", scenario.Fail, "HB-K8S-003")
+	cases := []struct {
+		name    string
+		results []scenario.Result
+		want    string // the verdict of the last result, the crash on 1.37
+	}{
+		{"crash on every version", []scenario.Result{crashed("1.36"), crashed("1.37")}, scenario.Inconclusive},
+		{"one version tested", []scenario.Result{crashed("1.37")}, scenario.Inconclusive},
+		{"healthy on 1.36", []scenario.Result{result("1.36", scenario.Pass, ""), crashed("1.37")}, scenario.Fail},
+		{"healthy with a deprecation warning on 1.36", []scenario.Result{healthyWithWarning, crashed("1.37")}, scenario.Fail},
+		{"healthy with another API warning on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-004"), crashed("1.37")}, scenario.Fail},
+		// Unhealthy after an install that finished is not healthy.
+		{"unhealthy on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-002"), crashed("1.37")}, scenario.Inconclusive},
+		{"install failure on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-001"), crashed("1.37")}, scenario.Inconclusive},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Attribute(c.results)
+			r := got[len(got)-1]
+			if r.Verdict != c.want {
+				t.Fatalf("1.37 = %s (%s), want %s", r.Verdict, r.Summary, c.want)
+			}
+			if c.want == scenario.Inconclusive && (len(r.Findings) > 0 || !strings.Contains(r.Summary, "ran healthy on no version tested")) {
+				t.Errorf("1.37 = %s with %d finding(s) (%s), want no finding and the reason", r.Verdict, len(r.Findings), r.Summary)
+			}
+		})
+	}
+	// The install's deprecation warning stands without the crash.
+	warned := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.37"}, "1.37", errors.New(installTimeout), crash,
+		[]string{"API warning: policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+; use policy/v1 PodDisruptionBudget"}, nil)
+	if r := Attribute([]scenario.Result{warned})[0]; r.Verdict != scenario.Fail || len(r.Findings) != 1 || r.Findings[0].ID != "HB-K8S-003" ||
+		!strings.Contains(r.Summary, "ran healthy on no version tested") {
+		t.Errorf("crash with a deprecation warning on every version: %s %+v (%s), want FAIL with HB-K8S-003 only", r.Verdict, r.Findings, r.Summary)
+	}
+	// An unhealthy install that finished is judged by Attribute as before: it stays a finding.
+	if r := Attribute([]scenario.Result{result("1.37", scenario.Fail, "HB-K8S-002")})[0]; r.Verdict != scenario.Fail {
+		t.Errorf("finished install, unhealthy: %s, want FAIL kept", r.Verdict)
+	}
+}
+
 func TestBuiltInGroup(t *testing.T) {
 	cases := map[string]bool{
 		`no matches for kind "PodSecurityPolicy" in version "policy/v1beta1"`:                   true,
