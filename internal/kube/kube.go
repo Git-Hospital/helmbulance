@@ -23,6 +23,9 @@ type Client struct {
 type Secret struct {
 	Name string
 	Data map[string][]byte
+	// Keep is true when the Secret carries helm.sh/resource-policy: keep, so `helm uninstall`
+	// leaves it on purpose.
+	Keep bool
 }
 
 // skippedSecretTypes are Secrets that change for reasons unrelated to the chart.
@@ -41,7 +44,8 @@ func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 	var list struct {
 		Items []struct {
 			Metadata struct {
-				Name string `json:"name"`
+				Name        string            `json:"name"`
+				Annotations map[string]string `json:"annotations"`
 			} `json:"metadata"`
 			Type string            `json:"type"`
 			Data map[string]string `json:"data"`
@@ -55,7 +59,9 @@ func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 		if skippedSecretTypes[item.Type] {
 			continue
 		}
-		s := Secret{Name: item.Metadata.Name, Data: map[string][]byte{}}
+		// Helm trims and lower-cases the policy before comparing it, so "Keep " keeps too.
+		keep := strings.ToLower(strings.TrimSpace(item.Metadata.Annotations["helm.sh/resource-policy"])) == "keep"
+		s := Secret{Name: item.Metadata.Name, Data: map[string][]byte{}, Keep: keep}
 		for k, v := range item.Data {
 			b, err := base64.StdEncoding.DecodeString(v)
 			if err != nil {
@@ -70,10 +76,16 @@ func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 }
 
 // SecretConsumers maps "secret/key" to the workloads (kind/name) whose pod template reads it
-// through env, envFrom or a volume. Used to explain the impact of a changed key.
+// through env, envFrom, a secret volume or a projected volume. Jobs and CronJobs count too: a
+// migration Job or a backup CronJob that reads a moved key is a reader like any other (#46); a Job
+// a CronJob started is that CronJob, so it is not listed again. A finished Job (Complete or Failed)
+// is left out: it reads nothing again, and a post-install hook Job stays behind with the old
+// template after an upgrade, which would make a moved key look removed (#73). A volume with items mounts only
+// those keys, and one without maps "secret/*", as it mounts the whole Secret. Used to explain the
+// impact of a changed key.
 func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]string, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
-		"get", "deployments,statefulsets,daemonsets", "-o", "json")
+		"get", "deployments,statefulsets,daemonsets,jobs,cronjobs", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -81,13 +93,20 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 		Items []struct {
 			Kind     string `json:"kind"`
 			Metadata struct {
-				Name string `json:"name"`
+				Name            string     `json:"name"`
+				OwnerReferences []ownerRef `json:"ownerReferences"`
 			} `json:"metadata"`
 			Spec struct {
-				Template struct {
-					Spec podSpec `json:"spec"`
-				} `json:"template"`
+				Template    podTemplate `json:"template"`
+				JobTemplate struct {
+					Spec struct {
+						Template podTemplate `json:"template"`
+					} `json:"spec"`
+				} `json:"jobTemplate"` // a CronJob's pod template is one level further down
 			} `json:"spec"`
+			Status struct {
+				Conditions []condition `json:"conditions"`
+			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
@@ -102,9 +121,24 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 		}
 		consumers[ref] = append(consumers[ref], workload)
 	}
+	// mount adds the keys a volume source mounts: the listed items, or the whole Secret.
+	mount := func(secret string, items []keyToPath, workload string) {
+		if len(items) == 0 {
+			add(secret+"/*", workload)
+		}
+		for _, it := range items {
+			add(secret+"/"+it.Key, workload)
+		}
+	}
 	for _, item := range list.Items {
+		if item.Kind == "Job" && (ownedBy(item.Metadata.OwnerReferences, "CronJob") || finished(item.Status.Conditions)) {
+			continue
+		}
 		workload := item.Kind + "/" + item.Metadata.Name
 		spec := item.Spec.Template.Spec
+		if item.Kind == "CronJob" {
+			spec = item.Spec.JobTemplate.Spec.Template.Spec
+		}
 		for _, ctr := range append(spec.InitContainers, spec.Containers...) {
 			for _, e := range ctr.Env {
 				if ref := e.ValueFrom.SecretKeyRef; ref.Name != "" {
@@ -119,7 +153,12 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 		}
 		for _, v := range spec.Volumes {
 			if v.Secret.SecretName != "" {
-				add(v.Secret.SecretName+"/*", workload)
+				mount(v.Secret.SecretName, v.Secret.Items, workload)
+			}
+			for _, src := range v.Projected.Sources {
+				if src.Secret.Name != "" {
+					mount(src.Secret.Name, src.Secret.Items, workload)
+				}
 			}
 		}
 	}
@@ -169,14 +208,62 @@ func (c *Client) StatefulWorkloads(ctx context.Context, ns string) (map[string]b
 	return stateful, nil
 }
 
+type podTemplate struct {
+	Spec podSpec `json:"spec"`
+}
+
 type podSpec struct {
 	InitContainers []container `json:"initContainers"`
 	Containers     []container `json:"containers"`
 	Volumes        []struct {
 		Secret struct {
-			SecretName string `json:"secretName"`
+			SecretName string      `json:"secretName"`
+			Items      []keyToPath `json:"items"`
 		} `json:"secret"`
+		Projected struct {
+			Sources []struct {
+				Secret struct {
+					Name  string      `json:"name"`
+					Items []keyToPath `json:"items"`
+				} `json:"secret"`
+			} `json:"sources"`
+		} `json:"projected"`
 	} `json:"volumes"`
+}
+
+// ownerRef is the part of a metadata.ownerReferences entry that says what made an object.
+type ownerRef struct {
+	Kind string `json:"kind"`
+}
+
+func ownedBy(refs []ownerRef, kind string) bool {
+	for _, r := range refs {
+		if r.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// condition is one entry of a Job's status.conditions.
+type condition struct {
+	Type   string `json:"type"`
+	Status string `json:"status"`
+}
+
+// finished reports whether a Job has ended for good: its Complete or Failed condition is True.
+func finished(conds []condition) bool {
+	for _, c := range conds {
+		if (c.Type == "Complete" || c.Type == "Failed") && c.Status == "True" {
+			return true
+		}
+	}
+	return false
+}
+
+// keyToPath is one key a Secret volume mounts.
+type keyToPath struct {
+	Key string `json:"key"`
 }
 
 type container struct {

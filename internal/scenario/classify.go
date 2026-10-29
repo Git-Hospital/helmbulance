@@ -43,3 +43,10 @@ func IsEnvironmentError(ctx context.Context, err error) bool {
 	}
 	return false
 }
+
+// RefusedAtRender reports whether helm failed because the chart refused to render, through `fail`
+// or `required`. That is the chart's own check, not the run's, and decision D4 counts it as safe
+// behaviour. A cancelled run is never a refusal.
+func RefusedAtRender(ctx context.Context, err error) bool {
+	return err != nil && ctx.Err() == nil && strings.Contains(strings.ToLower(err.Error()), "execution error at (")
+}

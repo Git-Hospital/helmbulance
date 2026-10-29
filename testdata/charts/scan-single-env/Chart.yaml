@@ -1,0 +1,5 @@
+apiVersion: v2
+name: scan-single-env
+description: "Helmbulance fixture. Fixed twin of scan-duplicate-env: the chart leaves its DB_PASSWORD entry out when extraEnv sets it."
+type: application
+version: 0.1.0
