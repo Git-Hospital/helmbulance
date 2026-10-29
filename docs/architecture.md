@@ -173,7 +173,7 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 - Values are compared as keyed hashes, like every Secret comparison here. The server-side render prints Secrets in clear, so it is not a reproduce line.
 - Flux's helm-controller installs through the Helm SDK, where `lookup` works, so this is about tools that render with `helm template`.
 
-**`network-isolation`** (v0.1, or v0.2 if time runs short).
+**`network-isolation`** (v0.1.x, after v0.1 on 8 November, as [0001](decisions/0001-v0.1-path.md) plans).
 - **Treatment:** the release with its NetworkPolicies. **Control:** the same release with the chart's NetworkPolicy objects removed for a moment. No values key is needed.
 - **Port discovery:** read `/proc/net/tcp{,6}` from an ephemeral container in each pod's network namespace. `containerPort` is informational only, and the ports that matter are often not declared.
 - **Output:** an access matrix (source namespace × destination port). A finding is raised only for listeners that no Service exposes and for ports of bundled datastores reachable from foreign namespaces. A reachable Service port on its own is not a defect.
@@ -299,7 +299,8 @@ docs/                   architecture, scenario reference, case studies
 
 | Version | Scope |
 |---|---|
-| v0.1 | CLI, kind sandbox, `upgrade-without-values` (done), `reinstall`, `gitops-render`, `network-isolation` (TCP, CNI canary, port discovery), Markdown and JSON, fixtures, a composite GitHub Action that runs the CLI |
+| v0.1 | CLI, kind sandbox, `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan`, `matrix`, Markdown and JSON, fixtures, an experimental composite GitHub Action that runs the CLI |
+| v0.1.x | `network-isolation` (TCP, CNI canary, port discovery) |
 | v0.2 | `secret-rotation`, `immutable-fields`, `process-kill`, SARIF, double-run confirmation of failures, signed releases with SBOM |
 | v0.3 | `probe-abuse` with egress isolation outside the cluster, third-party chart mode, application plug-ins, optional AI hypotheses |
 | Ongoing | Running against popular community charts and sending fixes upstream (README, "Found in public charts") |
