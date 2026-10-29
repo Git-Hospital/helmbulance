@@ -102,7 +102,7 @@ Helmbulance runs entirely on your machine or in your CI. There is no server and 
 
 ## Try it
 
-Requires Go, Docker, kind and helm.
+Requires Go, Docker, kind, helm and kubectl.
 
 ```sh
 go build -o bin/helmbulance ./cmd/helmbulance
