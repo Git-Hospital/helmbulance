@@ -128,6 +128,7 @@ func test(args []string) int {
 	runner.Secrets = execx.SetValues(sets)
 	runner.Paths = localPaths()
 	started := time.Now()
+	warnUnrecorded(ctx, runner)
 
 	var c *sandbox.Cluster
 	if *cluster != "" {
@@ -372,6 +373,7 @@ func matrixCmd(args []string) int {
 	runner.Secrets = execx.SetValues(sets)
 	runner.Paths = localPaths()
 	started := time.Now()
+	warnUnrecorded(ctx, runner)
 	rep := &report.Report{
 		SchemaVersion: report.SchemaVersion,
 		Hide:          runner.Hide,
@@ -473,6 +475,21 @@ func scanExit(strict bool, worst string, interrupted bool) int {
 		return exitIncomplete
 	}
 	return exitClean
+}
+
+// warnUnrecorded prints a warning for each helmbulance kind cluster that no run of this state
+// directory owns, with the command that removes it. It deletes nothing: the user decides (#75).
+// When kind cannot list clusters, it says nothing; creating the sandbox reports that error.
+func warnUnrecorded(ctx context.Context, r *execx.Runner) {
+	names, err := sandbox.Unrecorded(ctx, r)
+	if err != nil || len(names) == 0 {
+		return
+	}
+	dir, _ := sandbox.StateDir()
+	for _, name := range names {
+		fmt.Fprintf(os.Stderr, "warning: kind cluster %s has no record in %s/clusters, so no helmbulance run with this state directory owns it.\n", name, dir)
+		fmt.Fprintf(os.Stderr, "  If no other run is using it, remove it with: kind delete cluster --name %s\n", name)
+	}
 }
 
 // localPaths are the paths hidden in reports and transcripts: $HOME, which holds the user name,

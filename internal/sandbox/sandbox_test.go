@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -192,8 +193,9 @@ func TestNewClusterNamesPassOpensCheck(t *testing.T) {
 	}
 }
 
-// fakeKind puts a kind first on PATH that logs its arguments to the returned file. On create it
-// writes kubeconfig where --kubeconfig says and exits with createExit.
+// fakeKind puts a kind first on PATH that logs its arguments to the returned file. get clusters
+// prints $FAKE_CLUSTERS, one per line. On create it writes kubeconfig where --kubeconfig says and
+// exits with createExit.
 func fakeKind(t *testing.T, kubeconfig string, createExit int) string {
 	t.Helper()
 	bin, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
@@ -203,6 +205,7 @@ func fakeKind(t *testing.T, kubeconfig string, createExit int) string {
 	}
 	script := fmt.Sprintf(`#!/bin/sh
 echo "$*" >> "$FAKE_CALLS"
+[ "$1" = get ] && printf '%%s\n' $FAKE_CLUSTERS
 if [ "$1" = create ]; then
   while [ $# -gt 0 ]; do [ "$1" = --kubeconfig ] && out=$2; shift; done
   cp "$FAKE_KUBECONFIG" "$out"
@@ -249,4 +252,30 @@ func TestCreateDeletesAClusterItCannotRecord(t *testing.T) {
 // after its node container had started (#54).
 func TestCreateDeletesTheClusterWhenKindFails(t *testing.T) {
 	createFails(t, fakeKind(t, kindConfig, 1), "exit status 1")
+}
+
+// Only a cluster named as NewCluster names them and with no state directory is listed: one with a
+// record belongs to a run (NewCluster makes it before kind runs), and other names are not ours (#75).
+func TestUnrecordedListsOnlyOurClustersWithNoRecord(t *testing.T) {
+	fakeKind(t, kindConfig, 0)
+	recorded, err := NewCluster()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_CLUSTERS", "kind "+recorded.Name+" "+name+" helmbulance-mine helmbulance-1A2B3C4D")
+	got, err := Unrecorded(t.Context(), &execx.Runner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{name}; !slices.Equal(got, want) {
+		t.Errorf("Unrecorded = %v, want %v", got, want)
+	}
+}
+
+func TestUnrecordedWithNoClusters(t *testing.T) {
+	fakeKind(t, kindConfig, 0)
+	t.Setenv("FAKE_CLUSTERS", "")
+	if got, err := Unrecorded(t.Context(), &execx.Runner{}); err != nil || len(got) != 0 {
+		t.Errorf("Unrecorded = %v, %v; want none", got, err)
+	}
 }
