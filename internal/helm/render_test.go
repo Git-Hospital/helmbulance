@@ -1,6 +1,7 @@
 package helm
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -97,5 +98,28 @@ func TestTemplateArgs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(lines, want) {
 		t.Errorf("helm was called with\n%q\nwant\n%q", lines, want)
+	}
+}
+
+// helm upgrade does not run a hook that is only for install, so the Secret it made stays: it is
+// not what an upgrade writes. A hook that also runs on upgrade, and every other Secret, is (#45).
+func TestUpgradedSecrets(t *testing.T) {
+	doc := func(name, hook string) string {
+		return fmt.Sprintf("---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: %s\n  annotations:\n    helm.sh/hook: %q\nstringData:\n  k: v\n", name, hook)
+	}
+	manifest := doc("pre", "pre-install") + doc("post", "post-install, pre-delete") + doc("both", "pre-install,pre-upgrade") +
+		doc("upgrade", "post-upgrade") + doc("test", "test") + "---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: plain\nstringData:\n  k: v\n"
+	var all, upgraded []string
+	for _, s := range RenderedSecrets([]byte(manifest), "ns") {
+		all = append(all, s.Name)
+	}
+	for _, s := range UpgradedSecrets([]byte(manifest), "ns") {
+		upgraded = append(upgraded, s.Name)
+	}
+	if got, want := strings.Join(all, " "), "pre post both upgrade test plain"; got != want {
+		t.Errorf("RenderedSecrets = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(upgraded, " "), "both upgrade test plain"; got != want {
+		t.Errorf("UpgradedSecrets = %q, want %q", got, want)
 	}
 }

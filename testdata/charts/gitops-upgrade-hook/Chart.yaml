@@ -1,0 +1,5 @@
+apiVersion: v2
+name: gitops-upgrade-hook
+description: "Helmbulance fixture: a password generated in a pre-install,pre-upgrade hook. Helm makes a new one on every upgrade too, which upgrade-without-values reports, so gitops-render passes it (#45)."
+type: application
+version: 1.0.0

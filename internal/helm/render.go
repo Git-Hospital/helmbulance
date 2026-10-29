@@ -3,6 +3,7 @@ package helm
 import (
 	"context"
 	"encoding/base64"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -28,8 +29,9 @@ func (c *Client) Template(ctx context.Context, release, ns, chart string, v Valu
 type secretDoc struct {
 	Kind     string `yaml:"kind"`
 	Metadata struct {
-		Name      string `yaml:"name"`
-		Namespace string `yaml:"namespace"`
+		Name        string            `yaml:"name"`
+		Namespace   string            `yaml:"namespace"`
+		Annotations map[string]string `yaml:"annotations"`
 	} `yaml:"metadata"`
 	Data       map[string]string `yaml:"data"`
 	StringData map[string]string `yaml:"stringData"`
@@ -41,6 +43,18 @@ type secretDoc struct {
 // decoded from base64, and stringData written over it. A document that does not parse only hides
 // itself, as in secretNames.
 func RenderedSecrets(manifest []byte, ns string) []kube.Secret {
+	return renderedSecrets(manifest, ns, false)
+}
+
+// UpgradedSecrets is RenderedSecrets for a render with --is-upgrade, without the hooks that run
+// only at install (helm.sh/hook names pre-install or post-install and no upgrade event). helm
+// template prints every hook, but helm upgrade does not run those, so the Secret one made at
+// install stays as it is (#45).
+func UpgradedSecrets(manifest []byte, ns string) []kube.Secret {
+	return renderedSecrets(manifest, ns, true)
+}
+
+func renderedSecrets(manifest []byte, ns string, upgrade bool) []kube.Secret {
 	var secrets []kube.Secret
 	for _, text := range docSeparator.Split(string(manifest), -1) {
 		var doc secretDoc
@@ -49,6 +63,9 @@ func RenderedSecrets(manifest []byte, ns string) []kube.Secret {
 		}
 		for _, d := range append([]secretDoc{doc}, doc.Items...) {
 			if d.Kind != "Secret" || d.Metadata.Name == "" || (d.Metadata.Namespace != "" && d.Metadata.Namespace != ns) {
+				continue
+			}
+			if upgrade && installOnlyHook(d.Metadata.Annotations["helm.sh/hook"]) {
 				continue
 			}
 			data := map[string][]byte{}
@@ -66,4 +83,18 @@ func RenderedSecrets(manifest []byte, ns string) []kube.Secret {
 		}
 	}
 	return secrets
+}
+
+// installOnlyHook reports whether a helm.sh/hook annotation runs at install and never at upgrade.
+func installOnlyHook(events string) bool {
+	install := false
+	for _, e := range strings.Split(events, ",") {
+		switch strings.TrimSpace(e) {
+		case "pre-install", "post-install":
+			install = true
+		case "pre-upgrade", "post-upgrade":
+			return false
+		}
+	}
+	return install
 }

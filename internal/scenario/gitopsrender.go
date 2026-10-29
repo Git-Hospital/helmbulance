@@ -58,13 +58,23 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 		return res
 	}
 
-	// The same values, rendered with the cluster (as Helm does) and twice without it (as Argo CD does).
+	// The same values, rendered with the cluster as Helm upgrades the release, and twice without it
+	// as Argo CD does. Argo CD never passes --is-upgrade, so its render is always an install, while
+	// Helm keeps what only an install renders: a `.Release.IsInstall` Secret with keep, or one an
+	// install-only hook made (#45).
 	render := func(server bool) (oracle.SecretSnapshot, error) {
-		out, err := env.Helm.Template(ctx, release, ns, env.Chart, env.Values, server)
+		if !server {
+			out, err := env.Helm.Template(ctx, release, ns, env.Chart, env.Values, false)
+			if err != nil {
+				return nil, err
+			}
+			return env.Hasher.Snapshot(helm.RenderedSecrets(out, ns)), nil
+		}
+		out, err := env.Helm.Template(ctx, release, ns, env.Chart, env.Values, true, "--is-upgrade")
 		if err != nil {
 			return nil, err
 		}
-		return env.Hasher.Snapshot(helm.RenderedSecrets(out, ns)), nil
+		return env.Hasher.Snapshot(helm.UpgradedSecrets(out, ns)), nil
 	}
 	server, err := render(true)
 	if err != nil {
@@ -85,11 +95,14 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 		}
 	}
 
-	changes, everySync := gitopsDrift(live, server, client1, client2)
+	changes, everySync, regenerated := gitopsDrift(live, server, client1, client2)
 	changes, expected := splitExpected(changes, env.ExpectedRotation)
 	if len(changes) == 0 {
 		res.Verdict = Pass
-		res.Summary = fmt.Sprintf("a render without a cluster gives the release's %d Secret value(s) unchanged", len(live))
+		res.Summary = fmt.Sprintf("a render without a cluster gives the release's %d Secret value(s) unchanged", len(live)-regenerated)
+		if regenerated > 0 {
+			res.Summary += fmt.Sprintf("; %d value(s) that Helm regenerates on upgrade too not compared (upgrade-without-values)", regenerated)
+		}
 		if len(expected) > 0 {
 			res.Summary += fmt.Sprintf("; %d expected rotation(s) not reported", len(expected))
 		}
@@ -136,12 +149,13 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 // keeps them: the server-side render either gives the same value or leaves the key out, as charts
 // that render a Secret only `if not (lookup …)` do. A key the server-side render changes too is
 // regenerated under Helm as well, which upgrade-without-values reports, so it is left out here.
-// everySync marks the keys whose two client-side renders differ from each other.
-func gitopsDrift(live, server, client1, client2 oracle.SecretSnapshot) ([]oracle.Change, map[string]bool) {
-	var changes []oracle.Change
-	everySync := map[string]bool{}
+// everySync marks the keys whose two client-side renders differ from each other, and regenerated
+// counts the keys left out because Helm changes them too.
+func gitopsDrift(live, server, client1, client2 oracle.SecretSnapshot) (changes []oracle.Change, everySync map[string]bool, regenerated int) {
+	everySync = map[string]bool{}
 	for _, ref := range slices.Sorted(maps.Keys(live)) {
 		if s, ok := server[ref]; ok && s != live[ref] {
+			regenerated++
 			continue
 		}
 		c, ok := client1[ref]
@@ -153,7 +167,7 @@ func gitopsDrift(live, server, client1, client2 oracle.SecretSnapshot) ([]oracle
 			everySync[ref] = true
 		}
 	}
-	return changes, everySync
+	return changes, everySync, regenerated
 }
 
 var lookupCall = regexp.MustCompile(`\blookup\b`)
