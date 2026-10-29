@@ -89,6 +89,15 @@ cases:
     args: [testdata/charts/keeps-set-key, --set, "encryptionKey={key}", --scenario, upgrade-without-values]
     exit: 0
     verdicts: {upgrade-without-values: PASS}
+  # A chart that refuses to render without the key keeps the data safe: a PASS that "refuses
+  # safely" (D4, #49).
+  - name: refuses-dropped-key
+    pair: set-key
+    role: fixed
+    command: test
+    args: [testdata/charts/refuses-dropped-key, --set, "encryptionKey={key}", --scenario, upgrade-without-values]
+    exit: 0
+    verdicts: {upgrade-without-values: PASS}
 
   # chart-upgrade
   - name: upgrade-v2-breaks
@@ -152,6 +161,70 @@ cases:
     exit: 0
     verdicts: {reinstall: PASS}
 
+  # The same defect when the password is a file from a projected volume (#73). Its twin mounts only
+  # a key that does not change.
+  - name: reinstall-loses-creds-projected
+    pair: reinstall-projected
+    role: defect
+    command: test
+    args: [testdata/charts/reinstall-loses-creds-projected, --scenario, reinstall]
+    exit: 1
+    verdicts: {reinstall: FAIL}
+    findings:
+      HB-RI-001: [hb-reinstall-db/password]
+  - name: reinstall-projected-items-other-key
+    pair: reinstall-projected
+    role: fixed
+    command: test
+    args: [testdata/charts/reinstall-projected-items-other-key, --scenario, reinstall]
+    exit: 0
+    verdicts: {reinstall: PASS}
+
+  # A pre-install hook Secret kept on uninstall is created again, with new values, by the next
+  # install (HB-RI-004, #43). Its twin reuses the values with lookup; a hook Secret that is not
+  # kept is replaced along with the release, which is no finding.
+  - name: reinstall-replaces-kept-hook
+    pair: reinstall-kept-hook
+    role: defect
+    command: test
+    args: [testdata/charts/reinstall-replaces-kept-hook, --scenario, reinstall]
+    exit: 1
+    verdicts: {reinstall: FAIL}
+    findings:
+      HB-RI-004: [hb-reinstall-db]
+  - name: reinstall-reuses-kept-hook
+    pair: reinstall-kept-hook
+    role: fixed
+    command: test
+    args: [testdata/charts/reinstall-reuses-kept-hook, --scenario, reinstall]
+    exit: 0
+    verdicts: {reinstall: PASS}
+  - name: reinstall-replaces-plain-hook
+    pair: reinstall-kept-hook
+    role: fixed
+    command: test
+    args: [testdata/charts/reinstall-replaces-plain-hook, --scenario, reinstall]
+    exit: 0
+    verdicts: {reinstall: PASS}
+  # The same, with an app that never gets ready: the replaced kept Secret is still a finding. The
+  # twin has nothing to report, and a release that is never ready is INCONCLUSIVE (#43).
+  - name: reinstall-unready-replaces-kept
+    pair: reinstall-unready-kept-hook
+    role: defect
+    command: test
+    args: [testdata/charts/reinstall-unready-replaces-kept, --scenario, reinstall, --timeout, 45s]
+    exit: 1
+    verdicts: {reinstall: FAIL}
+    findings:
+      HB-RI-004: [hb-reinstall-db]
+  - name: reinstall-unready-reuses-kept
+    pair: reinstall-unready-kept-hook
+    role: fixed
+    command: test
+    args: [testdata/charts/reinstall-unready-reuses-kept, --scenario, reinstall, --timeout, 45s]
+    exit: 3
+    verdicts: {reinstall: INCONCLUSIVE}
+
   # gitops-render: a password generated behind lookup changes on every client-side render. Its
   # twin takes it from values.
   - name: gitops-lookup-random
@@ -165,6 +238,41 @@ cases:
       HB-GR-001: []
   - name: gitops-values-secret
     pair: gitops-secret
+    role: fixed
+    command: test
+    args: [testdata/charts/gitops-values-secret, --scenario, gitops-render]
+    exit: 0
+    verdicts: {gitops-render: PASS}
+  # A password made in an install-only hook: Helm never runs the hook again, Argo CD runs it on
+  # every sync (#45). Its twin's hook runs on upgrade too, so upgrade-without-values reports it.
+  - name: gitops-install-hook
+    pair: gitops-install-hook
+    role: defect
+    command: test
+    args: [testdata/charts/gitops-install-hook, --scenario, gitops-render]
+    exit: 1
+    verdicts: {gitops-render: FAIL}
+    findings:
+      HB-GR-001: [hb-gitops-db/password, "`hb-gitops-db` is a `pre-install` hook"]
+  - name: gitops-upgrade-hook
+    pair: gitops-install-hook
+    role: fixed
+    command: test
+    args: [testdata/charts/gitops-upgrade-hook, --scenario, gitops-render]
+    exit: 0
+    verdicts: {gitops-render: PASS}
+  # A Secret rendered only under .Release.IsInstall, kept by Helm, rendered anew by Argo CD (#45).
+  - name: gitops-install-only
+    pair: gitops-install-only
+    role: defect
+    command: test
+    args: [testdata/charts/gitops-install-only, --scenario, gitops-render]
+    exit: 1
+    verdicts: {gitops-render: FAIL}
+    findings:
+      HB-GR-001: [hb-gitops-db/password]
+  - name: gitops-values-secret-for-install-only
+    pair: gitops-install-only
     role: fixed
     command: test
     args: [testdata/charts/gitops-values-secret, --scenario, gitops-render]
@@ -209,6 +317,7 @@ cases:
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: FAIL
       scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
     findings:
       HB-SCAN-003: [Secret/hb-secret, password]
   - name: scan-keeps-secret
@@ -222,6 +331,7 @@ cases:
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: PASS
       scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
 
   # A quoted default that renders another field unquoted (an env value becomes valueFrom). Its twin
   # renders scalars alike.
@@ -236,6 +346,7 @@ cases:
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: PASS
       scan:unquoted-values: FAIL
+      scan:duplicate-env: PASS
     findings:
       HB-SCAN-004: [extraEnv.DB_PORT, "env[DB_PORT].valueFrom"]
   - name: scan-typed-env
@@ -249,6 +360,7 @@ cases:
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: PASS
       scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
 
   - name: scan-upgrade-v2-breaks
     pair: scan-upgrade-v2
@@ -261,6 +373,7 @@ cases:
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: PASS
       scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
     findings:
       HB-SCAN-001: [Deployment/hb-app, spec.selector]
   - name: scan-upgrade-v2-ok
@@ -274,6 +387,63 @@ cases:
       scan:first-upgrade-restart: PASS
       scan:regenerated-secrets: PASS
       scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+
+  # A container that names an environment variable twice (HB-SCAN-005, #61). Its twin names it once.
+  - name: scan-duplicate-env
+    pair: scan-duplicate-env
+    role: defect
+    command: scan
+    args: [testdata/charts/scan-duplicate-env, --set, extraEnv.DB_PASSWORD=from-values, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: FAIL
+    findings:
+      HB-SCAN-005: [Deployment/hb-app, DB_PASSWORD]
+  - name: scan-single-env
+    pair: scan-duplicate-env
+    role: fixed
+    command: scan
+    args: [testdata/charts/scan-single-env, --set, extraEnv.DB_PASSWORD=from-values, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+
+  # A chart that does not render: the checks that need a render are INCONCLUSIVE, and --strict
+  # exits 3 (#50).
+  - name: scan-render-fails
+    role: incomplete
+    command: scan
+    args: [testdata/charts/scan-render-fails, --strict]
+    exit: 3
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: INCONCLUSIVE
+      scan:unquoted-values: PASS
+      scan:duplicate-env: INCONCLUSIVE
+
+  # Refused before any check runs: exit 2, no report (#68).
+  - name: scan-missing-chart
+    role: setup-error
+    command: scan
+    args: [./testdata/charts/does-not-exist, --strict]
+    exit: 2
+    log: [not found]
+  - name: scan-missing-values
+    role: setup-error
+    command: scan
+    args: [testdata/charts/regenerates-secret, -f, testdata/charts/regenerates-secret/does-not-exist.yaml, --strict]
+    exit: 2
+    log: [not found]
 
   # Kubernetes matrix, on one version.
   - name: matrix-deprecated-api
