@@ -1,0 +1,5 @@
+apiVersion: v2
+name: reinstall-loses-creds-projected
+description: "Helmbulance fixture. reinstall-loses-creds with the password read through a projected volume, as bitnami/rabbitmq does with usePasswordFiles (#46)."
+type: application
+version: 0.1.0

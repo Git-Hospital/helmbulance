@@ -1,0 +1,13 @@
+# Fit a single-node kind cluster, as in jupyterhub/zero-to-jupyterhub-k8s#3996: no image pre-puller
+# and no user scheduler. The proxy Service is ClusterIP, since kind has no load balancer.
+prePuller:
+  hook:
+    enabled: false
+  continuous:
+    enabled: false
+scheduling:
+  userScheduler:
+    enabled: false
+proxy:
+  service:
+    type: ClusterIP

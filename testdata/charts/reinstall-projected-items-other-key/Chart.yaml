@@ -1,0 +1,5 @@
+apiVersion: v2
+name: reinstall-projected-items-other-key
+description: "Helmbulance fixture. The twin of reinstall-loses-creds-projected: the projected volume's items mount only a key that does not change, so a new password next to it reaches no kept data (#73)."
+type: application
+version: 0.1.0

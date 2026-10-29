@@ -1,0 +1,5 @@
+apiVersion: v2
+name: gitops-install-only
+description: "Helmbulance fixture: a password rendered only when .Release.IsInstall, kept by resource-policy. Helm keeps it on upgrade; helm template always installs, so Argo CD writes a new one on every sync (HB-GR-001, #45)."
+type: application
+version: 1.0.0

@@ -21,6 +21,7 @@ These replace the two-person rules in 0001 wherever they differ.
 - **Every code change goes through a pull request with a squash merge,** small and with a test.
 - **Review.**
   - The author requests both other people.
+  - A PR that asks someone a question or for a decision also requests that person as a reviewer, not only names them in the text (Ege, 28 October). A name in the description shows in nobody's review queue: #27 asked Ege four questions on 13 October and waited fifteen days for an answer.
   - One approval from someone other than the author is enough to merge, which is what the ruleset on `main` enforces.
   - A review comes within 48 hours. Whoever cannot make it says so on the PR.
 - **Reviews that need a maintainer.** A change to any of these needs an approval from Ege or Kadirhan, not only Arda's:
