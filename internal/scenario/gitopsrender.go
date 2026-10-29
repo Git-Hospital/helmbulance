@@ -62,12 +62,14 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	// as Argo CD does. Argo CD never passes --is-upgrade, so its render is always an install, while
 	// Helm keeps what only an install renders: a `.Release.IsInstall` Secret with keep, or one an
 	// install-only hook made (#45).
+	var hooks map[string]string
 	render := func(server bool) (oracle.SecretSnapshot, error) {
 		if !server {
 			out, err := env.Helm.Template(ctx, release, ns, env.Chart, env.Values, false)
 			if err != nil {
 				return nil, err
 			}
+			hooks = helm.InstallOnlyHooks(out, ns)
 			return env.Hasher.Snapshot(helm.RenderedSecrets(out, ns)), nil
 		}
 		out, err := env.Helm.Template(ctx, release, ns, env.Chart, env.Values, true, "--is-upgrade")
@@ -95,11 +97,11 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 		}
 	}
 
-	changes, everySync, regenerated := gitopsDrift(live, server, client1, client2)
+	changes, everySync, unchanged, regenerated := gitopsDrift(live, server, client1, client2)
 	changes, expected := splitExpected(changes, env.ExpectedRotation)
 	if len(changes) == 0 {
 		res.Verdict = Pass
-		res.Summary = fmt.Sprintf("a render without a cluster gives the release's %d Secret value(s) unchanged", len(live)-regenerated)
+		res.Summary = fmt.Sprintf("a render without a cluster gives the release's %d Secret value(s) unchanged", unchanged)
 		if regenerated > 0 {
 			res.Summary += fmt.Sprintf("; %d value(s) that Helm regenerates on upgrade too not compared (upgrade-without-values)", regenerated)
 		}
@@ -118,10 +120,14 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 		fmt.Fprintf(env.Log, "could not find stateful workloads: %v\n", err)
 	}
 	statefulKnown := err == nil
-	evidence := append([]string{"Rendered without a cluster (`helm template`), with the same values, these Secret values differ from the installed release, which Helm keeps (`helm template --dry-run=server` matches it or leaves the Secret alone):"},
+	evidence := append([]string{"Rendered without a cluster (`helm template`), with the same values, these Secret values differ from the installed release, which Helm keeps (`helm template --dry-run=server --is-upgrade` matches it or leaves the Secret alone):"},
 		describe(changes, consumers)...)
 	if refs := slices.Sorted(maps.Keys(everySync)); len(refs) > 0 {
 		evidence = append(evidence, "A new value on every client-side render, so on every sync: `"+strings.Join(refs, "`, `")+"`.")
+	}
+	hooked, other := hookSecrets(changes, hooks)
+	for _, name := range hooked {
+		evidence = append(evidence, fmt.Sprintf("`%s` is a `%s` hook: `helm upgrade` does not run it again, but Argo CD runs it on every sync.", name, hooks[name]))
 	}
 	// IsLocal, not IsPath: "testdata/charts/x" looks like repo/chart but is on disk.
 	if helm.IsLocal(env.Chart) {
@@ -130,28 +136,65 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	res.Verdict = Fail
 	res.Summary = fmt.Sprintf("%d Secret value(s) change when the chart is rendered without a cluster", len(changes))
 	res.Findings = append(res.Findings, Finding{
-		ID:       "HB-GR-001",
-		Title:    "Secret values change when the chart is rendered without a cluster (GitOps)",
-		Severity: worstSeverity(changes, consumers, stateful, statefulKnown),
-		Evidence: evidence,
-		Impact: "Argo CD and other tools that render with `helm template` have no cluster to `lookup` in, " +
-			"so each sync writes a value the running release does not use. Pods restart on it, and a " +
-			"database that kept the first password locks its clients out.",
-		Fix: "Take the value from values or an existingSecret instead of generating it behind `lookup`. " +
-			"If the chart must generate it, document that it needs `helm install` or `upgrade`, and for " +
-			"Argo CD an ignoreDifferences entry for these keys.",
+		ID:        "HB-GR-001",
+		Title:     "Secret values change when the chart is rendered without a cluster (GitOps)",
+		Severity:  worstSeverity(changes, consumers, stateful, statefulKnown),
+		Evidence:  evidence,
+		Impact:    gitopsImpact(len(hooked) > 0),
+		Fix:       gitopsFix(len(hooked) > 0, other),
 		Reproduce: repro,
 	})
 	return res
+}
+
+// hookSecrets splits the Secrets of the changed keys into the install-only hooks and the rest.
+func hookSecrets(changes []oracle.Change, hooks map[string]string) (hooked []string, other bool) {
+	for _, c := range changes {
+		name, _, _ := strings.Cut(c.Ref, "/")
+		if _, ok := hooks[name]; !ok {
+			other = true
+		} else if !slices.Contains(hooked, name) {
+			hooked = append(hooked, name)
+		}
+	}
+	return hooked, other
+}
+
+func gitopsImpact(hooked bool) string {
+	cause := "have no cluster to `lookup` in and render every sync as a first install"
+	if hooked {
+		cause += ", and Argo CD runs install hooks on every sync"
+	}
+	return "Argo CD and other tools that render with `helm template` " + cause + ", so each sync writes a " +
+		"value the running release does not use. Pods restart on it, and a database that kept the first " +
+		"password locks its clients out."
+}
+
+// gitopsFix leaves ignoreDifferences out for a hook: Argo CD applies hooks on every sync, outside
+// the diff that ignoreDifferences filters.
+func gitopsFix(hooked, other bool) string {
+	if !hooked {
+		return "Take the value from values or an existingSecret instead of generating it behind `lookup` or " +
+			"`.Release.IsInstall`. If the chart must generate it, document that it needs `helm install` or " +
+			"`upgrade`, and for Argo CD an ignoreDifferences entry for these keys."
+	}
+	fix := "Take the value from values or an existingSecret instead of generating it in an install hook. " +
+		"An ignoreDifferences entry does not help there: Argo CD applies hooks on every sync, outside the diff."
+	if other {
+		fix += " For the keys outside a hook, a chart that must generate them can document that it needs " +
+			"`helm install` or `upgrade`, and for Argo CD an ignoreDifferences entry for them."
+	}
+	return fix
 }
 
 // gitopsDrift lists the keys of the release (live) that a client-side render changes while Helm
 // keeps them: the server-side render either gives the same value or leaves the key out, as charts
 // that render a Secret only `if not (lookup …)` do. A key the server-side render changes too is
 // regenerated under Helm as well, which upgrade-without-values reports, so it is left out here.
-// everySync marks the keys whose two client-side renders differ from each other, and regenerated
-// counts the keys left out because Helm changes them too.
-func gitopsDrift(live, server, client1, client2 oracle.SecretSnapshot) (changes []oracle.Change, everySync map[string]bool, regenerated int) {
+// everySync marks the keys whose two client-side renders differ from each other, unchanged counts
+// the keys compared and found equal, and regenerated the keys left out because Helm changes them too.
+// A key the client-side render leaves out is not compared.
+func gitopsDrift(live, server, client1, client2 oracle.SecretSnapshot) (changes []oracle.Change, everySync map[string]bool, unchanged, regenerated int) {
 	everySync = map[string]bool{}
 	for _, ref := range slices.Sorted(maps.Keys(live)) {
 		if s, ok := server[ref]; ok && s != live[ref] {
@@ -159,7 +202,11 @@ func gitopsDrift(live, server, client1, client2 oracle.SecretSnapshot) (changes 
 			continue
 		}
 		c, ok := client1[ref]
-		if !ok || c == live[ref] {
+		if !ok {
+			continue
+		}
+		if c == live[ref] {
+			unchanged++
 			continue
 		}
 		changes = append(changes, oracle.Change{Ref: ref, Kind: oracle.Changed})
@@ -167,7 +214,7 @@ func gitopsDrift(live, server, client1, client2 oracle.SecretSnapshot) (changes 
 			everySync[ref] = true
 		}
 	}
-	return changes, everySync, regenerated
+	return changes, everySync, unchanged, regenerated
 }
 
 var lookupCall = regexp.MustCompile(`\blookup\b`)

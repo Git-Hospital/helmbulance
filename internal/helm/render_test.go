@@ -122,4 +122,7 @@ func TestUpgradedSecrets(t *testing.T) {
 	if got, want := strings.Join(upgraded, " "), "both upgrade test plain"; got != want {
 		t.Errorf("UpgradedSecrets = %q, want %q", got, want)
 	}
+	if got, want := InstallOnlyHooks([]byte(manifest), "ns"), map[string]string{"pre": "pre-install", "post": "post-install, pre-delete"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("InstallOnlyHooks = %v, want %v", got, want)
+	}
 }

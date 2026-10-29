@@ -54,35 +54,56 @@ func UpgradedSecrets(manifest []byte, ns string) []kube.Secret {
 	return renderedSecrets(manifest, ns, true)
 }
 
+// InstallOnlyHooks names the Secrets of a rendered manifest that land in ns and are hooks run only
+// at install, with their helm.sh/hook events: the ones UpgradedSecrets leaves out.
+func InstallOnlyHooks(manifest []byte, ns string) map[string]string {
+	hooks := map[string]string{}
+	for _, d := range secretDocs(manifest, ns) {
+		if events := d.Metadata.Annotations["helm.sh/hook"]; installOnlyHook(events) {
+			hooks[d.Metadata.Name] = events
+		}
+	}
+	return hooks
+}
+
 func renderedSecrets(manifest []byte, ns string, upgrade bool) []kube.Secret {
 	var secrets []kube.Secret
+	for _, d := range secretDocs(manifest, ns) {
+		if upgrade && installOnlyHook(d.Metadata.Annotations["helm.sh/hook"]) {
+			continue
+		}
+		data := map[string][]byte{}
+		for k, v := range d.Data {
+			b, err := base64.StdEncoding.DecodeString(v)
+			if err != nil {
+				b = []byte(v) // the API server would refuse it; a change still shows as a change
+			}
+			data[k] = b
+		}
+		for k, v := range d.StringData {
+			data[k] = []byte(v)
+		}
+		secrets = append(secrets, kube.Secret{Name: d.Metadata.Name, Data: data})
+	}
+	return secrets
+}
+
+// secretDocs returns the Secret documents of a rendered manifest that land in ns (no namespace, or
+// ns), including the items of a List.
+func secretDocs(manifest []byte, ns string) []secretDoc {
+	var docs []secretDoc
 	for _, text := range docSeparator.Split(string(manifest), -1) {
 		var doc secretDoc
 		if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
 			continue
 		}
 		for _, d := range append([]secretDoc{doc}, doc.Items...) {
-			if d.Kind != "Secret" || d.Metadata.Name == "" || (d.Metadata.Namespace != "" && d.Metadata.Namespace != ns) {
-				continue
+			if d.Kind == "Secret" && d.Metadata.Name != "" && (d.Metadata.Namespace == "" || d.Metadata.Namespace == ns) {
+				docs = append(docs, d)
 			}
-			if upgrade && installOnlyHook(d.Metadata.Annotations["helm.sh/hook"]) {
-				continue
-			}
-			data := map[string][]byte{}
-			for k, v := range d.Data {
-				b, err := base64.StdEncoding.DecodeString(v)
-				if err != nil {
-					b = []byte(v) // the API server would refuse it; a change still shows as a change
-				}
-				data[k] = b
-			}
-			for k, v := range d.StringData {
-				data[k] = []byte(v)
-			}
-			secrets = append(secrets, kube.Secret{Name: d.Metadata.Name, Data: data})
 		}
 	}
-	return secrets
+	return docs
 }
 
 // installOnlyHook reports whether a helm.sh/hook annotation runs at install and never at upgrade.
