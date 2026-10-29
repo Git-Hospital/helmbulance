@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,6 +66,9 @@ func fakeHelmbulance(dir string, args []string) int {
 		}
 	case "stuck":
 		result, exit = fakeResult{Scenario: "s", Verdict: "INCONCLUSIVE"}, 3
+	case "missing": // refused before any scenario, as a chart path that does not exist is
+		fmt.Fprintln(os.Stderr, "Error: chart charts/missing not found")
+		return 2
 	default: // "silent": an error before any report
 		return 2
 	}
@@ -170,7 +174,16 @@ func TestValidate(t *testing.T) {
 	}{
 		{"same name twice", func(tr *Truth) { tr.Cases[1].Name = "defect" }, "defect: listed twice"},
 		{"unknown command", func(tr *Truth) { tr.Cases[0].Command = "lint" }, `command "lint" is not test, scan or matrix`},
-		{"unknown role", func(tr *Truth) { tr.Cases[0].Role = "bad" }, `role "bad" is not defect, fixed or incomplete`},
+		{"unknown role", func(tr *Truth) { tr.Cases[0].Role = "bad" }, `role "bad" is not defect, fixed, incomplete or setup-error`},
+		{"setup error without a log text", func(tr *Truth) {
+			tr.Cases = append(tr.Cases, Case{Name: "missing", Role: roleSetupError, Command: "scan", Args: []string{"charts/missing"}, Exit: 2})
+		}, "missing: a setup-error case has no pair, no findings, no verdicts, exit 2 and a log text"},
+		{"setup error with verdicts", func(tr *Truth) {
+			tr.Cases = append(tr.Cases, Case{Name: "missing", Role: roleSetupError, Command: "scan", Args: []string{"charts/missing"},
+				Exit: 2, Log: []string{"not found"}, Verdicts: map[string]string{"s": "PASS"}})
+		}, "missing: a setup-error case has no pair"},
+		{"log text outside a setup error", func(tr *Truth) { tr.Cases[1].Log = []string{"x"} }, "fixed: only a setup-error case checks its log"},
+		{"k8s on a test case", func(tr *Truth) { tr.Cases[1].K8s = "1.36,1.37" }, "fixed: k8s is for matrix cases"},
 		{"no verdicts", func(tr *Truth) { tr.Cases[1].Verdicts = nil }, "fixed: no verdicts"},
 		{"defect without finding", func(tr *Truth) { tr.Cases[0].Findings = nil }, "a defect case expects at least one finding"},
 		{"defect without twin", func(tr *Truth) { tr.Cases = tr.Cases[:1] }, "pair p: no fixed twin"},
@@ -288,6 +301,10 @@ func TestRepositoryTable(t *testing.T) {
 		t.Error(problem)
 	}
 	for _, c := range truth.Cases {
+		// A setup-error case names a path that is missing on purpose.
+		if c.Role == roleSetupError {
+			continue
+		}
 		for i, arg := range c.Args {
 			if !strings.HasPrefix(arg, "testdata/") {
 				continue
@@ -459,6 +476,41 @@ func TestRunFails(t *testing.T) {
 			}
 			if !strings.Contains(out, tt.want) {
 				t.Errorf("output lacks %q:\n%s", tt.want, out)
+			}
+		})
+	}
+}
+
+// A setup error is checked by its exit code, the absence of a report and its output; a matrix case
+// can name its own Kubernetes versions.
+func TestRunSetupErrorAndCaseVersions(t *testing.T) {
+	onlyPair := strings.Split(fakeTable, "  - name: stuck")[0]
+	table := strings.Replace(onlyPair, "    args: [charts/fixed]\n", "    args: [charts/fixed]\n    k8s: 1.36,1.37\n", 1) + `
+  - name: missing
+    role: setup-error
+    command: scan
+    args: [charts/missing]
+    exit: 2
+    log: [not found]
+`
+	code, out, dir := runFake(t, table, fakeSource, "-k8s", "1.30")
+	if code != 0 || !strings.Contains(out, "ok    missing (exit 2)") {
+		t.Fatalf("exit %d, want 0 and missing as expected:\n%s", code, out)
+	}
+	if calls := read(t, filepath.Join(dir, "calls")); !strings.Contains(calls, "matrix charts/fixed --k8s 1.36,1.37 ") {
+		t.Errorf("the matrix case did not get its own versions:\n%s", calls)
+	}
+
+	for _, tt := range []struct{ name, table, want string }{
+		{"output lacks the text", strings.Replace(table, "log: [not found]", "log: [does not exist]", 1),
+			`FAIL  missing: output lacks "does not exist"`},
+		{"a report was written", strings.Replace(table, "args: [charts/missing]", "args: [charts/fixed]", 1),
+			"FAIL  missing: exit 0, want 2; wrote a report.json, want none"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out, _ := runFake(t, tt.table, fakeSource)
+			if code != 1 || !strings.Contains(out, tt.want) {
+				t.Errorf("exit %d, want 1 and %q:\n%s", code, tt.want, out)
 			}
 		})
 	}
