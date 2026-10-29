@@ -28,7 +28,7 @@ var credentialWords = map[string]bool{
 	"password": true, "passwd": true, "pass": true, "pwd": true, "passphrase": true,
 	"secret": true, "token": true, "jwt": true, "salt": true,
 	"credential": true, "credentials": true, "apikey": true, "key": true, "auth": true,
-	"cookie": true, "rsa": true, "connection": true, "url": true, "dsn": true,
+	"cookie": true, "rsa": true, "connection": true, "url": true, "uri": true, "dsn": true, "keyfile": true,
 	"dockerconfigjson": true, "dockercfg": true, "dockerconfig": true,
 }
 
