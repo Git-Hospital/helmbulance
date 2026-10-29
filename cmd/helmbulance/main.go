@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path"
 	"path/filepath"
@@ -104,7 +105,9 @@ func test(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+	// Tools first: refuseFromVersion already runs helm.
+	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) ||
+		refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 	if err := checkRotations(rotations); err != nil {
@@ -283,6 +286,26 @@ func refuseMissing(refs ...string) bool {
 	return false
 }
 
+// clusterTools are what test and matrix call: kind for the sandbox, helm and kubectl inside it.
+var clusterTools = []string{"kind", "helm", "kubectl"}
+
+// refuseMissingTools refuses a run when a tool it calls is not on PATH. Without the check, test and
+// matrix create a cluster first and only then fail on the missing tool, as INCONCLUSIVE with a
+// message about cleanup (#58). scan renders with helm only.
+func refuseMissingTools(tools ...string) bool {
+	var missing []string
+	for _, t := range tools {
+		if _, err := exec.LookPath(t); err != nil {
+			missing = append(missing, t)
+		}
+	}
+	if len(missing) == 0 {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "not found in PATH: %s. This command needs %s.\n", strings.Join(missing, ", "), strings.Join(tools, ", "))
+	return true
+}
+
 // refuseMissingValues stops a run on a -f values file that is not on disk. helm reads -f as a file,
 // a URL or "-" for standard input, never as a chart repository, so unlike a chart ref any other
 // value must exist. Without this, test and matrix started a cluster first, and scan reported that it
@@ -363,7 +386,7 @@ func matrixCmd(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
+	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
@@ -431,7 +454,8 @@ func scanCmd(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseMissing(chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+	if refuseMissingTools("helm") || refuseMissing(chart, *from) || refuseMissingValues(files) ||
+		refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
