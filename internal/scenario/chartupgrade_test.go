@@ -153,9 +153,15 @@ func TestChartUpgradeServerErrorIsInconclusive(t *testing.T) {
 }
 
 func TestChartUpgradeRejectionIsAFinding(t *testing.T) {
-	res := runChartUpgrade(t, "Error: UPGRADE FAILED: cannot patch db with kind StatefulSet: spec: Forbidden: field is immutable")
-	if res.Verdict != Fail || len(res.Findings) != 1 || res.Findings[0].ID != "HB-CU-001" {
-		t.Errorf("verdict = %s (%s), want FAIL with HB-CU-001", res.Verdict, res.Summary)
+	for _, msg := range []string{
+		"Error: UPGRADE FAILED: cannot patch db with kind StatefulSet: spec: Forbidden: field is immutable",
+		// An object over etcd's request limit: the same on every cluster, so the chart's (#84).
+		"Error: UPGRADE FAILED: failed to create resource: etcdserver: request is too large",
+	} {
+		res := runChartUpgrade(t, msg)
+		if res.Verdict != Fail || len(res.Findings) != 1 || res.Findings[0].ID != "HB-CU-001" {
+			t.Errorf("%q: verdict = %s (%s), want FAIL with HB-CU-001", msg, res.Verdict, res.Summary)
+		}
 	}
 }
 
