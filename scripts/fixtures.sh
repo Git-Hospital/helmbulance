@@ -80,6 +80,10 @@ run upgrade-v2-ok      0 ""                    testdata/charts/upgrade-v2-ok --s
 run upgrade-v2-crashes 1 "HB-CU-001"          testdata/charts/upgrade-v2-crashes --scenario chart-upgrade --from testdata/charts/upgrade-v1 --from-version 1.0.0
 run reinstall-loses-creds 1 "HB-RI-001"         testdata/charts/reinstall-loses-creds --scenario reinstall
 run reinstall-keeps-creds 0 ""                  testdata/charts/reinstall-keeps-creds --scenario reinstall
+# The same defect with the password read through a projected volume, which reinstall did not see (#46).
+run reinstall-loses-creds-projected 1 "HB-RI-001" testdata/charts/reinstall-loses-creds-projected --scenario reinstall
+# Its twin: the items mount only a key that does not change, so the new password reaches no kept data (#73).
+run reinstall-projected-items-other-key 0 "" testdata/charts/reinstall-projected-items-other-key --scenario reinstall
 # A pre-install hook Secret kept on uninstall is created again, with new values, by the next install (HB-RI-004). Its twin reuses them with lookup.
 run reinstall-replaces-kept-hook 1 "HB-RI-004"  testdata/charts/reinstall-replaces-kept-hook --scenario reinstall
 run reinstall-reuses-kept-hook 0 ""             testdata/charts/reinstall-reuses-kept-hook --scenario reinstall

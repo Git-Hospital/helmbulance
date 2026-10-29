@@ -11,14 +11,15 @@ import (
 	"github.com/egezamb/helmbulance/internal/execx"
 )
 
-// fakeKubectl puts a kubectl that prints out first on PATH.
+// fakeKubectl puts a kubectl that prints out first on PATH. With FAKE_ARGS set, it also writes
+// its arguments to that file.
 func fakeKubectl(t *testing.T, out string) *Client {
 	t.Helper()
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "out"), []byte(out), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\ncat " + filepath.Join(bin, "out") + "\n"
+	script := "#!/bin/sh\n[ -n \"$FAKE_ARGS\" ] && echo \"$*\" > \"$FAKE_ARGS\"\ncat " + filepath.Join(bin, "out") + "\n"
 	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -143,5 +144,63 @@ func TestRunWithPVCStopsOnAFailedPod(t *testing.T) {
 	_, err := c.RunWithPVC(t.Context(), "ns", "hb-sentinel", "busybox", "data", "true", time.Minute)
 	if err == nil || !strings.Contains(err.Error(), "is Failed") || time.Since(start) > 10*time.Second {
 		t.Errorf("RunWithPVC on a failed pod = %v after %s; want a quick error naming the phase", err, time.Since(start))
+	}
+}
+
+// Each way a pod template can read a Secret, in each kind of workload SecretConsumers lists (#46).
+// A volume with items mounts only those keys; the Job a CronJob started is that CronJob.
+func TestSecretConsumersSeesEveryReader(t *testing.T) {
+	out := `{"items": [
+	  {"kind": "Deployment", "metadata": {"name": "web"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "a", "key": "password"}}}]}]}}}},
+	  {"kind": "StatefulSet", "metadata": {"name": "db"}, "spec": {"template": {"spec": {
+	    "initContainers": [{"envFrom": [{"secretRef": {"name": "b"}}]}],
+	    "volumes": [{"name": "s", "secret": {"secretName": "c"}},
+	                {"name": "t", "secret": {"secretName": "g", "items": [{"key": "ca.crt", "path": "ca"}]}}]}}}},
+	  {"kind": "StatefulSet", "metadata": {"name": "mq"}, "spec": {"template": {"spec": {
+	    "volumes": [{"name": "p", "projected": {"sources": [
+	      {"secret": {"name": "d", "items": [{"key": "password", "path": "pw"}]}},
+	      {"configMap": {"name": "not-a-secret"}},
+	      {"secret": {"name": "e"}}]}}]}}}},
+	  {"kind": "Job", "metadata": {"name": "migrate"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "a", "key": "password"}}}]}]}}}},
+	  {"kind": "CronJob", "metadata": {"name": "backup"}, "spec": {"jobTemplate": {"spec": {"template": {"spec": {
+	    "volumes": [{"name": "p", "projected": {"sources": [{"secret": {"name": "f"}}]}}]}}}}}},
+	  {"kind": "Job", "metadata": {"name": "init"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "h", "key": "password"}}}]}]}}},
+	   "status": {"conditions": [{"type": "Complete", "status": "True"}]}},
+	  {"kind": "Job", "metadata": {"name": "broken"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "h", "key": "password"}}}]}]}}},
+	   "status": {"conditions": [{"type": "Failed", "status": "True"}]}},
+	  {"kind": "Job", "metadata": {"name": "retrying"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "i", "key": "password"}}}]}]}}},
+	   "status": {"conditions": [{"type": "Failed", "status": "False"}]}},
+	  {"kind": "Job", "metadata": {"name": "backup-29351234", "ownerReferences": [{"kind": "CronJob", "name": "backup"}]},
+	   "spec": {"template": {"spec": {
+	    "volumes": [{"name": "p", "projected": {"sources": [{"secret": {"name": "f"}}]}}]}}}}
+	]}`
+	// The fake prints every item whatever was asked for, so check that Jobs and CronJobs are asked
+	// for: without them the real kubectl would not return the last two items.
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FAKE_ARGS", args)
+	got, err := fakeKubectl(t, out).SecretConsumers(t.Context(), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(args); !strings.Contains(string(b), "get deployments,statefulsets,daemonsets,jobs,cronjobs ") {
+		t.Errorf("kubectl %s, want Jobs and CronJobs listed", strings.TrimSpace(string(b)))
+	}
+	want := map[string][]string{
+		"a/password": {"Deployment/web", "Job/migrate"},
+		"b/*":        {"StatefulSet/db"},
+		"c/*":        {"StatefulSet/db"},
+		"g/ca.crt":   {"StatefulSet/db"}, // items mount only the listed keys
+		"d/password": {"StatefulSet/mq"},
+		"e/*":        {"StatefulSet/mq"},
+		"f/*":        {"CronJob/backup"}, // not again as the Job the CronJob started
+		"i/password": {"Job/retrying"},   // a finished Job (init, broken) reads nothing again
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SecretConsumers =\n%v\nwant\n%v", got, want)
 	}
 }

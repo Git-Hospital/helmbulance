@@ -144,9 +144,9 @@ func withNotes(summary string, notes ...string) string {
 	return summary
 }
 
-// unpairStillRead undoes a move whose old key a workload still reads after the upgrade, through
-// secretKeyRef or envFrom: the value moved, but that reader lost it. Those come back as a removed
-// and an added key.
+// unpairStillRead undoes a move whose old key a workload still reads after the upgrade, by any of
+// the ways SecretConsumers sees (env, envFrom, a secret or projected volume, in any workload kind it
+// lists): the value moved, but that reader lost it. Those come back as a removed and an added key.
 func unpairStillRead(moved []oracle.Change, consumers map[string][]string) (kept, back []oracle.Change) {
 	for _, m := range moved {
 		from, to, _ := strings.Cut(m.Ref, " -> ")
