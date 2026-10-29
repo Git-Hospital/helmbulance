@@ -125,7 +125,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	filesErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{Files: env.Values.Files}, "--reset-values")
 	if filesErr != nil && !timedOutWaiting(ctx, filesErr) {
 		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
-		res = filesUpgradeFailed(ctx, res, filesErr)
+		res = filesUpgradeFailed(ctx, res, filesErr, len(execx.SetKeys(env.Values.Sets)))
 		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
 		return res
 	}
@@ -146,19 +146,27 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 
 // filesUpgradeFailed is the result when the upgrade with the values files fails without a --wait
 // timeout. The chart refusing at render time (`fail`, `required`) keeps its values safe, which is
-// what HB-UV-002's fix asks for: a PASS (D4). Any other failure leaves the treatment unproven. A
-// finding the control already proved stands, with the failure in its summary; without one the
-// result is INCONCLUSIVE (#49).
-func filesUpgradeFailed(ctx context.Context, res Result, err error) Result {
+// what HB-UV-002's fix asks for: a PASS (D4), but only when one --set key was dropped (#77). With
+// more, the refusal is about one of them and says nothing of the others, which the upgrade never
+// got to render. Any other failure leaves the treatment unproven. A finding the control already
+// proved stands, with the failure in its summary; without one the result is INCONCLUSIVE (#49).
+func filesUpgradeFailed(ctx context.Context, res Result, err error, dropped int) Result {
 	refused := RefusedAtRender(ctx, err)
+	safe := refused && dropped <= 1
+	const untested = "; the other --set values it dropped were not tested"
 	switch {
-	case res.Verdict == Fail && refused:
+	case res.Verdict == Fail && safe:
 		res.Summary += "; the upgrade with the values files refuses safely: " + helmMessage(err)
+	case res.Verdict == Fail && refused:
+		res.Summary += "; the upgrade with the values files is refused: " + helmMessage(err) + untested
 	case res.Verdict == Fail:
 		res.Summary += "; the upgrade with the values files failed: " + helmMessage(err)
-	case refused:
+	case safe:
 		res.Verdict = Pass
 		res.Summary = "refuses safely when the release is upgraded from its values files only: " + helmMessage(err)
+	case refused:
+		res.Verdict = Inconclusive
+		res.Summary = "the chart refuses the upgrade from its values files only: " + helmMessage(err) + untested
 	default:
 		return inconclusive(res, "the upgrade with the values files failed", err)
 	}

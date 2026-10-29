@@ -66,7 +66,7 @@ func runUpgradeValues(t *testing.T, env map[string]string) Result {
 		Kube:   &kube.Client{Runner: runner},
 		Hasher: hasher,
 		Chart:  "./chart",
-		Values: helm.Values{Files: []string{"values.yaml"}},
+		Values: helm.Values{Files: []string{"values.yaml"}, Sets: strings.Fields(env["SETS"])},
 		Log:    io.Discard,
 	})
 }
@@ -181,6 +181,15 @@ func TestUpgradeValuesTreatmentFails(t *testing.T) {
 			Fail, "HB-UV-001", "; the upgrade with the values files refuses safely: UPGRADE FAILED: execution error at ("},
 		{"control regenerated, treatment fails otherwise", map[string]string{"REVISIONS": "a", "FAIL_TREATMENT": "1", "SECRET_CHANGES_FROM": "3"},
 			Fail, "HB-UV-001", "; the upgrade with the values files failed: treatment failed"},
+		// The refusal names one dropped --set key; with more, the others were never rendered (#77).
+		{"refuses, one --set dropped", map[string]string{"REVISIONS": "a", "REFUSE_TREATMENT": "1", "SETS": "host=a.example"},
+			Pass, "", "refuses safely when the release is upgraded from its values files only"},
+		{"refuses, two --set keys dropped", map[string]string{"REVISIONS": "a", "REFUSE_TREATMENT": "1", "SETS": "host=a.example second=1"},
+			Inconclusive, "", "the chart refuses the upgrade from its values files only: UPGRADE FAILED: execution error at ("},
+		{"refuses, a=1,b=2 is two keys", map[string]string{"REVISIONS": "a", "REFUSE_TREATMENT": "1", "SETS": "a=1,b=2"},
+			Inconclusive, "", "; the other --set values it dropped were not tested"},
+		{"control regenerated, refused with two keys dropped", map[string]string{"REVISIONS": "a", "REFUSE_TREATMENT": "1", "SECRET_CHANGES_FROM": "3", "SETS": "host=a.example second=1"},
+			Fail, "HB-UV-001", "; the upgrade with the values files is refused: UPGRADE FAILED: execution error at ("},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
