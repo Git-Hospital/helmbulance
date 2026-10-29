@@ -138,7 +138,7 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 - This is a measurement, not a load test: about five requests a second, inside the sandbox, to the release's own Service.
 - The traffic pod runs `busybox` pinned by digest, as a non-root user with no ServiceAccount token, no capabilities and a read-only root filesystem (Pod Security `restricted`). It still lives in the release namespace, so the chart's own mutating webhooks can change it.
 
-**`helmbulance scan`** (implemented). A static pre-screen: no cluster, seconds. It reports candidates, never findings; each names the `helmbulance test` run that confirms or rejects it. A chart, `--from` path or `-f` file that does not exist exits 2, in `test` and `matrix` too, before any cluster (#68). Otherwise it exits 0 unless `--strict`: then 1 for a candidate, else 3 when a check could not run, as in §2 (#50).
+**`helmbulance scan`** (implemented). A static pre-screen: no cluster, seconds. It reports candidates, never findings; each names the `helmbulance test` run that confirms or rejects it. A chart, `--from` path or `-f` file that does not exist exits 2, in `test` and `matrix` too, before any cluster (#68). Otherwise it exits 0 unless `--strict`: then 1 for a candidate, else 3 when a check could not run, as in §2 (#50). An interrupted scan exits 3 with or without `--strict`, or 1 with `--strict` when a candidate was found first (#49).
 - **Immutable fields:** render `--from-version` as an install and the chart as an upgrade (`--is-upgrade`), compare selectors, StatefulSet `serviceName`/`volumeClaimTemplates`/`podManagementPolicy`, Job templates and PVC access modes. Hooks and Jobs named after `.Release.Revision` are skipped (a real upgrade gives them a new name).
 - **First-upgrade restart:** a pod-template checksum of an included template that keeps generated values with `lookup` (helpers it includes are followed one level).
 - **Regenerated Secrets:** render twice; keys that differ in a Secret that is not a hook and whose template (or helper) does not use `lookup`.
@@ -165,14 +165,15 @@ A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker
 - The sandbox has one node, so the sentinel pod can mount a ReadWriteOnce claim next to the app. On several nodes it would need the app's node.
 
 **`gitops-render`** (implemented).
-- Install the chart and read the release's own Secrets. Render the same values three times: once with `helm template --dry-run=server`, where `lookup` reads the cluster as install and upgrade do, and twice with `helm template` and no cluster, as Argo CD renders.
-- A Secret key is a finding when the client-side render changes it while Helm keeps it: the server-side render gives the release's value, or leaves the Secret out, as a chart that renders it only `if not (lookup …)` does. A key the server-side render changes too is regenerated under Helm as well; `upgrade-without-values` reports that one.
+- Install the chart and read the release's own Secrets, hooks included. Render the same values three times: once with `helm template --dry-run=server --is-upgrade`, where `lookup` reads the cluster and `.Release.IsInstall` is false, as on `helm upgrade`, and twice with `helm template` and no cluster, as Argo CD renders. Argo CD never passes `--is-upgrade`, so its render is always an install.
+- helm template prints every hook, but `helm upgrade` does not run one that is only for install (`helm.sh/hook` with `pre-install` or `post-install` and no upgrade event), so the server-side render leaves those Secrets out: Helm keeps what they made, while Argo CD maps them to PreSync and runs them on every sync (#45).
+- A Secret key is a finding when the client-side render changes it while Helm keeps it: the server-side render gives the release's value, or leaves the Secret out, as a chart that renders it only `if not (lookup …)` does. A key the server-side render changes too is regenerated under Helm as well; `upgrade-without-values` reports that one. The PASS summary counts only the keys it compared and found equal, and names those it left to `upgrade-without-values`.
 - Findings:
-  - HB-GR-001: the keys a sync would overwrite, with their readers and the D5 severity. Keys whose two client-side renders differ are named as changing on every sync; for a local chart, the template lines that call `lookup` are listed.
+  - HB-GR-001: the keys a sync would overwrite, with their readers and the D5 severity. Keys whose two client-side renders differ are named as changing on every sync; for a local chart, the template lines that call `lookup` are listed. A Secret made by an install-only hook is named as one, and its fix leaves out ignoreDifferences: Argo CD applies hooks on every sync, outside the diff.
 - Values are compared as keyed hashes, like every Secret comparison here. The server-side render prints Secrets in clear, so it is not a reproduce line.
 - Flux's helm-controller installs through the Helm SDK, where `lookup` works, so this is about tools that render with `helm template`.
 
-**`network-isolation`** (v0.1, or v0.2 if time runs short).
+**`network-isolation`** (v0.1.x, after v0.1 on 8 November, as [0001](decisions/0001-v0.1-path.md) plans).
 - **Treatment:** the release with its NetworkPolicies. **Control:** the same release with the chart's NetworkPolicy objects removed for a moment. No values key is needed.
 - **Port discovery:** read `/proc/net/tcp{,6}` from an ephemeral container in each pod's network namespace. `containerPort` is informational only, and the ports that matter are often not declared.
 - **Output:** an access matrix (source namespace × destination port). A finding is raised only for listeners that no Service exposes and for ports of bundled datastores reachable from foreign namespaces. A reachable Service port on its own is not a defect.
@@ -298,7 +299,8 @@ docs/                   architecture, scenario reference, case studies
 
 | Version | Scope |
 |---|---|
-| v0.1 | CLI, kind sandbox, `upgrade-without-values` (done), `reinstall`, `gitops-render`, `network-isolation` (TCP, CNI canary, port discovery), Markdown and JSON, fixtures, a composite GitHub Action that runs the CLI |
+| v0.1 | CLI, kind sandbox, `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan`, `matrix`, Markdown and JSON, fixtures, an experimental composite GitHub Action that runs the CLI |
+| v0.1.x | `network-isolation` (TCP, CNI canary, port discovery) |
 | v0.2 | `secret-rotation`, `immutable-fields`, `process-kill`, SARIF, double-run confirmation of failures, signed releases with SBOM |
 | v0.3 | `probe-abuse` with egress isolation outside the cluster, third-party chart mode, application plug-ins, optional AI hypotheses |
 | Ongoing | Running against popular community charts and sending fixes upstream (README, "Found in public charts") |

@@ -22,7 +22,10 @@ func TestGitopsDrift(t *testing.T) {
 	client1 := oracle.SecretSnapshot{"db/password": v(10), "db/user": v(2), "api/token": v(30), "regen/key": v(41)}
 	client2 := oracle.SecretSnapshot{"db/password": v(11), "db/user": v(2), "api/token": v(30), "regen/key": v(42)}
 
-	changes, everySync := gitopsDrift(live, server, client1, client2)
+	changes, everySync, unchanged, regenerated := gitopsDrift(live, server, client1, client2)
+	if unchanged != 1 || regenerated != 1 {
+		t.Errorf("unchanged = %d, regenerated = %d, want 1 (db/user) and 1 (regen/key); gone/key is not compared", unchanged, regenerated)
+	}
 	want := []oracle.Change{{Ref: "api/token", Kind: oracle.Changed}, {Ref: "db/password", Kind: oracle.Changed}}
 	if !reflect.DeepEqual(changes, want) {
 		t.Errorf("changes = %v, want %v (not db/user: unchanged; not regen/key: Helm changes it too; not gone/key: no client value)", changes, want)
@@ -58,14 +61,16 @@ func TestLookupCalls(t *testing.T) {
 
 // fakeGitopsTools: helm installs, owns the Secret "db" and renders it with password $FAKE_SERVER
 // server-side and $FAKE_CLIENT client-side ("random" prints a new value on every call; an empty
-// $FAKE_SERVER renders no Secret, as a chart that renders it only if not (lookup …)). kubectl
-// holds db with password "pw" and has nothing else.
+// $FAKE_SERVER renders no Secret, as a chart that renders it only if not (lookup …)). The
+// server-side render must be an upgrade. Both renders give the Secret the helm.sh/hook $FAKE_HOOK.
+// kubectl holds db with password "pw" and has nothing else.
 const fakeGitopsTools = `#!/bin/sh
-secret() { printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: db\nstringData:\n  password: %s\n' "$1"; }
+secret() { printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: db\n  annotations: {helm.sh/hook: "%s"}\nstringData:\n  password: %s\n' "$2" "$1"; }
 case "$(basename "$0") $*" in
   "helm get manifest"*) secret pw ;;
-  "helm template"*"--dry-run=server"*) [ -n "$FAKE_SERVER" ] && secret "$FAKE_SERVER" ;;
-  "helm template"*) v="$FAKE_CLIENT"; [ "$v" = random ] && v="r$$"; secret "$v" ;;
+  "helm template"*"--dry-run=server --is-upgrade"*) [ -n "$FAKE_SERVER" ] && secret "$FAKE_SERVER" "$FAKE_HOOK" ;;
+  "helm template"*"--dry-run=server"*) echo "fake helm: the server-side render must be an upgrade" >&2; exit 1 ;;
+  "helm template"*) v="$FAKE_CLIENT"; [ "$v" = random ] && v="r$$"; secret "$v" "$FAKE_HOOK" ;;
   "kubectl"*"get secrets"*) echo '{"items":[{"metadata":{"name":"db"},"type":"Opaque","data":{"password":"cHc="}}]}' ;;
   "kubectl"*"get"*) echo '{"items":[]}' ;;
 esac
@@ -73,6 +78,16 @@ exit 0
 `
 
 func runGitopsRender(t *testing.T, server, client, chart string) Result {
+	t.Helper()
+	return runGitopsRenderHook(t, server, client, "", chart)
+}
+
+func runGitopsRenderHook(t *testing.T, server, client, hook, chart string) Result {
+	t.Helper()
+	return GitopsRender{}.Run(t.Context(), gitopsEnv(t, server, client, hook, chart))
+}
+
+func gitopsEnv(t *testing.T, server, client, hook, chart string) *Env {
 	t.Helper()
 	old := settleInterval
 	t.Cleanup(func() { settleInterval = old })
@@ -86,12 +101,13 @@ func runGitopsRender(t *testing.T, server, client, chart string) Result {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_SERVER", server)
 	t.Setenv("FAKE_CLIENT", client)
+	t.Setenv("FAKE_HOOK", hook)
 	hasher, err := oracle.NewHasher()
 	if err != nil {
 		t.Fatal(err)
 	}
 	runner := &execx.Runner{}
-	env := &Env{
+	return &Env{
 		Runner: runner,
 		Helm:   &helm.Client{Runner: runner, Timeout: time.Minute},
 		Kube:   &kube.Client{Runner: runner},
@@ -99,7 +115,16 @@ func runGitopsRender(t *testing.T, server, client, chart string) Result {
 		Chart:  chart,
 		Log:    io.Discard,
 	}
-	return GitopsRender{}.Run(t.Context(), env)
+}
+
+// An expected rotation is left out of the finding, and not counted as unchanged either (#86).
+func TestGitopsRenderCountsOnlyComparedValues(t *testing.T) {
+	env := gitopsEnv(t, "pw", "random", "", t.TempDir())
+	env.ExpectedRotation = []string{"db/*"}
+	res := GitopsRender{}.Run(t.Context(), env)
+	if want := "the release's 0 Secret value(s) unchanged; 1 expected rotation(s) not reported"; res.Verdict != Pass || !strings.Contains(res.Summary, want) {
+		t.Errorf("%s: %s, want PASS with %q", res.Verdict, res.Summary, want)
+	}
 }
 
 // A local chart given as "testdata/charts/x" has a '/' and no leading '.', like repo/chart; it is
@@ -128,24 +153,37 @@ func TestGitopsRenderRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, c := range map[string]struct {
-		server, client, verdict string
-		evidence                []string
+		server, client, hook, verdict string
+		evidence                      []string
+		summary                       string
+		fix                           string // the Fix contains it; a hook's Fix never offers ignoreDifferences
 	}{
-		"value from values: the same everywhere":   {"pw", "pw", Pass, nil},
-		"lookup with a random fallback":            {"pw", "random", Fail, []string{"`db/password` changed", "on every sync: `db/password`", "`lookup` in `templates/secret.yaml:1`"}},
-		"rendered only if not (lookup …)":          {"", "random", Fail, []string{"`db/password` changed"}},
-		"regenerated under Helm too: not reported": {"other", "random", Pass, nil},
+		"value from values: the same everywhere": {"pw", "pw", "", Pass, nil, "the release's 1 Secret value(s) unchanged", ""},
+		"lookup with a random fallback":          {"pw", "random", "", Fail, []string{"`db/password` changed", "on every sync: `db/password`", "`lookup` in `templates/secret.yaml:1`"}, "", "an ignoreDifferences entry for these keys"},
+		// Also a `.Release.IsInstall` Secret, which an upgrade does not render (#45).
+		"rendered only if not (lookup …)":          {"", "random", "", Fail, []string{"`db/password` changed"}, "", "an ignoreDifferences entry for these keys"},
+		"regenerated under Helm too: not reported": {"other", "random", "", Pass, nil, "the release's 0 Secret value(s) unchanged; 1 value(s) that Helm regenerates on upgrade too not compared", ""},
+		// helm upgrade does not run an install-only hook, so Helm keeps what it made; Argo CD runs
+		// it on every sync (#45).
+		"install-only hook":             {"other", "random", "pre-install", Fail, []string{"`db/password` changed", "on every sync: `db/password`", "`db` is a `pre-install` hook: `helm upgrade` does not run it again, but Argo CD runs it on every sync"}, "", "does not help there"},
+		"hook that runs on upgrade too": {"other", "random", "pre-install,pre-upgrade", Pass, nil, "1 value(s) that Helm regenerates on upgrade too not compared", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := runGitopsRender(t, c.server, c.client, chart)
+			res := runGitopsRenderHook(t, c.server, c.client, c.hook, chart)
 			if res.Verdict != c.verdict {
 				t.Fatalf("verdict = %s (%s), want %s", res.Verdict, res.Summary, c.verdict)
+			}
+			if !strings.Contains(res.Summary, c.summary) {
+				t.Errorf("summary = %q, want it to contain %q", res.Summary, c.summary)
 			}
 			if c.verdict != Fail {
 				return
 			}
 			if len(res.Findings) != 1 || res.Findings[0].ID != "HB-GR-001" {
 				t.Fatalf("findings = %+v, want one HB-GR-001", res.Findings)
+			}
+			if f := res.Findings[0]; !strings.Contains(f.Fix, c.fix) || (c.hook != "" && strings.Contains(f.Fix, "ignoreDifferences entry for")) {
+				t.Errorf("fix = %q, want it to contain %q", f.Fix, c.fix)
 			}
 			text := strings.Join(res.Findings[0].Evidence, "\n")
 			for _, want := range c.evidence {

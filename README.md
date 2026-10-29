@@ -36,7 +36,7 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 | `helmbulance matrix` | Does the chart install and run on every supported Kubernetes version (1.34–1.37), and does the API server warn about what it creates? | **works** |
 | `reinstall` | After `helm uninstall` and `helm install`, do data and credentials come back? | **works** |
 | `gitops-render` | Does the chart render differently without cluster access, as Argo CD does (`lookup` returns nothing there)? Which Secret values would every sync overwrite? | **works** |
-| `network-isolation` | Are undeclared ports and bundled datastores unreachable from other namespaces, and is the NetworkPolicy actually enforced? | v0.1 |
+| `network-isolation` | Are undeclared ports and bundled datastores unreachable from other namespaces, and is the NetworkPolicy actually enforced? | v0.1.x |
 | `secret-rotation` | When a password changes, does every component that uses it restart and keep working? | v0.2 |
 | `immutable-fields` | Does a values change hit an immutable field (StatefulSet volume templates, selectors) and break the upgrade? | v0.2 |
 | `process-kill` | If a process inside the container dies, does the liveness probe notice? | v0.2 |
@@ -92,7 +92,8 @@ More case studies:
 
 ## Roadmap
 
-- **v0.1:** the CLI with `upgrade-without-values`, `reinstall`, `gitops-render` and `network-isolation`, Markdown and JSON reports, and a GitHub Action.
+- **v0.1:** the CLI with `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan` and `matrix`, Markdown and JSON reports, and an experimental GitHub Action ([its limits](docs/github-action.md#status-experimental)).
+- **v0.1.x:** `network-isolation`.
 - **v0.2:** `secret-rotation`, `immutable-fields`, `process-kill`, SARIF for GitHub code scanning, and signed releases.
 - **v0.3:** `probe-abuse`, a hardened mode for charts you did not write, and optional AI hypotheses that the cluster must confirm.
 - **Ongoing:** running against popular community charts and sending fixes upstream ([found so far](#found-in-public-charts)).

@@ -411,7 +411,7 @@ func matrixCmd(args []string) int {
 }
 
 // scanCmd runs the static pre-screen. It reports candidates, not findings, so it exits 0 unless
-// --strict is given.
+// --strict is given or the scan was interrupted.
 func scanCmd(args []string) int {
 	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
 	var files, sets multiFlag
@@ -463,12 +463,16 @@ func scanCmd(args []string) int {
 }
 
 // scanExit is 0 without --strict: scan reports candidates, not findings. With --strict it follows
-// test, so a check that could not run is 3, not a clean pass (#50).
+// test, so a check that could not run is 3, not a clean pass (#50). An interrupted scan is 3 either
+// way: like test, it never exits 0 when it did not check what it was asked to (#49).
 func scanExit(strict bool, worst string, interrupted bool) int {
-	if !strict {
-		return exitClean
+	switch {
+	case strict:
+		return exitCode(worst, interrupted)
+	case interrupted:
+		return exitIncomplete
 	}
-	return exitCode(worst, interrupted)
+	return exitClean
 }
 
 // localPaths are the paths hidden in reports and transcripts: $HOME, which holds the user name,

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: gitops-install-hook
+description: "Helmbulance fixture: a password generated in a pre-install hook. Helm keeps it on upgrade; Argo CD runs the hook on every sync and makes a new one (HB-GR-001, #45)."
+type: application
+version: 1.0.0
