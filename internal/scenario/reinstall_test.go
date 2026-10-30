@@ -97,6 +97,9 @@ func TestReinstallInstallFailed(t *testing.T) {
 		{"Error: INSTALLATION FAILED: context deadline exceeded", Inconclusive},
 		{"helm install hb-reinstall ./chart: signal: killed", Inconclusive},
 		{"Failed to pull image: toomanyrequests: rate limit", Inconclusive},
+		// The same classifier as chart-upgrade and matrix (#49): etcd, an unknown chart host.
+		{"Error: INSTALLATION FAILED: etcdserver: request timed out", Inconclusive},
+		{`Error: Get "https://charts.example.invalid/x-1.0.0.tgz": dial tcp: lookup charts.example.invalid: no such host`, Inconclusive},
 		{`Error: INSTALLATION FAILED: Internal error occurred: failed calling webhook "v.example.io": context deadline exceeded`, Fail},
 		{`Error: INSTALLATION FAILED: Secret "hb-reinstall-db" exists and cannot be imported into the current release: invalid ownership metadata`, Fail},
 	} {
