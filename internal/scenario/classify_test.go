@@ -47,3 +47,29 @@ func TestIsEnvironmentErrorFromTheContext(t *testing.T) {
 		t.Error("a wrapped deadline is not an environment error")
 	}
 }
+
+func TestRefusedAtRender(t *testing.T) {
+	cases := []struct {
+		err  string
+		want bool
+	}{
+		// helm 4.3 on a chart with `required`, and on one with `fail`.
+		{"Error: UPGRADE FAILED: execution error at (refuses-dropped-key/templates/secret.yaml:6:21): encryptionKey is required: it encrypts data already written", true},
+		{"Error: INSTALLATION FAILED: execution error at (demo/templates/secret.yaml:3:4): encryptionKey differs from the key already in use", true},
+		{"Error: UPGRADE FAILED: field is immutable", false},
+		{"Error: UPGRADE FAILED: context deadline exceeded", false},
+	}
+	for _, c := range cases {
+		if got := RefusedAtRender(context.Background(), errors.New(c.err)); got != c.want {
+			t.Errorf("RefusedAtRender(%q) = %v, want %v", c.err, got, c.want)
+		}
+	}
+	if RefusedAtRender(context.Background(), nil) {
+		t.Error("a nil error is a refusal")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if RefusedAtRender(ctx, errors.New(cases[0].err)) {
+		t.Error("a cancelled run is a refusal")
+	}
+}

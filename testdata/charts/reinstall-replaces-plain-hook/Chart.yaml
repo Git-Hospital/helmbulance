@@ -1,0 +1,5 @@
+apiVersion: v2
+name: reinstall-replaces-plain-hook
+description: "Helmbulance fixture. A pre-install hook Secret with a new password on every install and no keep: Helm leaves it after uninstall, but the chart never asked to keep it, so a new one is a fresh install, not a finding."
+type: application
+version: 0.1.0

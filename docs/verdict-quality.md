@@ -4,13 +4,14 @@ A verdict is only worth something if it is right. A `FAIL` on a healthy chart co
 
 ## The table
 
-`testdata/verdicts.yaml` lists the cases whose right answer is known. A case is one `helmbulance` run on a fixture chart, in one of three roles:
+`testdata/verdicts.yaml` lists the cases whose right answer is known. A case is one `helmbulance` run on a fixture chart, in one of four roles:
 
 | Role | The chart | The right answer |
 |---|---|---|
 | `defect` | has one defect, put there on purpose | the findings listed for it, and no other |
 | `fixed` | is the same chart without that defect | none of those findings |
-| `incomplete` | cannot finish: its image cannot be pulled | `INCONCLUSIVE`, exit code 3, no finding |
+| `incomplete` | cannot finish: its image cannot be pulled, or it does not render | `INCONCLUSIVE`, exit code 3, no finding |
+| `setup-error` | is refused before any scenario runs: a chart or values file that does not exist | exit code 2, no `report.json`, and the texts listed under `log` in its output |
 
 A defect case and its fixed twin form a pair. Only a pair shows that a finding means something: an oracle that reports on every chart passes every defect case, and an oracle that never reports passes every fixed one.
 
@@ -75,10 +76,10 @@ It is a report and not a gate: the job has no threshold and is not a required ch
 
 ## What this does not show
 
-- **Five finding IDs have no pair yet**: `HB-CU-002`, `HB-CU-003`, `HB-K8S-001`, `HB-K8S-002` and `HB-SCAN-002`. Nothing checks them. They are listed under `uncovered` in the table.
+- **Eight finding IDs have no pair yet**: `HB-CU-002`, `HB-CU-003`, `HB-K8S-001`, `HB-K8S-002`, `HB-K8S-004`, `HB-RI-002`, `HB-RI-003` and `HB-SCAN-002`. Nothing checks them. They are listed under `uncovered` in the table, and `go test ./tools/verdicts` keeps that list current.
 - **The fixture charts are small and written by us.** They show that an oracle tells one defect from its fix. They do not show how often it is right on real charts.
 - **The table is only as right as the people who wrote it.** A wrong expectation makes a wrong verdict look checked.
 - **Evidence is checked for what it must contain, not for what it must not.** A defect case whose finding also lists an object that is fine still passes.
-- **One case covers incomplete runs.** Other ways a run can fail to finish (an admission webhook that rejects, a cluster that does not start) have none.
-- **The matrix cases run on one Kubernetes version.**
+- **Two cases cover incomplete runs** (an image that cannot be pulled, a chart that does not render). Other ways a run can fail to finish (an admission webhook that rejects, a cluster that does not start) have none.
+- **The matrix cases run on one Kubernetes version**, the `-k8s` flag, unless a case names its own under `k8s`.
 - **The mutation report only counts unit tests.** A package without any is listed as such. Today that includes `internal/scan` and `internal/matrix`: for the findings they produce, the table is the only check.

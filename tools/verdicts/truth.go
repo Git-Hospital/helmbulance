@@ -19,9 +19,10 @@ import (
 
 // Roles of a case.
 const (
-	roleDefect     = "defect"     // the chart has the defect its findings name
-	roleFixed      = "fixed"      // the twin of a defect case, without that defect
-	roleIncomplete = "incomplete" // the run cannot finish; the right verdict is INCONCLUSIVE
+	roleDefect     = "defect"      // the chart has the defect its findings name
+	roleFixed      = "fixed"       // the twin of a defect case, without that defect
+	roleIncomplete = "incomplete"  // the run cannot finish; the right verdict is INCONCLUSIVE
+	roleSetupError = "setup-error" // refused before any scenario runs: exit 2 and no report
 )
 
 // Truth is the table of cases with a known right answer, and the finding IDs no pair covers yet.
@@ -41,12 +42,17 @@ type Case struct {
 	Role    string   `yaml:"role"`
 	Command string   `yaml:"command"` // test, scan or matrix
 	Args    []string `yaml:"args"`    // {key} is a random key, {k8s} the Kubernetes version
-	Exit    int      `yaml:"exit"`
+	// K8s is the Kubernetes versions of a matrix case, comma-separated, when they are not the
+	// -k8s flag: a case that tells one version from another needs two.
+	K8s  string `yaml:"k8s"`
+	Exit int    `yaml:"exit"`
 	// Verdicts is the verdict of every scenario in the report. {k8s} works in the names too.
 	Verdicts map[string]string `yaml:"verdicts"`
 	// Findings maps each expected finding ID to texts that its evidence must contain, so a finding
 	// has to be about the right object and not only of the right kind.
 	Findings map[string][]string `yaml:"findings"`
+	// Log lists texts the output of a setup-error case must contain, since it writes no report.
+	Log []string `yaml:"log"`
 }
 
 // LoadTruth reads and validates the table.
@@ -89,8 +95,14 @@ func (t Truth) Validate() []string {
 		if len(c.Args) == 0 {
 			bad("%s: no args", c.Name)
 		}
-		if len(c.Verdicts) == 0 {
+		if len(c.Verdicts) == 0 && c.Role != roleSetupError {
 			bad("%s: no verdicts", c.Name)
+		}
+		if len(c.Log) > 0 && c.Role != roleSetupError {
+			bad("%s: only a setup-error case checks its log; the others have a report", c.Name)
+		}
+		if c.K8s != "" && c.Command != "matrix" {
+			bad("%s: k8s is for matrix cases", c.Name)
 		}
 		switch c.Role {
 		case roleDefect:
@@ -104,10 +116,14 @@ func (t Truth) Validate() []string {
 			if c.Pair != "" || len(c.Findings) > 0 || c.Exit != 3 {
 				bad("%s: an incomplete case has no pair, no findings and exit 3", c.Name)
 			}
+		case roleSetupError:
+			if c.Pair != "" || len(c.Findings) > 0 || len(c.Verdicts) > 0 || c.Exit != 2 || len(c.Log) == 0 {
+				bad("%s: a setup-error case has no pair, no findings, no verdicts, exit 2 and a log text", c.Name)
+			}
 		default:
-			bad("%s: role %q is not defect, fixed or incomplete", c.Name, c.Role)
+			bad("%s: role %q is not defect, fixed, incomplete or setup-error", c.Name, c.Role)
 		}
-		if c.Role != roleIncomplete && c.Pair == "" {
+		if c.Role != roleIncomplete && c.Role != roleSetupError && c.Pair == "" {
 			bad("%s: no pair", c.Name)
 		}
 	}

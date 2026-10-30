@@ -1,0 +1,5 @@
+# The first-upgrade restart (seaweedfs/seaweedfs#11719) needs the S3 gateway with auth: the filer and
+# S3 pods hash the S3 config Secret, which 4.48.0 renders with a fresh random key on every render.
+s3:
+  enabled: true
+  enableAuth: true

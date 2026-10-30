@@ -38,6 +38,7 @@ func Run(ctx context.Context, o Options) []scenario.Result {
 		firstUpgradeRestart(o),
 		regeneratedSecrets(ctx, o),
 		unquotedValues(ctx, o),
+		duplicateEnv(ctx, o),
 	}
 }
 
@@ -299,7 +300,7 @@ func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 		Severity:  "candidate",
 		Evidence:  evidence,
 		Impact:    "If confirmed, every `helm upgrade` replaces these values: credentials stop matching what the data was created with, and pods that hash the Secret restart.",
-		Fix:       "Keep generated values with `lookup` (and support an existingSecret for tools that render without cluster access), or generate them in a pre-install hook.",
+		Fix:       "Keep generated values with `lookup`, and support an existingSecret for tools that render without cluster access. A pre-install hook keeps the value under Helm but not under Argo CD, which runs the hook on every sync (HB-GR-001).",
 		Reproduce: []string{fmt.Sprintf("helmbulance test %s --scenario upgrade-without-values   # HB-UV-001", o.Chart)},
 	}}
 	return res

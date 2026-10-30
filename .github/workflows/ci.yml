@@ -47,7 +47,8 @@ jobs:
     name: fixtures (Helm ${{ matrix.major }})
     needs: test
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # One pass takes about 40 minutes; the nightly run makes three.
+    timeout-minutes: ${{ github.event_name == 'schedule' && 180 || 60 }}
     permissions:
       contents: read
     strategy:

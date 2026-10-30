@@ -228,16 +228,21 @@ func TestChartUpgradeTimeoutWithACrashIsAFinding(t *testing.T) {
 
 // Only a --wait timeout with the release applied is worth reading pods or collecting evidence for;
 // a cancelled run, the chart's own webhook, a pull error or a render refusal are not. The upgrade
-// (#34) and the second install of reinstall (#30) share it.
+// (#34) and both installs of reinstall (#30) share it. Helm 4 stops at a resource that reports
+// Failed without waiting out the timeout, with the release applied all the same.
 func TestTimedOutWaiting(t *testing.T) {
 	for msg, want := range map[string]bool{
-		"Error: UPGRADE FAILED: context deadline exceeded":                                                  true,
-		"Error: UPGRADE FAILED: timed out waiting for the condition":                                        true,
-		"Error: INSTALLATION FAILED: timed out waiting for the condition":                                   true,
-		"Error: UPGRADE FAILED: failed calling webhook \"x\": context deadline exceeded":                    false,
-		"Error: UPGRADE FAILED: cannot patch db with kind StatefulSet: spec: Forbidden: field is immutable": false,
-		"Failed to pull image: toomanyrequests: rate limit":                                                 false,
-		"Error: INSTALLATION FAILED: execution error at (demo/templates/secret.yaml:3:4)":                   false,
+		"Error: UPGRADE FAILED: context deadline exceeded":                                                              true,
+		"Error: UPGRADE FAILED: timed out waiting for the condition":                                                    true,
+		"Error: INSTALLATION FAILED: timed out waiting for the condition":                                               true,
+		"Error: INSTALLATION FAILED: resource StatefulSet/ns/db not ready. status: Failed, message: 1 pods have failed": true,
+		"Error: UPGRADE FAILED: failed calling webhook \"x\": context deadline exceeded":                                false,
+		"Error: UPGRADE FAILED: cannot patch db with kind StatefulSet: spec: Forbidden: field is immutable":             false,
+		"Failed to pull image: toomanyrequests: rate limit":                                                             false,
+		"Error: INSTALLATION FAILED: execution error at (demo/templates/secret.yaml:3:4)":                               false,
+		// A failed pre-install or pre-upgrade hook stops before the manifest is applied.
+		"Error: INSTALLATION FAILED: failed pre-install: resource Job/ns/x not ready. status: Failed, message: x": false,
+		"Error: UPGRADE FAILED: failed pre-upgrade: context deadline exceeded":                                    false,
 	} {
 		if got := timedOutWaiting(t.Context(), errors.New(msg)); got != want {
 			t.Errorf("timedOutWaiting(%q) = %v, want %v", msg, got, want)

@@ -2,7 +2,8 @@
 //
 // Helmbulance only ever talks to clusters it created. Each one gets its own kubeconfig under the
 // state directory (never the user's ~/.kube/config), and the SHA-256 of the cluster's CA is
-// recorded at creation. Reusing a cluster checks that fingerprint, so a kubeconfig pointing at
+// recorded at creation. Reusing a cluster checks that fingerprint on the cluster the kubeconfig's
+// current context points at, which is where helm and kubectl go, so a kubeconfig pointing at
 // some other cluster is refused.
 package sandbox
 
@@ -15,13 +16,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/egezamb/helmbulance/internal/execx"
 )
 
 // NamePrefix marks clusters created by Helmbulance.
 const NamePrefix = "helmbulance-"
+
+// nameRE is the only name NewCluster makes. Checking it keeps a --cluster value from naming a
+// directory outside the state directory (#47).
+var nameRE = regexp.MustCompile(`^` + NamePrefix + `[0-9a-f]{8}$`)
 
 // Cluster is a sandbox cluster and the files that describe it.
 type Cluster struct {
@@ -61,20 +69,36 @@ func NewCluster() (*Cluster, error) {
 }
 
 // Create brings up the reserved cluster with kind and records its CA fingerprint. On failure it
-// removes the cluster's state directory.
+// deletes the cluster and its state directory: the caller only deletes a cluster that Create
+// returned without error.
 func (c *Cluster) Create(ctx context.Context, r *execx.Runner, nodeImage string) error {
 	args := []string{"create", "cluster", "--name", c.Name, "--kubeconfig", c.Kubeconfig, "--wait", "180s"}
 	if nodeImage != "" {
 		args = append(args, "--image", nodeImage)
 	}
-	if _, err := r.Run(ctx, "kind", args...); err != nil {
-		_ = os.RemoveAll(c.dir)
+	_, err := r.Run(ctx, "kind", args...)
+	if err == nil {
+		err = c.record()
+	}
+	if err != nil {
+		// kind can fail after its node container started, most often because a Ctrl-C reached it:
+		// kind has no signal handler, so it dies before its own delete-on-failure and leaves a
+		// privileged container running (#54). kind delete succeeds on a cluster that does not
+		// exist, so it runs on every failure, without cancellation so it still runs after Ctrl-C.
+		if derr := c.Delete(context.WithoutCancel(ctx), r); derr != nil {
+			return errors.Join(err, derr)
+		}
 		return err
 	}
+	return nil
+}
+
+// record makes the new kubeconfig private and saves its CA fingerprint.
+func (c *Cluster) record() error {
 	if err := os.Chmod(c.Kubeconfig, 0o600); err != nil {
 		return err
 	}
-	fp, err := caFingerprint(c.Kubeconfig)
+	fp, err := caFingerprint(c.Kubeconfig, c.Name)
 	if err != nil {
 		return err
 	}
@@ -83,8 +107,8 @@ func (c *Cluster) Create(ctx context.Context, r *execx.Runner, nodeImage string)
 
 // Open returns an existing cluster that Helmbulance created, after checking its CA fingerprint.
 func Open(name string) (*Cluster, error) {
-	if !strings.HasPrefix(name, NamePrefix) {
-		return nil, fmt.Errorf("cluster %q was not created by helmbulance (name must start with %q)", name, NamePrefix)
+	if !nameRE.MatchString(name) {
+		return nil, fmt.Errorf("cluster %q was not created by helmbulance (name must be %q and 8 hex characters)", name, NamePrefix)
 	}
 	c, err := clusterFiles(name)
 	if err != nil {
@@ -94,7 +118,7 @@ func Open(name string) (*Cluster, error) {
 	if err != nil {
 		return nil, fmt.Errorf("no record of cluster %q in %s: %w", name, c.dir, err)
 	}
-	got, err := caFingerprint(c.Kubeconfig)
+	got, err := caFingerprint(c.Kubeconfig, name)
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +136,33 @@ func (c *Cluster) Delete(ctx context.Context, r *execx.Runner) error {
 	return os.RemoveAll(c.dir)
 }
 
+// Unrecorded lists the kind clusters named as NewCluster names them that have no state directory.
+// NewCluster makes the directory before kind runs, and Delete removes it only after kind delete
+// succeeded, so no run with this state directory owns such a cluster: one left by a version
+// before #72, by a run with another HELMBULANCE_STATE_DIR, or whose directory was removed by
+// hand. It is only listed, never deleted: a run with another state directory may still use it (#75).
+func Unrecorded(ctx context.Context, r *execx.Runner) ([]string, error) {
+	out, err := r.Run(ctx, "kind", "get", "clusters")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, name := range strings.Fields(string(out)) {
+		if !nameRE.MatchString(name) {
+			continue
+		}
+		c, err := clusterFiles(name)
+		if err != nil {
+			return nil, err
+		}
+		// Only a directory that is surely missing: one we cannot read may still be a run's record.
+		if _, err := os.Stat(c.dir); errors.Is(err, os.ErrNotExist) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 func clusterFiles(name string) (*Cluster, error) {
 	state, err := StateDir()
 	if err != nil {
@@ -121,18 +172,79 @@ func clusterFiles(name string) (*Cluster, error) {
 	return &Cluster{Name: name, Kubeconfig: filepath.Join(dir, "kubeconfig"), dir: dir}, nil
 }
 
-// caFingerprint hashes the certificate-authority-data line of a kind kubeconfig. kind writes a
-// single cluster entry, so the first match is the cluster's CA.
-func caFingerprint(kubeconfig string) (string, error) {
-	data, err := os.ReadFile(kubeconfig)
+// kubeconfig holds the fields of a kubeconfig that decide which cluster helm and kubectl reach.
+type kubeconfig struct {
+	CurrentContext string         `yaml:"current-context"`
+	Contexts       []namedContext `yaml:"contexts"`
+	Clusters       []namedCluster `yaml:"clusters"`
+}
+
+type namedContext struct {
+	Name    string `yaml:"name"`
+	Context struct {
+		Cluster string `yaml:"cluster"`
+	} `yaml:"context"`
+}
+
+type namedCluster struct {
+	Name    string `yaml:"name"`
+	Cluster struct {
+		CAData   string `yaml:"certificate-authority-data"`
+		Insecure bool   `yaml:"insecure-skip-tls-verify"`
+	} `yaml:"cluster"`
+}
+
+// caFingerprint hashes the CA of the cluster that the kubeconfig's current context points at. helm
+// and kubectl follow current-context, so that is the cluster the run would reach; another cluster
+// merged into the file, as a cloud credentials helper does, must not be the one checked (#47). kind
+// names the context kind-<name>, so any other current context is refused. For a file kind wrote,
+// with a single cluster, the hash is the same as that of its only CA line.
+func caFingerprint(path, name string) (string, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "certificate-authority-data:"); ok {
-			sum := sha256.Sum256([]byte(strings.TrimSpace(v)))
-			return hex.EncodeToString(sum[:]), nil
+	var kc kubeconfig
+	if err := yaml.Unmarshal(data, &kc); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	if want := "kind-" + name; kc.CurrentContext != want {
+		return "", fmt.Errorf("%s: current-context is %q, not the sandbox's %q; refusing to use it", path, kc.CurrentContext, want)
+	}
+	ctxEntry, err := only(kc.Contexts, kc.CurrentContext, func(e namedContext) string { return e.Name })
+	if err != nil {
+		return "", fmt.Errorf("%s: context %w", path, err)
+	}
+	cluster := ctxEntry.Context.Cluster
+	clusterEntry, err := only(kc.Clusters, cluster, func(e namedCluster) string { return e.Name })
+	if err != nil {
+		return "", fmt.Errorf("%s: cluster %w", path, err)
+	}
+	ca := strings.TrimSpace(clusterEntry.Cluster.CAData)
+	if ca == "" {
+		return "", fmt.Errorf("%s: cluster %q has no certificate-authority-data", path, cluster)
+	}
+	// The CA identifies the cluster only while TLS checks the server against it. kind never
+	// skips that check, so a file that does could reach any server whatever its CA says.
+	if clusterEntry.Cluster.Insecure {
+		return "", fmt.Errorf("%s: cluster %q sets insecure-skip-tls-verify, so its CA proves nothing; refusing to use it", path, cluster)
+	}
+	sum := sha256.Sum256([]byte(ca))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// only returns the single item called name. A missing name, or one given twice, leaves it unclear
+// what helm and kubectl would use, so both are errors.
+func only[T any](items []T, name string, nameOf func(T) string) (T, error) {
+	var item T
+	found := 0
+	for _, it := range items {
+		if nameOf(it) == name {
+			item, found = it, found+1
 		}
 	}
-	return "", fmt.Errorf("%s has no certificate-authority-data", kubeconfig)
+	if found != 1 {
+		return item, fmt.Errorf("%q appears %d times, want once", name, found)
+	}
+	return item, nil
 }

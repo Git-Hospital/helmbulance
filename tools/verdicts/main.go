@@ -167,7 +167,11 @@ func (r Runner) Run(ctx context.Context, c Case, attempt int) Run {
 			args = append(args, "--timeout", "3m")
 		}
 	case "matrix":
-		args = append(args, "--k8s", r.K8s)
+		k8s := r.K8s
+		if c.K8s != "" {
+			k8s = c.K8s
+		}
+		args = append(args, "--k8s", k8s)
 	}
 	args = append(args, "--report-dir", dir)
 
@@ -198,6 +202,10 @@ func (r Runner) Run(ctx context.Context, c Case, attempt int) Run {
 		return res
 	}
 
+	if c.Role == roleSetupError {
+		res.Differs, res.signature = setupError(c, res.Exit, filepath.Join(dir, "report.json"), res.Log)
+		return res
+	}
 	obs, err := ReadReport(filepath.Join(dir, "report.json"), res.Exit)
 	if err != nil {
 		res.Differs = []string{err.Error()}
@@ -206,6 +214,30 @@ func (r Runner) Run(ctx context.Context, c Case, attempt int) Run {
 	res.Verdicts, res.Findings, res.signature = obs.Verdicts, obs.IDs(), obs.Signature()
 	res.Differs = Compare(c, obs)
 	return res
+}
+
+// setupError compares a run with a setup-error case: the exit code, no report.json, and the texts
+// its output must contain. It returns the differences and the run's signature.
+func setupError(c Case, exit int, report, logPath string) ([]string, string) {
+	var diff []string
+	if exit != c.Exit {
+		diff = append(diff, fmt.Sprintf("exit %d, want %d", exit, c.Exit))
+	}
+	_, err := os.Stat(report)
+	wrote := err == nil
+	if wrote {
+		diff = append(diff, "wrote a report.json, want none")
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		diff = append(diff, err.Error())
+	}
+	for _, want := range c.Log {
+		if !strings.Contains(string(log), want) {
+			diff = append(diff, fmt.Sprintf("output lacks %q", want))
+		}
+	}
+	return diff, fmt.Sprintf("exit %d; report %t", exit, wrote)
 }
 
 // expand fills in {key} and {k8s}.
