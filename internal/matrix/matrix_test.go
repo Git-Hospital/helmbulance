@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -10,21 +11,68 @@ import (
 
 func TestInstallFailedIsAFinding(t *testing.T) {
 	err := errors.New(`Error: INSTALLATION FAILED: resource mapping not found for name: "web" kind: "PodSecurityPolicy"`)
-	res := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.37"}, "1.37", err, nil, nil)
+	res := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.37"}, "1.37", err, nil, nil, nil)
 	if res.Verdict != scenario.Fail || len(res.Findings) != 1 || res.Findings[0].ID != "HB-K8S-001" {
 		t.Errorf("verdict = %s (%s), want FAIL with HB-K8S-001", res.Verdict, res.Summary)
 	}
 }
 
+// A timeout or pull error with nothing else to go on says nothing about the version.
 func TestInstallTimeoutIsInconclusive(t *testing.T) {
 	for _, msg := range []string{
-		"Error: INSTALLATION FAILED: resource Deployment/hb-matrix/web not ready. status: InProgress\ncontext deadline exceeded",
+		installTimeout,
 		"Failed to pull image \"nginx\": toomanyrequests: You have reached your pull rate limit",
 	} {
-		res := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.37"}, "1.37", errors.New(msg), nil, nil)
+		res := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.37"}, "1.37", errors.New(msg), nil, nil, nil)
 		if res.Verdict != scenario.Inconclusive || len(res.Findings) > 0 {
 			t.Errorf("%q: verdict = %s with %d finding(s), want INCONCLUSIVE and none", msg, res.Verdict, len(res.Findings))
 		}
+	}
+}
+
+const installTimeout = "Error: INSTALLATION FAILED: resource Deployment/hb-matrix/web not ready. status: InProgress\ncontext deadline exceeded"
+
+// After a --wait timeout the release was applied: a container that crashes is HB-K8S-002 and the
+// install's API warnings stand, as for an install that finished (#49). They count only after a
+// timeout; a pull error applied nothing they could be read from.
+func TestInstallTimeoutIsRead(t *testing.T) {
+	crash := []string{"pod `web-1` (ReplicaSet/web-7d9), container `app`: CrashLoopBackOff, last run Error (exit 1), 3 restart(s)"}
+	warning := []string{"API warning: spec.template.spec.containers[0].env[1]: hides previous definition of \"A\""}
+	cases := []struct {
+		name              string
+		err               string
+		crashes, warnings []string
+		verdict, ids      string
+		inSummary         string
+	}{
+		{"crash", installTimeout, crash, nil, scenario.Fail, "HB-K8S-002", "does not become healthy"},
+		{"crash and warning", installTimeout, crash, warning, scenario.Fail, "HB-K8S-002", "does not become healthy"},
+		{"warning only", installTimeout, nil, warning, scenario.Fail, "HB-K8S-004", "workload health was not checked: `helm install --wait` timed out"},
+		{"pull error with a warning", "Error: INSTALLATION FAILED: toomanyrequests", nil, warning, scenario.Inconclusive, "", "the install did not finish"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.37"}, "1.37", errors.New(c.err), c.crashes, c.warnings, nil)
+			var ids []string
+			for _, f := range res.Findings {
+				ids = append(ids, f.ID)
+			}
+			if res.Verdict != c.verdict || strings.Join(ids, " ") != c.ids || !strings.Contains(res.Summary, c.inSummary) {
+				t.Fatalf("verdict %s, findings %q, summary %q; want %s, %q, summary with %q", res.Verdict, ids, res.Summary, c.verdict, c.ids, c.inSummary)
+			}
+			if len(c.crashes) > 0 {
+				ev := res.Findings[0].Evidence
+				if !strings.HasPrefix(ev[0], "`helm install --wait` timed out while containers crashed") || ev[1] != c.crashes[0] || len(ev) != 2+len(c.warnings) {
+					t.Errorf("evidence %q: want the timeout, the crash, then the warnings", ev)
+				}
+			}
+		})
+	}
+	// Interrupted: never read as a timeout.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if res := installFailed(ctx, scenario.Result{}, "1.37", errors.New(installTimeout), crash, warning, nil); res.Verdict != scenario.Inconclusive {
+		t.Errorf("interrupted install: verdict %s, want INCONCLUSIVE", res.Verdict)
 	}
 }
 
@@ -73,7 +121,7 @@ func TestBlameARemovedAPIEvenWhenNothingInstalled(t *testing.T) {
 	err := errors.New(`Error: INSTALLATION FAILED: unable to build kubernetes objects from release manifest: resource mapping not found for name: "web" namespace: "" from "": no matches for kind "PodSecurityPolicy" in version "policy/v1beta1"`)
 	var results []scenario.Result
 	for _, v := range []string{"1.34", "1.35", "1.37"} {
-		results = append(results, installFailed(t.Context(), scenario.Result{Scenario: "k8s-" + v}, v, err, nil, nil))
+		results = append(results, installFailed(t.Context(), scenario.Result{Scenario: "k8s-" + v}, v, err, nil, nil, nil))
 	}
 	for _, r := range Attribute(results) {
 		if r.Verdict != scenario.Fail || len(r.Findings) != 1 || r.Findings[0].ID != "HB-K8S-001" {
@@ -98,13 +146,60 @@ func TestMissingCRDIsNotBlamedOnAVersion(t *testing.T) {
 		err := errors.New(`Error: INSTALLATION FAILED: unable to build kubernetes objects from release manifest: resource mapping not found for name: "web" namespace: "" from "": no matches for kind ` + kind)
 		var results []scenario.Result
 		for _, v := range []string{"1.34", "1.35", "1.37"} {
-			results = append(results, installFailed(t.Context(), scenario.Result{Scenario: "k8s-" + v}, v, err, nil, nil))
+			results = append(results, installFailed(t.Context(), scenario.Result{Scenario: "k8s-" + v}, v, err, nil, nil, nil))
 		}
 		for _, r := range Attribute(results) {
 			if r.Verdict != scenario.Inconclusive || len(r.Findings) != 0 {
 				t.Errorf("%s: %s = %s with %d finding(s), want INCONCLUSIVE and none", kind, r.Scenario, r.Verdict, len(r.Findings))
 			}
 		}
+	}
+}
+
+// A crash at install is a Kubernetes version's fault only if the chart ran healthy on another
+// version tested (#78). Kadir's case: a pod waiting in CreateContainerConfigError on every version.
+func TestCrashAtInstallIsBlamedOnlyWhenAnotherVersionRan(t *testing.T) {
+	crash := []string{"pod `web-1` (ReplicaSet/web-7d9), container `app`: CreateContainerConfigError"}
+	crashed := func(v string) scenario.Result {
+		return installFailed(t.Context(), scenario.Result{Scenario: "k8s-" + v}, v, errors.New(installTimeout), crash, nil, nil)
+	}
+	healthyWithWarning := result("1.36", scenario.Fail, "HB-K8S-003")
+	cases := []struct {
+		name    string
+		results []scenario.Result
+		want    string // the verdict of the last result, the crash on 1.37
+	}{
+		{"crash on every version", []scenario.Result{crashed("1.36"), crashed("1.37")}, scenario.Inconclusive},
+		{"one version tested", []scenario.Result{crashed("1.37")}, scenario.Inconclusive},
+		{"healthy on 1.36", []scenario.Result{result("1.36", scenario.Pass, ""), crashed("1.37")}, scenario.Fail},
+		{"healthy with a deprecation warning on 1.36", []scenario.Result{healthyWithWarning, crashed("1.37")}, scenario.Fail},
+		{"healthy with another API warning on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-004"), crashed("1.37")}, scenario.Fail},
+		// Unhealthy after an install that finished is not healthy.
+		{"unhealthy on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-002"), crashed("1.37")}, scenario.Inconclusive},
+		{"install failure on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-001"), crashed("1.37")}, scenario.Inconclusive},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Attribute(c.results)
+			r := got[len(got)-1]
+			if r.Verdict != c.want {
+				t.Fatalf("1.37 = %s (%s), want %s", r.Verdict, r.Summary, c.want)
+			}
+			if c.want == scenario.Inconclusive && (len(r.Findings) > 0 || !strings.Contains(r.Summary, "ran healthy on no version tested")) {
+				t.Errorf("1.37 = %s with %d finding(s) (%s), want no finding and the reason", r.Verdict, len(r.Findings), r.Summary)
+			}
+		})
+	}
+	// The install's deprecation warning stands without the crash.
+	warned := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.37"}, "1.37", errors.New(installTimeout), crash,
+		[]string{"API warning: policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+; use policy/v1 PodDisruptionBudget"}, nil)
+	if r := Attribute([]scenario.Result{warned})[0]; r.Verdict != scenario.Fail || len(r.Findings) != 1 || r.Findings[0].ID != "HB-K8S-003" ||
+		!strings.Contains(r.Summary, "ran healthy on no version tested") {
+		t.Errorf("crash with a deprecation warning on every version: %s %+v (%s), want FAIL with HB-K8S-003 only", r.Verdict, r.Findings, r.Summary)
+	}
+	// An unhealthy install that finished is judged by Attribute as before: it stays a finding.
+	if r := Attribute([]scenario.Result{result("1.37", scenario.Fail, "HB-K8S-002")})[0]; r.Verdict != scenario.Fail {
+		t.Errorf("finished install, unhealthy: %s, want FAIL kept", r.Verdict)
 	}
 }
 

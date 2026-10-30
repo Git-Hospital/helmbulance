@@ -32,6 +32,17 @@ func timedOutWaiting(ctx context.Context, err error) bool {
 		strings.Contains(msg, "not ready. status: failed")
 }
 
+// TimedOutWaiting is timedOutWaiting for matrix, which reads the release after an install's
+// `--wait` timeout as chart-upgrade does (#49).
+func TimedOutWaiting(ctx context.Context, err error) bool { return timedOutWaiting(ctx, err) }
+
+// StartFailures lists the containers of a release installed just now that crash or cannot start.
+// Every pod is new and has no count from before, so only the waiting reason counts: a container
+// that is only slow, or still pulling its image, is not listed.
+func StartFailures(containers []kube.Container) []string {
+	return crashedSince(containers, nil, nil, false)
+}
+
 // startFailures are waiting reasons that come from the pod spec the chart renders, not from the
 // cluster: the container crashed, or its command, config or image name cannot work. Image pulls
 // (ErrImagePull, ImagePullBackOff) are left out: a registry or network can cause those.

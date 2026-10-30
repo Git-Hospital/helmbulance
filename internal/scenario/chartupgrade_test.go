@@ -257,3 +257,21 @@ func TestTimedOutWaiting(t *testing.T) {
 		t.Error("a cancelled run counts as a --wait timeout")
 	}
 }
+
+// A release installed just now has no count from before: only a waiting reason the chart's pod
+// spec causes is a start failure, never restarts alone or an image pull (#49).
+func TestStartFailures(t *testing.T) {
+	got := StartFailures([]kube.Container{
+		{Pod: "web-1", PodUID: "1", Owner: "ReplicaSet/web-7d9", Name: "app", Waiting: "CrashLoopBackOff", LastReason: "Error", LastExit: 1, Restarts: 3},
+		{Pod: "web-1", PodUID: "1", Owner: "ReplicaSet/web-7d9", Name: "conf", Init: true, Waiting: "CreateContainerConfigError"},
+		{Pod: "db-0", PodUID: "2", Owner: "StatefulSet/db", Name: "db", Waiting: "ImagePullBackOff"},
+		{Pod: "db-0", PodUID: "2", Owner: "StatefulSet/db", Name: "slow", Restarts: 1},
+	})
+	want := []string{
+		"pod `web-1` (ReplicaSet/web-7d9), container `app`: CrashLoopBackOff, last run Error (exit 1), 3 restart(s)",
+		"pod `web-1` (ReplicaSet/web-7d9), init container `conf`: CreateContainerConfigError",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("StartFailures = %q, want %q", got, want)
+	}
+}

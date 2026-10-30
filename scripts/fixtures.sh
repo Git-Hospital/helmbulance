@@ -133,14 +133,18 @@ scan missing-chart      2 ""            ./testdata/charts/does-not-exist
 scan scan-render-fails  3 ""            testdata/charts/scan-render-fails
 scan missing-values     2 ""            testdata/charts/regenerates-secret -f testdata/charts/regenerates-secret/does-not-exist.yaml
 
-# Kubernetes matrix, on one version.
+# Kubernetes matrix, on one version unless $versions names more.
 matrix() {
   local name=$1 want=$2 want_ids=$3
   shift 3
-  ./bin/helmbulance matrix "$@" --k8s "$k8s" --report-dir "$out/matrix-$name" >"$out/matrix-$name.log" 2>&1
+  ./bin/helmbulance matrix "$@" --k8s "${versions:-$k8s}" --report-dir "$out/matrix-$name" >"$out/matrix-$name.log" 2>&1
   check "matrix $name" $? "$want" "$want_ids" "$out/matrix-$name" "$out/matrix-$name.log"
 }
 matrix deprecated-api 1 "HB-K8S-003" testdata/charts/deprecated-api
 matrix current-api    0 ""           testdata/charts/current-api
+# Its container exits 1 at start on 1.37 and runs on 1.36, so the install's --wait times out on a
+# crash loop on 1.37 only: HB-K8S-002 there, not INCONCLUSIVE (#49). A crash on every version
+# tested is INCONCLUSIVE (#78), which the unit tests cover.
+versions=1.36,1.37 matrix crashes-on-1-37 1 "HB-K8S-002" testdata/charts/crashes-on-1-37 --timeout 1m
 
 exit $failed

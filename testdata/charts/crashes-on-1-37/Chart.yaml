@@ -1,0 +1,5 @@
+apiVersion: v2
+name: crashes-on-1-37
+description: "Helmbulance fixture: a container that exits 1 at start on Kubernetes 1.37 and later and runs on older versions, so matrix blames the crash on 1.37 (#78)."
+type: application
+version: 0.1.0
