@@ -1,0 +1,10 @@
+# Kept on uninstall, so the reinstall finds the data written with the first password.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 10Mi}}

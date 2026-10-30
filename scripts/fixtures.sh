@@ -86,6 +86,9 @@ run reinstall-keeps-creds 0 ""                  testdata/charts/reinstall-keeps-
 run reinstall-loses-creds-projected 1 "HB-RI-001" testdata/charts/reinstall-loses-creds-projected --scenario reinstall
 # Its twin: the items mount only a key that does not change, so the new password reaches no kept data (#73).
 run reinstall-projected-items-other-key 0 "" testdata/charts/reinstall-projected-items-other-key --scenario reinstall
+# The same defect where only a backup CronJob mounts the kept claim and reads the password (#80). Its twin keeps it.
+run reinstall-cronjob-loses-creds 1 "HB-RI-001" testdata/charts/reinstall-cronjob-loses-creds --scenario reinstall
+run reinstall-cronjob-keeps-creds 0 ""          testdata/charts/reinstall-cronjob-keeps-creds --scenario reinstall
 # A pre-install hook Secret kept on uninstall is created again, with new values, by the next install (HB-RI-004). Its twin reuses them with lookup.
 run reinstall-replaces-kept-hook 1 "HB-RI-004"  testdata/charts/reinstall-replaces-kept-hook --scenario reinstall
 run reinstall-reuses-kept-hook 0 ""             testdata/charts/reinstall-reuses-kept-hook --scenario reinstall
