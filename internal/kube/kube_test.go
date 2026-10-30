@@ -52,7 +52,7 @@ func TestServicesReadsTypeAndAddresses(t *testing.T) {
 func TestWorkloadsIncludeDaemonSets(t *testing.T) {
 	c := fakeKubectl(t, `{"items":[
 		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"replicas":2,"strategy":{"type":"RollingUpdate"}}},
-		{"kind":"DaemonSet","metadata":{"name":"agent"},"spec":{"updateStrategy":{"type":"RollingUpdate"}},"status":{"desiredNumberScheduled":3}}
+		{"kind":"DaemonSet","metadata":{"name":"agent"},"spec":{"updateStrategy":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":0}}},"status":{"desiredNumberScheduled":3}}
 	]}`)
 	args := filepath.Join(t.TempDir(), "args")
 	t.Setenv("FAKE_ARGS", args)
@@ -62,7 +62,7 @@ func TestWorkloadsIncludeDaemonSets(t *testing.T) {
 	}
 	want := []Workload{
 		{Kind: "Deployment", Name: "web", Replicas: 2, Strategy: "RollingUpdate"},
-		{Kind: "DaemonSet", Name: "agent", Replicas: 3, Strategy: "RollingUpdate"},
+		{Kind: "DaemonSet", Name: "agent", Replicas: 3, Strategy: "RollingUpdate", MaxSurge: "0"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Workloads =\n%+v\nwant\n%+v", got, want)

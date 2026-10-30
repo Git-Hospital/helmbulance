@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"context"
 	"io"
 	"maps"
 	"os"
@@ -263,7 +264,7 @@ func TestZeroDowntimeBlamesTheWorkloadThatWasRestarting(t *testing.T) {
 	ev := strings.Join(res.Findings[0].Evidence, "\n")
 	for _, want := range []string{
 		"While `StatefulSet/db` restarted (1 pod): 2 of 4 requests failed",
-		"`StatefulSet/db` does not serve `web`",
+		"`StatefulSet/db` does not serve `web`; the pods behind `web` may depend on it",
 		"`StatefulSet/db` has no readiness probe",
 	} {
 		if !strings.Contains(ev, want) {
@@ -319,5 +320,126 @@ func TestZeroDowntimeOneWorkloadHasNoWindowLine(t *testing.T) {
 	}
 	if ev := strings.Join(res.Findings[0].Evidence, "\n"); strings.Contains(ev, "While `") {
 		t.Errorf("evidence repeats the whole operation as a window:\n%s", ev)
+	}
+}
+
+// Review #85, point 1: a restart that replaces nothing behind the target Service proves nothing
+// about it, so it is SKIPPED, not a PASS.
+func TestZeroDowntimeNothingBehindTheServiceIsSkipped(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":          `{"items":[{"kind":"Deployment","metadata":{"name":"other"},"spec":{"replicas":2,"template":{"metadata":{"labels":{"app":"other"}}}}}]}`,
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic":         "300 ok\n",
+	})
+	if res.Verdict != Skipped || !strings.Contains(res.Summary, "would not replace the pods behind web") {
+		t.Errorf("verdict = %s (%s), want SKIPPED naming web", res.Verdict, res.Summary)
+	}
+}
+
+// A PASS says how much of what it replaced is behind the target Service.
+func TestZeroDowntimePassCountsWhatIsBehindTheService(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":          twoWorkloads,
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic":         "300 ok\n",
+	})
+	if res.Verdict != Pass || !strings.Contains(res.Summary, "1 workload, 2 pods behind web") {
+		t.Errorf("verdict = %s (%s), want PASS naming 1 workload, 2 pods behind web", res.Verdict, res.Summary)
+	}
+}
+
+// Review #85, point 2: rollout status returns while the last old pod still shuts down, so the
+// scenario waits before it reads the next workload's start; that pod's failures stay in its own
+// workload's window.
+func TestZeroDowntimeWaitsBeforeTheNextWorkload(t *testing.T) {
+	logDir := ""
+	s := settle
+	t.Cleanup(func() { settle = s })
+	settle = func(ctx context.Context, d time.Duration) error {
+		f, err := os.OpenFile(filepath.Join(logDir, "calls"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = f.WriteString("settle\n")
+		return err
+	}
+	runZeroDowntime(t, map[string]string{
+		"workloads":          twoWorkloads,
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic":         "300 ok\n",
+	}, func(env *Env) { logDir = os.Getenv("FAKE_LOGS") })
+	calls, _ := os.ReadFile(filepath.Join(logDir, "calls"))
+	want := "rollout restart deployment/web\nrollout status deployment/web --timeout 1m0s\nsettle\n" +
+		"rollout restart statefulset/db\nrollout status statefulset/db --timeout 1m0s\n"
+	if string(calls) != want {
+		t.Errorf("calls =\n%s\nwant a wait between the workloads, not after the last:\n%s", calls, want)
+	}
+}
+
+// One pod on one node, replaced with maxSurge 0: the DaemonSet's own update stops the old pod first.
+const oneNodeDaemonSet = `{"items":[
+	{"kind":"DaemonSet","metadata":{"name":"web"},"spec":{"updateStrategy":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":0,"maxUnavailable":1}},"template":{"metadata":{"labels":{"app":"web"}},"spec":{"containers":[{"readinessProbe":{},"lifecycle":{"preStop":{}}}]}}},"status":{"desiredNumberScheduled":1}}
+]}`
+
+// Review #85, point 3: on the one-node sandbox, a DaemonSet with maxSurge 0 always leaves its
+// Service without an endpoint while its pod is replaced. That comes from the sandbox, not the
+// chart, so it is INCONCLUSIVE, not a finding.
+func TestZeroDowntimeOneNodeDaemonSetIsInconclusive(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":          oneNodeDaemonSet,
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "300 ok\n",
+		"hb-traffic":         "300 ok\n301 fail\n302 ok\n",
+	})
+	if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "`DaemonSet/web`") || len(res.Findings) != 0 {
+		t.Errorf("verdict = %s (%s), %d findings; want INCONCLUSIVE naming DaemonSet/web", res.Verdict, res.Summary, len(res.Findings))
+	}
+}
+
+// Review #85, smaller point: windows that finished before a later rollout failed are complete
+// measurements, so their failures are still a finding.
+func TestZeroDowntimeKeepsFailuresBeforeAFailedRollout(t *testing.T) {
+	bin := t.TempDir()
+	// The fake kubectl, except that the StatefulSet's rollout never finishes.
+	script := strings.Replace(fakeKubectl, `  *" rollout "*)`, `  *"rollout status statefulset/db"*) echo "timed out waiting for the condition" >&2; exit 1 ;;
+  *" rollout "*)`, 1)
+	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":           twoWorkloads,
+		"hb-traffic-control":  "100 ok\n",
+		"hb-traffic.before.0": "300 ok\n",
+		"hb-traffic.before.1": "310 ok\n",
+		// db's window is cut off by its failed rollout, so its failure at 311 does not count.
+		"hb-traffic": "300 ok\n301 fail\n302 fail\n303 ok\n310 ok\n311 fail\n",
+	}, func(env *Env) { t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH")) })
+	if res.Verdict != Fail || len(res.Findings) != 1 || !strings.HasPrefix(res.Summary, "2 of 4 requests failed") {
+		t.Fatalf("verdict = %s (%s), want FAIL with 2 of 4, from web's finished window only", res.Verdict, res.Summary)
+	}
+	ev := strings.Join(res.Findings[0].Evidence, "\n")
+	for _, want := range []string{"While `Deployment/web` restarted (2 pods): 2 of 4 requests failed", "the restart of `StatefulSet/db` failed"} {
+		if !strings.Contains(ev, want) {
+			t.Errorf("evidence does not contain %q:\n%s", want, ev)
+		}
+	}
+}
+
+// On two or more nodes the DaemonSet's gap is the chart's, and the cause names maxSurge, not a
+// replica count a DaemonSet does not have.
+func TestZeroDowntimeDaemonSetCauseIsMaxSurge(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":          strings.Replace(oneNodeDaemonSet, `"desiredNumberScheduled":1`, `"desiredNumberScheduled":2`, 1),
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "300 ok\n",
+		"hb-traffic":         "300 ok\n301 fail\n302 ok\n",
+	})
+	if res.Verdict != Fail || len(res.Findings) != 1 {
+		t.Fatalf("verdict = %s (%s), want FAIL", res.Verdict, res.Summary)
+	}
+	ev := strings.Join(res.Findings[0].Evidence, "\n")
+	if !strings.Contains(ev, "`DaemonSet/web` updates with maxSurge 0") || strings.Contains(ev, "replica;") {
+		t.Errorf("evidence does not name maxSurge as the cause:\n%s", ev)
 	}
 }

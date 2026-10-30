@@ -147,15 +147,30 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	// One workload is restarted at a time, so a failure is blamed on the one being replaced then,
 	// not on whatever the Service selects (#10).
 	var restarts []int64
-	pods := 0
+	done := 0 // workloads whose rollout finished
+	pods, behind, behindPods := 0, 0, 0
+	svc, svcKnown := targetService(services, target)
 	for _, w := range workloads {
 		pods += w.Replicas
+		if svcKnown && w.Serves(svc) {
+			behind++
+			behindPods += w.Replicas
+		}
 	}
-	operation := fmt.Sprintf("a rolling restart of %s, %s, one at a time", count(len(workloads), "workload"), count(pods, "pod"))
+	operation := fmt.Sprintf("a rolling restart of %s, %s", count(len(workloads), "workload"), count(pods, "pod"))
+	if svcKnown {
+		operation += fmt.Sprintf(" (%s, %s behind %s)", count(behind, "workload"), count(behindPods, "pod"), svc.Name)
+	}
+	operation += ", one at a time"
 	act := func() error {
 		for i, w := range workloads {
 			start := actStart
 			if i > 0 {
+				// rollout status returns while the last old pod is still stopping; its failures
+				// belong to the workload before (review of #85).
+				if err := settle(ctx, trafficTail); err != nil {
+					return err
+				}
 				last, err := env.Kube.LastLogLine(ctx, ns, "hb-traffic")
 				if err != nil {
 					return err
@@ -169,8 +184,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 			}
 			restarts = append(restarts, start)
 			if err := env.Kube.RestartWorkload(ctx, ns, w, env.Helm.Timeout.String()); err != nil {
-				return err
+				return fmt.Errorf("the restart of `%s/%s` failed: %w", w.Kind, w.Name, err)
 			}
+			done++
 		}
 		return nil
 	}
@@ -180,6 +196,10 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	} else if len(workloads) == 0 {
 		res.Verdict = Skipped
 		res.Summary = "no Deployment, StatefulSet or DaemonSet to restart, so nothing would be replaced"
+		return res
+	} else if svcKnown && behind == 0 {
+		res.Verdict = Skipped
+		res.Summary = fmt.Sprintf("a rolling restart would not replace the pods behind %s: no Deployment, StatefulSet or DaemonSet in the release selects them", svc.Name)
 		return res
 	}
 	gained := map[string]bool{} // addresses the chosen Service gained in slices the control plane did not write
@@ -220,7 +240,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "the traffic during the operation could not run", err)
 	}
 	treatment := oracle.ParseTrafficSince(log, actStart)
-	if actErr != nil {
+	// A restart that failed part way still leaves the windows before it complete; anything else that
+	// failed leaves nothing proven.
+	if actErr != nil && done == 0 {
 		return inconclusive(res, operation+" failed", actErr)
 	}
 	if recheckErr != nil {
@@ -231,15 +253,45 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 			fmt.Errorf("%s gained endpoints the control plane did not write: %s",
 				service, strings.Join(slices.Sorted(maps.Keys(gained)), ", ")))
 	}
+	finished := len(restarts)
+	if actErr != nil {
+		// Only the finished windows count. restarts[done], when there is one, is where the failed
+		// workload's window began, so the treatment ends there.
+		finished = done
+		treatment = oracle.ParseTrafficBetween(log, actStart, cutoff(restarts, done))
+	}
 	if treatment.Total == 0 {
 		return inconclusive(res, "no requests were sent during "+operation, fmt.Errorf("the traffic pod logged nothing after the operation started"))
 	}
 
-	if treatment.Failed == 0 {
+	windows := restartWindows(log, restarts, finished, workloads)
+	var real, sandbox []window
+	for _, w := range windows {
+		if oneNodeGap(w.workload) {
+			sandbox = append(sandbox, w)
+		} else {
+			real = append(real, w)
+		}
+	}
+	switch {
+	case treatment.Failed == 0 && actErr != nil:
+		return inconclusive(res, operation+" failed", actErr)
+	case treatment.Failed == 0:
 		res.Verdict = Pass
 		res.Summary = fmt.Sprintf("no failed requests during %s (%d sent to %s)", operation, treatment.Total, target)
 		return res
+	case len(real) == 0 && len(sandbox) > 0:
+		var refs []string
+		for _, w := range sandbox {
+			refs = append(refs, "`"+w.ref()+"`")
+		}
+		return inconclusive(res, fmt.Sprintf("%d of %d requests failed, all while %s restarted",
+			treatment.Failed, treatment.Total, strings.Join(refs, ", ")),
+			fmt.Errorf("a DaemonSet with maxSurge 0 stops its pod on a node before it starts the new one, and the sandbox has one node, so its Service had no endpoint for a moment; with more nodes the others keep serving, so this sandbox cannot tell whether the chart has a gap"))
+	case actErr != nil && len(real) == 0:
+		return inconclusive(res, operation+" failed", actErr)
 	}
+
 	res.Verdict = Fail
 	res.Summary = fmt.Sprintf("%d of %d requests failed during %s", treatment.Failed, treatment.Total, operation)
 	evidence := []string{
@@ -252,12 +304,20 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 			firstControl.Failed, firstControl.Total))
 	}
 	blamed := serving(workloads, services, target)
-	if lines, failing := restartWindows(log, restarts, workloads, services, target); len(failing) > 0 {
+	if len(real) > 0 {
 		// With one workload its window is the whole operation, which the first line already gives.
-		if len(restarts) > 1 {
-			evidence = append(evidence, lines...)
+		if len(workloads) > 1 || actErr != nil {
+			for _, w := range windows {
+				evidence = append(evidence, w.line(svc, svcKnown))
+			}
 		}
-		blamed = failing
+		blamed = nil
+		for _, w := range real {
+			blamed = append(blamed, w.workload)
+		}
+	}
+	if actErr != nil {
+		evidence = append(evidence, "Then "+actErr.Error()+"; the windows before it are complete, so their failures count.")
 	}
 	res.Findings = append(res.Findings, Finding{
 		ID:       "HB-ZD-001",
@@ -388,7 +448,10 @@ func causes(workloads []kube.Workload) []string {
 		if w.Strategy == "Recreate" {
 			out = append(out, fmt.Sprintf("`%s` uses the Recreate strategy: all pods stop before new ones start.", ref))
 		}
-		if w.Replicas < 2 && w.Strategy != "Recreate" {
+		switch {
+		case w.Kind == "DaemonSet" && (w.MaxSurge == "" || w.MaxSurge == "0" || w.MaxSurge == "0%"):
+			out = append(out, fmt.Sprintf("`%s` updates with maxSurge 0: on each node the old pod stops before the new one starts.", ref))
+		case w.Kind != "DaemonSet" && w.Replicas < 2 && w.Strategy != "Recreate":
 			out = append(out, fmt.Sprintf("`%s` has %d replica; while it restarts nothing else serves.", ref, w.Replicas))
 		}
 		if !w.HasReadiness {
@@ -409,6 +472,9 @@ func seconds(at []int64) string {
 	}
 	return strings.Join(out, ", ")
 }
+
+// settle is the wait between two workloads of a restart; tests replace it to see where it runs.
+var settle = sleep
 
 func sleep(ctx context.Context, d time.Duration) error {
 	select {
@@ -460,33 +526,54 @@ func targetService(services []kube.Service, target string) (kube.Service, bool) 
 	return kube.Service{}, false
 }
 
-// restartWindows splits the treatment log at the second each workload's restart began and returns
-// an evidence line for each workload whose window had failures, and those workloads. A request in
-// the second the next restart began counts for the next one.
-func restartWindows(log string, restarts []int64, workloads []kube.Workload, services []kube.Service, target string) ([]string, []kube.Workload) {
-	svc, known := targetService(services, target)
-	var lines []string
-	var failing []kube.Workload
-	for i, start := range restarts {
-		var until int64
-		if i+1 < len(restarts) {
-			until = restarts[i+1]
-		}
-		st := oracle.ParseTrafficBetween(log, start, until)
-		if st.Failed == 0 {
-			continue
-		}
-		w := workloads[i]
-		ref := w.Kind + "/" + w.Name
-		line := fmt.Sprintf("While `%s` restarted (%s): %d of %d requests failed; longest outage %s.",
-			ref, count(w.Replicas, "pod"), st.Failed, st.Total, outageText(st.LongestOutage))
-		if known && !w.Serves(svc) {
-			line += fmt.Sprintf(" `%s` does not serve `%s`; the pods behind `%s` depend on it.", ref, svc.Name, svc.Name)
-		}
-		lines = append(lines, line)
-		failing = append(failing, w)
+// window is one workload's share of a one-at-a-time restart, with its failures.
+type window struct {
+	workload kube.Workload
+	stats    oracle.TrafficStats
+}
+
+func (w window) ref() string { return w.workload.Kind + "/" + w.workload.Name }
+
+// line is the evidence for a window: its counts, and whether it serves the target Service.
+func (w window) line(svc kube.Service, svcKnown bool) string {
+	line := fmt.Sprintf("While `%s` restarted (%s): %d of %d requests failed; longest outage %s.",
+		w.ref(), count(w.workload.Replicas, "pod"), w.stats.Failed, w.stats.Total, outageText(w.stats.LongestOutage))
+	if svcKnown && !w.workload.Serves(svc) {
+		line += fmt.Sprintf(" `%s` does not serve `%s`; the pods behind `%s` may depend on it.", w.ref(), svc.Name, svc.Name)
 	}
-	return lines, failing
+	if oneNodeGap(w.workload) {
+		line += " On this one-node sandbox a DaemonSet with maxSurge 0 always has this gap, so it is not counted."
+	}
+	return line
+}
+
+// restartWindows splits the treatment log at the second each workload's restart began and returns
+// those of the first n windows with failures. A request in the second the next restart began counts
+// for the next one; the last window runs to the end of the log.
+func restartWindows(log string, restarts []int64, n int, workloads []kube.Workload) []window {
+	var out []window
+	for i, start := range restarts[:n] {
+		st := oracle.ParseTrafficBetween(log, start, cutoff(restarts, i+1))
+		if st.Failed > 0 {
+			out = append(out, window{workload: workloads[i], stats: st})
+		}
+	}
+	return out
+}
+
+// cutoff is the start of the window after i, or 0 (no end) when there is none.
+func cutoff(restarts []int64, next int) int64 {
+	if next < len(restarts) {
+		return restarts[next]
+	}
+	return 0
+}
+
+// oneNodeGap reports whether a workload is a DaemonSet that, on the one-node sandbox, has no pod
+// while it is replaced: one scheduled pod and maxSurge 0 (the default), so the old pod stops
+// before the new one starts.
+func oneNodeGap(w kube.Workload) bool {
+	return w.Kind == "DaemonSet" && w.Replicas == 1 && (w.MaxSurge == "" || w.MaxSurge == "0" || w.MaxSurge == "0%")
 }
 
 // count writes n with its noun: "1 pod", "3 pods".

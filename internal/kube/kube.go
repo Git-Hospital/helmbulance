@@ -529,6 +529,7 @@ type Workload struct {
 	Replicas       int
 	Strategy       string // RollingUpdate or Recreate (Deployments), RollingUpdate or OnDelete (StatefulSets, DaemonSets)
 	MaxUnavailable string
+	MaxSurge       string // a Deployment's or DaemonSet's rollingUpdate.maxSurge, as written
 	HasReadiness   bool
 	HasPreStop     bool
 	PodLabels      map[string]string
@@ -566,10 +567,14 @@ func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
 					Type          string `json:"type"`
 					RollingUpdate struct {
 						MaxUnavailable any `json:"maxUnavailable"`
+						MaxSurge       any `json:"maxSurge"`
 					} `json:"rollingUpdate"`
 				} `json:"strategy"`
 				UpdateStrategy struct {
-					Type string `json:"type"`
+					Type          string `json:"type"`
+					RollingUpdate struct {
+						MaxSurge any `json:"maxSurge"`
+					} `json:"rollingUpdate"`
 				} `json:"updateStrategy"`
 				Template struct {
 					Metadata struct {
@@ -608,6 +613,12 @@ func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
 		}
 		if mu := item.Spec.Strategy.RollingUpdate.MaxUnavailable; mu != nil {
 			w.MaxUnavailable = fmt.Sprint(mu)
+		}
+		if ms := item.Spec.Strategy.RollingUpdate.MaxSurge; ms != nil {
+			w.MaxSurge = fmt.Sprint(ms)
+		}
+		if ms := item.Spec.UpdateStrategy.RollingUpdate.MaxSurge; item.Kind == "DaemonSet" && ms != nil {
+			w.MaxSurge = fmt.Sprint(ms)
 		}
 		for _, c := range item.Spec.Template.Spec.Containers {
 			if c.ReadinessProbe != nil {
