@@ -28,6 +28,7 @@ var notTheChart = []string{
 	"etcdserver: server stopped",
 	"etcdserver: unhealthy cluster",
 	"etcdserver: too many requests",
+	"etcdserver: mvcc: database space exceeded", // the cluster's etcd quota is full
 	"no such host",
 	"failed to fetch",
 }

@@ -25,6 +25,7 @@ func TestIsEnvironmentError(t *testing.T) {
 		{"Error: UPGRADE FAILED: etcdserver: request timed out, possibly due to previous leader failure", true},
 		// An object over etcd's request limit fails the same way on every cluster: the chart's fault.
 		{"Error: UPGRADE FAILED: failed to create resource: etcdserver: request is too large", false},
+		{"Error: UPGRADE FAILED: etcdserver: mvcc: database space exceeded", true},
 		// helm 4.3 downloading the chart again: an unknown host, a host or repository answering 503.
 		{`Error: Get "https://charts.example.invalid/x-1.0.0.tgz": dial tcp: lookup charts.example.invalid: no such host`, true},
 		{"Error: failed to fetch https://charts.example.com/x-1.0.0.tgz : 503 Service Unavailable", true},
