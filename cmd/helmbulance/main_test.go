@@ -167,6 +167,52 @@ func TestRefuseFromVersionThatALocalFromIsNot(t *testing.T) {
 	}
 }
 
+// A traffic flag that cannot work is refused before a cluster exists, not after the control
+// traffic fails (#95).
+func TestRefuseTraffic(t *testing.T) {
+	for _, c := range []struct {
+		target, path string
+		refused      bool
+	}{
+		{"", "/", false},
+		{"", "/healthz", false},
+		{"web:80", "/", false},
+		{"web:65535", "/healthz", false},
+		{"", "healthz", true},
+		{"", "/health z", true},
+		{"", "/a\tb", true},
+		{"http://web:80", "/", true},
+		{"web:", "/", true},
+		{"web:0", "/", true},
+		{"web:65536", "/", true},
+		{"web:http", "/", true},
+		{"web:80:90", "/", true},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseTraffic(c.target, c.path) })
+		if refused != c.refused {
+			t.Errorf("refuseTraffic(%q, %q) = %v, want %v", c.target, c.path, refused, c.refused)
+		}
+		if refused && out == "" {
+			t.Errorf("refuseTraffic(%q, %q) printed no message", c.target, c.path)
+		}
+	}
+}
+
+// A repeated --scenario runs once, in the order first given (#95).
+func TestPickOnce(t *testing.T) {
+	got, err := pick([]string{"reinstall", "reinstall", "upgrade-without-values"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name() != "reinstall" || got[1].Name() != "upgrade-without-values" {
+		t.Errorf("pick = %v, want reinstall then upgrade-without-values", got)
+	}
+	if _, err := pick([]string{"nope"}); err == nil {
+		t.Error("pick accepted an unknown scenario")
+	}
+}
+
 func TestCheckRotations(t *testing.T) {
 	for _, ok := range []string{"*-webhook-tls/*", "hb-upgrade-ca/tls.crt", "*/ca.crt"} {
 		if err := checkRotations([]string{ok}); err != nil {
