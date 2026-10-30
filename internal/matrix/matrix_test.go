@@ -177,6 +177,10 @@ func TestCrashAtInstallIsBlamedOnlyWhenAnotherVersionRan(t *testing.T) {
 		// Unhealthy after an install that finished is not healthy.
 		{"unhealthy on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-002"), crashed("1.37")}, scenario.Inconclusive},
 		{"install failure on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-001"), crashed("1.37")}, scenario.Inconclusive},
+		{"INCONCLUSIVE on 1.36", []scenario.Result{result("1.36", scenario.Inconclusive, ""), crashed("1.37")}, scenario.Inconclusive},
+		// The last result here is the install failure on 1.37: 1.36 accepted the manifests, so
+		// the crash counts as installed and the failure stays a finding.
+		{"crash on 1.36, install failure on 1.37", []scenario.Result{crashed("1.36"), result("1.37", scenario.Fail, "HB-K8S-001")}, scenario.Fail},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
