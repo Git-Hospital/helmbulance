@@ -106,6 +106,8 @@ run gitops-install-only  1 "HB-GR-001"          testdata/charts/gitops-install-o
 run gitops-upgrade-hook  0 ""                   testdata/charts/gitops-upgrade-hook --scenario gitops-render
 run zd-recreate        1 "HB-ZD-001"           testdata/charts/zd-recreate --scenario zero-downtime
 run zd-rolling         0 ""                    testdata/charts/zd-rolling --scenario zero-downtime
+# A ResourceQuota on requests and limits rejects a traffic pod without them: INCONCLUSIVE before #97.
+run zd-rolling-quota   0 ""                    testdata/charts/zd-rolling-quota --scenario zero-downtime
 
 # Static scan: no cluster, seconds. --strict makes candidates exit 1.
 scan() {

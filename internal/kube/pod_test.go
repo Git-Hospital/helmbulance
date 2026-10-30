@@ -45,6 +45,10 @@ func TestStartPodIsHardened(t *testing.T) {
 						Drop []string `json:"drop"`
 					} `json:"capabilities"`
 				} `json:"securityContext"`
+				Resources struct {
+					Requests map[string]string `json:"requests"`
+					Limits   map[string]string `json:"limits"`
+				} `json:"resources"`
 			} `json:"containers"`
 		} `json:"spec"`
 	}
@@ -73,5 +77,12 @@ func TestStartPodIsHardened(t *testing.T) {
 	}
 	if strings.Join(sc.Capabilities.Drop, ",") != "ALL" {
 		t.Errorf("capabilities dropped = %v, want ALL", sc.Capabilities.Drop)
+	}
+	// A ResourceQuota on requests or limits in the chart's namespace rejects a pod without them (#97).
+	r := s.Containers[0].Resources
+	for _, res := range []string{"cpu", "memory"} {
+		if r.Requests[res] == "" || r.Limits[res] == "" {
+			t.Errorf("resources = %+v, want %s requests and limits", r, res)
+		}
 	}
 }
