@@ -47,6 +47,59 @@ func TestServicesReadsTypeAndAddresses(t *testing.T) {
 	}
 }
 
+// Workloads lists DaemonSets too, with one pod per scheduled node, so a rolling restart replaces
+// them and the report counts their pods (#10).
+func TestWorkloadsIncludeDaemonSets(t *testing.T) {
+	c := fakeKubectl(t, `{"items":[
+		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"replicas":2,"strategy":{"type":"RollingUpdate"}}},
+		{"kind":"DaemonSet","metadata":{"name":"agent"},"spec":{"updateStrategy":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":0}}},"status":{"desiredNumberScheduled":3}}
+	]}`)
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FAKE_ARGS", args)
+	got, err := c.Workloads(t.Context(), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Workload{
+		{Kind: "Deployment", Name: "web", Replicas: 2, Strategy: "RollingUpdate"},
+		{Kind: "DaemonSet", Name: "agent", Replicas: 3, Strategy: "RollingUpdate", MaxSurge: "0"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Workloads =\n%+v\nwant\n%+v", got, want)
+	}
+	if a, _ := os.ReadFile(args); !strings.Contains(string(a), "get deployments,statefulsets,daemonsets ") {
+		t.Errorf("kubectl args = %q, want DaemonSets asked for", a)
+	}
+}
+
+// RestartWorkload restarts one workload and waits for its rollout before it returns, so the next
+// one starts only after it (#10).
+func TestRestartWorkloadWaitsForItsRollout(t *testing.T) {
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte("#!/bin/sh\necho \"$*\" >> "+calls+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	c := &Client{Runner: &execx.Runner{}}
+	for _, w := range []Workload{{Kind: "Deployment", Name: "web"}, {Kind: "DaemonSet", Name: "agent"}} {
+		if err := c.RestartWorkload(t.Context(), "ns", w, "2m"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log, _ := os.ReadFile(calls)
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(string(log)), "\n") {
+		_, cmd, _ := strings.Cut(line, "--namespace ns ")
+		got = append(got, cmd)
+	}
+	want := []string{"rollout restart deployment/web", "rollout status deployment/web --timeout 2m",
+		"rollout restart daemonset/agent", "rollout status daemonset/agent --timeout 2m"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("kubectl calls =\n%q\nwant\n%q", got, want)
+	}
+}
+
 func TestStatefulWorkloads(t *testing.T) {
 	c := fakeKubectl(t, `{"items":[
 		{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"volumeClaimTemplates":[{"metadata":{"name":"data"}}]}},

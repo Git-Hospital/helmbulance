@@ -49,3 +49,15 @@ func TestParseTrafficSince(t *testing.T) {
 		t.Errorf("FailedAt = %v, want [1]", s.FailedAt)
 	}
 }
+
+// ParseTrafficBetween counts the requests sent from since up to, not including, until, so each
+// workload of a one-at-a-time restart gets the failures of its own window (#10).
+func TestParseTrafficBetween(t *testing.T) {
+	log := "100 ok\n101 fail\n102 fail\n103 ok\n104 fail\n105 ok\n"
+	if s := ParseTrafficBetween(log, 101, 104); s.Total != 3 || s.Failed != 2 || s.LongestOutage != 2*time.Second {
+		t.Errorf("[101, 104) = %+v, want 2 of 3 failed and a 2s outage", s)
+	}
+	if s := ParseTrafficBetween(log, 104, 0); s.Total != 2 || s.Failed != 1 {
+		t.Errorf("[104, end) = %+v, want 1 of 2 failed", s)
+	}
+}
