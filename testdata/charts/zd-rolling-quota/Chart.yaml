@@ -1,0 +1,5 @@
+apiVersion: v2
+name: zd-rolling-quota
+description: "Helmbulance fixture. zd-rolling with a ResourceQuota on requests and limits in the release namespace: a pod without them is rejected, so the traffic pod needs its own (#97)."
+type: application
+version: 0.1.0
