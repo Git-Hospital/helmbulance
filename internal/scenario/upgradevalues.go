@@ -3,6 +3,7 @@ package scenario
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -125,7 +126,9 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	filesErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{Files: env.Values.Files}, "--reset-values")
 	if filesErr != nil && !timedOutWaiting(ctx, filesErr) {
 		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
-		res = filesUpgradeFailed(ctx, res, filesErr, len(execx.SetKeys(env.Values.Sets)))
+		// --set a=1 --set a=2 drops one key, not two.
+		dropped := len(slices.Compact(slices.Sorted(slices.Values(execx.SetKeys(env.Values.Sets)))))
+		res = filesUpgradeFailed(ctx, res, filesErr, dropped)
 		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
 		return res
 	}
