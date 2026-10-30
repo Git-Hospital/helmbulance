@@ -629,9 +629,19 @@ func (c *Client) StartPod(ctx context.Context, ns, name, image, script string, l
 	return err
 }
 
+// smallPod are the requests and limits of the pods helmbulance runs in the chart's namespace. A
+// ResourceQuota there that counts requests or limits rejects a pod without them, and a LimitRange
+// would give it the chart's defaults (#97). A busybox loop needs no more.
+func smallPod() map[string]any {
+	return map[string]any{
+		"requests": map[string]string{"cpu": "10m", "memory": "16Mi"},
+		"limits":   map[string]string{"cpu": "100m", "memory": "32Mi"},
+	}
+}
+
 // hardenedPod is merged into the pod kubectl run makes. The pod lives in the chart's namespace,
-// so it carries no ServiceAccount token and meets Pod Security "restricted": no root, no
-// privilege escalation, no capabilities, a read-only root filesystem.
+// so it carries no ServiceAccount token, meets Pod Security "restricted" (no root, no privilege
+// escalation, no capabilities, a read-only root filesystem) and sets its own resources.
 func hardenedPod(container string) map[string]any {
 	return map[string]any{
 		"spec": map[string]any{
@@ -649,6 +659,7 @@ func hardenedPod(container string) map[string]any {
 					"readOnlyRootFilesystem":   true,
 					"capabilities":             map[string]any{"drop": []string{"ALL"}},
 				},
+				"resources": smallPod(),
 			}},
 		},
 	}
@@ -723,10 +734,7 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 				"runAsUser": 0, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
 				"capabilities": map[string]any{"drop": []string{"ALL"}, "add": []string{"CHOWN", "DAC_OVERRIDE", "FOWNER"}},
 			},
-			"resources": map[string]any{
-				"requests": map[string]string{"cpu": "10m", "memory": "16Mi"},
-				"limits":   map[string]string{"cpu": "100m", "memory": "32Mi"},
-			},
+			"resources": smallPod(),
 		}},
 		"volumes": []any{map[string]any{"name": "pvc", "persistentVolumeClaim": map[string]any{"claimName": claim}}},
 	}})
