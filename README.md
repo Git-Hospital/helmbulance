@@ -36,7 +36,7 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 | `helmbulance matrix` | Does the chart install and run on every supported Kubernetes version (1.34–1.37), and does the API server warn about what it creates? | **works** |
 | `reinstall` | After `helm uninstall` and `helm install`, do data and credentials come back? | **works** |
 | `gitops-render` | Does the chart render differently without cluster access, as Argo CD does (`lookup` returns nothing there)? Which Secret values would every sync overwrite? | **works** |
-| `network-isolation` | Are undeclared ports and bundled datastores unreachable from other namespaces, and is the NetworkPolicy actually enforced? | v0.1 |
+| `network-isolation` | Are undeclared ports and bundled datastores unreachable from other namespaces, and is the NetworkPolicy actually enforced? | v0.1.x |
 | `secret-rotation` | When a password changes, does every component that uses it restart and keep working? | v0.2 |
 | `immutable-fields` | Does a values change hit an immutable field (StatefulSet volume templates, selectors) and break the upgrade? | v0.2 |
 | `process-kill` | If a process inside the container dies, does the liveness probe notice? | v0.2 |
@@ -44,7 +44,7 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 
 ## Found in public charts
 
-Every row was reproduced with Helmbulance before it was listed: on a kind cluster, and for `gitops-render` by rendering the chart without cluster access, as Argo CD does. Status on 28 October 2026.
+Every row was reproduced with Helmbulance before it was listed: on a kind cluster, and for `gitops-render` by rendering the chart without cluster access, as Argo CD does. Status on 29 October 2026.
 
 **Reported by us**
 
@@ -54,8 +54,9 @@ Every row was reproduced with Helmbulance before it was listed: on a kind cluste
 | JupyterHub | The same restart, for the hub and the proxy. | `upgrade-without-values` (HB-UV-003) | [#3996](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/3996), fix [#3997](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/pull/3997) open |
 | Semaphore | The same restart. | `upgrade-without-values` (HB-UV-003) | [#34](https://github.com/semaphoreui/charts/issues/34), fix [#35](https://github.com/semaphoreui/charts/pull/35) open |
 | yugabyte | Patch release 2026.1.2 changes a StatefulSet selector, so with the default `oldNamingStyle: true` every upgrade from 2026.1.0 or 2026.1.1 fails. | `scan` (HB-SCAN-001), confirmed by `chart-upgrade` (HB-CU-001) | [#240](https://github.com/yugabyte/charts/issues/240) open |
-| SeaweedFS | A number or boolean written without quotes in `extraEnvironmentVars` (`WEED_MYSQL_PORT: 3306`) rendered as `valueFrom` and failed the install. | found by hand; caught by `scan` (HB-SCAN-004, in review in [#42](https://github.com/Git-Hospital/helmbulance/pull/42)) | fix [#12137](https://github.com/seaweedfs/seaweedfs/pull/12137) merged |
-| SeaweedFS | With the MySQL filer store, an uninstall and install wrote a new database password and locked the filer out of its database. | found by hand; caught by `reinstall` (HB-RI-004, in review in [#43](https://github.com/Git-Hospital/helmbulance/pull/43)) | fix [#12138](https://github.com/seaweedfs/seaweedfs/pull/12138) merged |
+| SeaweedFS | A number or boolean written without quotes in `extraEnvironmentVars` (`WEED_MYSQL_PORT: 3306`) rendered as `valueFrom` and failed the install. | found by hand; caught by `scan` (HB-SCAN-004) | fix [#12137](https://github.com/seaweedfs/seaweedfs/pull/12137) merged |
+| SeaweedFS | With the MySQL filer store, an uninstall and install wrote a new database password and locked the filer out of its database. | found by hand; caught by `reinstall` (HB-RI-004) | fix [#12138](https://github.com/seaweedfs/seaweedfs/pull/12138) merged |
+| SeaweedFS | With the MySQL filer store, setting the database user or password in `extraEnvironmentVars` or `secretExtraEnvironmentVars`, as the wiki's Helm chart recipes do for store credentials, named the variable twice in the filer container. Helm 4 rejected the install; Helm 3 deployed with a warning that one value may be dropped. | found by hand; caught by `scan` (HB-SCAN-005) | fix [#12139](https://github.com/seaweedfs/seaweedfs/pull/12139) merged |
 
 **Reported by others, reproduced with Helmbulance**
 
@@ -92,7 +93,8 @@ More case studies:
 
 ## Roadmap
 
-- **v0.1:** the CLI with `upgrade-without-values`, `reinstall`, `gitops-render` and `network-isolation`, Markdown and JSON reports, and a GitHub Action.
+- **v0.1:** the CLI with `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan` and `matrix`, Markdown and JSON reports, and an experimental GitHub Action ([its limits](docs/github-action.md#status-experimental)).
+- **v0.1.x:** `network-isolation`.
 - **v0.2:** `secret-rotation`, `immutable-fields`, `process-kill`, SARIF for GitHub code scanning, and signed releases.
 - **v0.3:** `probe-abuse`, a hardened mode for charts you did not write, and optional AI hypotheses that the cluster must confirm.
 - **Ongoing:** running against popular community charts and sending fixes upstream ([found so far](#found-in-public-charts)).

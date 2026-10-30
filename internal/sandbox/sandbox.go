@@ -136,6 +136,33 @@ func (c *Cluster) Delete(ctx context.Context, r *execx.Runner) error {
 	return os.RemoveAll(c.dir)
 }
 
+// Unrecorded lists the kind clusters named as NewCluster names them that have no state directory.
+// NewCluster makes the directory before kind runs, and Delete removes it only after kind delete
+// succeeded, so no run with this state directory owns such a cluster: one left by a version
+// before #72, by a run with another HELMBULANCE_STATE_DIR, or whose directory was removed by
+// hand. It is only listed, never deleted: a run with another state directory may still use it (#75).
+func Unrecorded(ctx context.Context, r *execx.Runner) ([]string, error) {
+	out, err := r.Run(ctx, "kind", "get", "clusters")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, name := range strings.Fields(string(out)) {
+		if !nameRE.MatchString(name) {
+			continue
+		}
+		c, err := clusterFiles(name)
+		if err != nil {
+			return nil, err
+		}
+		// Only a directory that is surely missing: one we cannot read may still be a run's record.
+		if _, err := os.Stat(c.dir); errors.Is(err, os.ErrNotExist) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 func clusterFiles(name string) (*Cluster, error) {
 	state, err := StateDir()
 	if err != nil {

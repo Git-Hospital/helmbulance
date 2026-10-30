@@ -1,0 +1,5 @@
+apiVersion: v2
+name: refuses-dropped-key
+description: "Helmbulance fixture. Refuses to render without the key given at install, instead of replacing or dropping it: a safe refusal, not a finding (D4)."
+type: application
+version: 0.1.0

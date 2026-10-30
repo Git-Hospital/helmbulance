@@ -44,6 +44,16 @@ func readsKey(key string) string {
 	return `{"items":[{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"containers":[{"name":"c","env":[{"name":"X","valueFrom":{"secretKeyRef":{"name":"app","key":"` + key + `","optional":true}}}]}]}}}}]}`
 }
 
+// finishedHookReads is a Deployment that reads app/db-password next to a finished post-install hook
+// Job that read app/<key>.
+func finishedHookReads(key string) string {
+	return `{"items":[
+ {"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"containers":[{"name":"c","env":[{"name":"X","valueFrom":{"secretKeyRef":{"name":"app","key":"db-password"}}}]}]}}}},
+ {"kind":"Job","metadata":{"name":"hb-init","annotations":{"helm.sh/hook":"post-install"}},
+  "spec":{"template":{"spec":{"restartPolicy":"Never","containers":[{"name":"c","env":[{"name":"P","valueFrom":{"secretKeyRef":{"name":"app","key":"` + key + `"}}}]}]}}},
+  "status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}]}`
+}
+
 func stagedEnv(t *testing.T, workloads string, stages ...string) *Env {
 	t.Helper()
 	old := settleInterval
@@ -98,6 +108,10 @@ func TestChartUpgradeSecretKeys(t *testing.T) {
 			Pass, "values moved to another key, not a finding: `app/password -> app/db-password` moved"},
 		{"v2 renames a key the app still reads", readsKey("password"), secretJSON("db-password", pw),
 			Fail, "problem(s) upgrading"},
+		// A post-install hook Job does not run again on upgrade, so the old key it names is read by
+		// nothing that will run (#73).
+		{"v2 renames a key only a finished hook Job names", finishedHookReads("password"), secretJSON("db-password", pw),
+			Pass, "values moved to another key, not a finding: `app/password -> app/db-password` moved"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

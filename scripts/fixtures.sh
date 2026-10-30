@@ -74,12 +74,21 @@ run generate-once      0 ""                    testdata/charts/generate-once --s
 run runtime-secret     0 ""                    testdata/charts/runtime-secret -f testdata/charts/runtime-secret/values.yaml --scenario upgrade-without-values
 run drops-set-key      1 "HB-UV-002"           testdata/charts/drops-set-key --set "encryptionKey=$key" --scenario upgrade-without-values
 run keeps-set-key      0 ""                    testdata/charts/keeps-set-key --set "encryptionKey=$key" --scenario upgrade-without-values
+# Refuses to render without the key instead of dropping it: a safe refusal, PASS (D4, #49).
+run refuses-dropped-key 0 ""                   testdata/charts/refuses-dropped-key --set "encryptionKey=$key" --scenario upgrade-without-values
 run upgrade-v2-breaks  1 "HB-CU-001"           testdata/charts/upgrade-v2-breaks --scenario chart-upgrade --from testdata/charts/upgrade-v1 --from-version 1.0.0
 run upgrade-v2-ok      0 ""                    testdata/charts/upgrade-v2-ok --scenario chart-upgrade --from testdata/charts/upgrade-v1 --from-version 1.0.0
 # v2 crash-loops, so --wait times out (the full --timeout): a finding, not INCONCLUSIVE (#28). Its twin is upgrade-v2-ok.
 run upgrade-v2-crashes 1 "HB-CU-001"          testdata/charts/upgrade-v2-crashes --scenario chart-upgrade --from testdata/charts/upgrade-v1 --from-version 1.0.0
 run reinstall-loses-creds 1 "HB-RI-001"         testdata/charts/reinstall-loses-creds --scenario reinstall
 run reinstall-keeps-creds 0 ""                  testdata/charts/reinstall-keeps-creds --scenario reinstall
+# The same defect with the password read through a projected volume, which reinstall did not see (#46).
+run reinstall-loses-creds-projected 1 "HB-RI-001" testdata/charts/reinstall-loses-creds-projected --scenario reinstall
+# Its twin: the items mount only a key that does not change, so the new password reaches no kept data (#73).
+run reinstall-projected-items-other-key 0 "" testdata/charts/reinstall-projected-items-other-key --scenario reinstall
+# The same defect where only a backup CronJob mounts the kept claim and reads the password (#80). Its twin keeps it.
+run reinstall-cronjob-loses-creds 1 "HB-RI-001" testdata/charts/reinstall-cronjob-loses-creds --scenario reinstall
+run reinstall-cronjob-keeps-creds 0 ""          testdata/charts/reinstall-cronjob-keeps-creds --scenario reinstall
 # A pre-install hook Secret kept on uninstall is created again, with new values, by the next install (HB-RI-004). Its twin reuses them with lookup.
 run reinstall-replaces-kept-hook 1 "HB-RI-004"  testdata/charts/reinstall-replaces-kept-hook --scenario reinstall
 run reinstall-reuses-kept-hook 0 ""             testdata/charts/reinstall-reuses-kept-hook --scenario reinstall
@@ -93,6 +102,11 @@ run reinstall-templated-pvc 0 ""                testdata/charts/reinstall-templa
 # A password generated behind lookup is new on every helm template render, as under Argo CD. Its twin takes it from values.
 run gitops-lookup-random 1 "HB-GR-001"          testdata/charts/gitops-lookup-random --scenario gitops-render
 run gitops-values-secret 0 ""                   testdata/charts/gitops-values-secret --scenario gitops-render
+# Helm keeps these on upgrade, but Argo CD renders an install and runs the hook on every sync (#45).
+run gitops-install-hook  1 "HB-GR-001"          testdata/charts/gitops-install-hook --scenario gitops-render
+run gitops-install-only  1 "HB-GR-001"          testdata/charts/gitops-install-only --scenario gitops-render
+# A hook that also runs on upgrade changes under Helm too: upgrade-without-values reports it, not this.
+run gitops-upgrade-hook  0 ""                   testdata/charts/gitops-upgrade-hook --scenario gitops-render
 run zd-recreate        1 "HB-ZD-001"           testdata/charts/zd-recreate --scenario zero-downtime
 run zd-rolling         0 ""                    testdata/charts/zd-rolling --scenario zero-downtime
 

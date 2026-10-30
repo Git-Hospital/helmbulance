@@ -1,0 +1,38 @@
+# reinstall-loses-creds-projected, except that items mount only the username. The volume claim
+# template outlives helm uninstall, but the password that changes is not mounted, so the data was
+# not initialised with it.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-db
+spec:
+  serviceName: {{ .Release.Name }}-db
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-db}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-db}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65535}
+      containers:
+        - name: db
+          image: registry.k8s.io/pause:3.10
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: secrets, mountPath: /secrets, readOnly: true}
+      volumes:
+        - name: secrets
+          projected:
+            sources:
+              - secret:
+                  name: {{ .Release.Name }}-db
+                  items: [{key: username, path: db-username}]
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 10Mi}}

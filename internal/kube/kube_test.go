@@ -105,16 +105,31 @@ func TestStatefulWorkloads(t *testing.T) {
 		{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"volumeClaimTemplates":[{"metadata":{"name":"data"}}]}},
 		{"kind":"StatefulSet","metadata":{"name":"cache"},"spec":{"template":{"spec":{"volumes":[{"name":"tmp","emptyDir":{}}]}}}},
 		{"kind":"Deployment","metadata":{"name":"single-db"},"spec":{"template":{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"d"}}]}}}},
-		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"volumes":[{"name":"cfg","secret":{"secretName":"s"}}]}}}}
+		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"volumes":[{"name":"cfg","secret":{"secretName":"s"}}]}}}},
+		`+claimJobs+`
 	]}`)
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FAKE_ARGS", args)
 	got, err := c.StatefulWorkloads(t.Context(), "ns")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]bool{"StatefulSet/db": true, "Deployment/single-db": true}; !reflect.DeepEqual(got, want) {
+	want := map[string]bool{"StatefulSet/db": true, "Deployment/single-db": true, "CronJob/backup": true, "Job/restore": true}
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("StatefulWorkloads = %v, want %v", got, want)
 	}
+	if a, _ := os.ReadFile(args); !strings.Contains(string(a), "get deployments,statefulsets,daemonsets,jobs,cronjobs ") {
+		t.Errorf("kubectl args = %q, want every workload kind", a)
+	}
 }
+
+// claimJobs are Jobs and CronJobs that mount the claim app-data (#80): a CronJob's pod template is
+// under spec.jobTemplate; a Job a CronJob started is that CronJob, and a finished Job mounts nothing
+// any more, so neither is listed on its own.
+const claimJobs = `{"kind":"CronJob","metadata":{"name":"backup"},"spec":{"jobTemplate":{"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}}}}},
+		{"kind":"Job","metadata":{"name":"restore"},"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}}},
+		{"kind":"Job","metadata":{"name":"backup-29000000","ownerReferences":[{"kind":"CronJob","name":"backup"}]},"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}}},
+		{"kind":"Job","metadata":{"name":"migrate"},"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}},"status":{"conditions":[{"type":"Complete","status":"True"}]}}`
 
 // Secrets reads helm.sh/resource-policy the way Helm does, and leaves out Helm's release records.
 func TestSecretsReadKeep(t *testing.T) {
@@ -173,15 +188,21 @@ func TestClaimUsers(t *testing.T) {
 	c := fakeKubectl(t, `{"items":[
 		{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"volumeClaimTemplates":[{"metadata":{"name":"data"}}]}},
 		{"kind":"Deployment","metadata":{"name":"app"},"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"app-data"}}]}}}},
-		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"volumes":[{"name":"c","emptyDir":{}}]}}}}
+		{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"volumes":[{"name":"c","emptyDir":{}}]}}}},
+		`+claimJobs+`
 	]}`)
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FAKE_ARGS", args)
 	got, err := c.ClaimUsers(t.Context(), "ns", []string{"data-db-0", "app-data", "orphan"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string][]string{"data-db-0": {"StatefulSet/db"}, "app-data": {"Deployment/app"}}
+	want := map[string][]string{"data-db-0": {"StatefulSet/db"}, "app-data": {"Deployment/app", "CronJob/backup", "Job/restore"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ClaimUsers = %v, want %v", got, want)
+	}
+	if a, _ := os.ReadFile(args); !strings.Contains(string(a), "get deployments,statefulsets,daemonsets,jobs,cronjobs ") {
+		t.Errorf("kubectl args = %q, want every workload kind", a)
 	}
 }
 
@@ -197,5 +218,63 @@ func TestRunWithPVCStopsOnAFailedPod(t *testing.T) {
 	_, err := c.RunWithPVC(t.Context(), "ns", "hb-sentinel", "busybox", "data", "true", time.Minute)
 	if err == nil || !strings.Contains(err.Error(), "is Failed") || time.Since(start) > 10*time.Second {
 		t.Errorf("RunWithPVC on a failed pod = %v after %s; want a quick error naming the phase", err, time.Since(start))
+	}
+}
+
+// Each way a pod template can read a Secret, in each kind of workload SecretConsumers lists (#46).
+// A volume with items mounts only those keys; the Job a CronJob started is that CronJob.
+func TestSecretConsumersSeesEveryReader(t *testing.T) {
+	out := `{"items": [
+	  {"kind": "Deployment", "metadata": {"name": "web"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "a", "key": "password"}}}]}]}}}},
+	  {"kind": "StatefulSet", "metadata": {"name": "db"}, "spec": {"template": {"spec": {
+	    "initContainers": [{"envFrom": [{"secretRef": {"name": "b"}}]}],
+	    "volumes": [{"name": "s", "secret": {"secretName": "c"}},
+	                {"name": "t", "secret": {"secretName": "g", "items": [{"key": "ca.crt", "path": "ca"}]}}]}}}},
+	  {"kind": "StatefulSet", "metadata": {"name": "mq"}, "spec": {"template": {"spec": {
+	    "volumes": [{"name": "p", "projected": {"sources": [
+	      {"secret": {"name": "d", "items": [{"key": "password", "path": "pw"}]}},
+	      {"configMap": {"name": "not-a-secret"}},
+	      {"secret": {"name": "e"}}]}}]}}}},
+	  {"kind": "Job", "metadata": {"name": "migrate"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "a", "key": "password"}}}]}]}}}},
+	  {"kind": "CronJob", "metadata": {"name": "backup"}, "spec": {"jobTemplate": {"spec": {"template": {"spec": {
+	    "volumes": [{"name": "p", "projected": {"sources": [{"secret": {"name": "f"}}]}}]}}}}}},
+	  {"kind": "Job", "metadata": {"name": "init"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "h", "key": "password"}}}]}]}}},
+	   "status": {"conditions": [{"type": "Complete", "status": "True"}]}},
+	  {"kind": "Job", "metadata": {"name": "broken"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "h", "key": "password"}}}]}]}}},
+	   "status": {"conditions": [{"type": "Failed", "status": "True"}]}},
+	  {"kind": "Job", "metadata": {"name": "retrying"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "i", "key": "password"}}}]}]}}},
+	   "status": {"conditions": [{"type": "Failed", "status": "False"}]}},
+	  {"kind": "Job", "metadata": {"name": "backup-29351234", "ownerReferences": [{"kind": "CronJob", "name": "backup"}]},
+	   "spec": {"template": {"spec": {
+	    "volumes": [{"name": "p", "projected": {"sources": [{"secret": {"name": "f"}}]}}]}}}}
+	]}`
+	// The fake prints every item whatever was asked for, so check that Jobs and CronJobs are asked
+	// for: without them the real kubectl would not return the last two items.
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FAKE_ARGS", args)
+	got, err := fakeKubectl(t, out).SecretConsumers(t.Context(), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(args); !strings.Contains(string(b), "get deployments,statefulsets,daemonsets,jobs,cronjobs ") {
+		t.Errorf("kubectl %s, want Jobs and CronJobs listed", strings.TrimSpace(string(b)))
+	}
+	want := map[string][]string{
+		"a/password": {"Deployment/web", "Job/migrate"},
+		"b/*":        {"StatefulSet/db"},
+		"c/*":        {"StatefulSet/db"},
+		"g/ca.crt":   {"StatefulSet/db"}, // items mount only the listed keys
+		"d/password": {"StatefulSet/mq"},
+		"e/*":        {"StatefulSet/mq"},
+		"f/*":        {"CronJob/backup"}, // not again as the Job the CronJob started
+		"i/password": {"Job/retrying"},   // a finished Job (init, broken) reads nothing again
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SecretConsumers =\n%v\nwant\n%v", got, want)
 	}
 }
