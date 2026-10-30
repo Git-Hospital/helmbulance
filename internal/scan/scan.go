@@ -46,6 +46,7 @@ func Run(ctx context.Context, o Options) []scenario.Result {
 type object struct {
 	Kind, Name, Source string
 	Hook               bool
+	HookEvents         string // the helm.sh/hook annotation, for a hook
 	Doc                map[string]any
 }
 
@@ -75,8 +76,8 @@ func render(ctx context.Context, o Options, chart string, extra ...string) ([]ob
 		}
 		meta, _ := doc["metadata"].(map[string]any)
 		ann, _ := meta["annotations"].(map[string]any)
-		_, hook := ann["helm.sh/hook"]
-		obj := object{Kind: str(doc["kind"]), Name: str(meta["name"]), Hook: hook, Doc: doc}
+		events, hook := ann["helm.sh/hook"]
+		obj := object{Kind: str(doc["kind"]), Name: str(meta["name"]), Hook: hook, HookEvents: str(events), Doc: doc}
 		if m := sourceLine.FindStringSubmatch(raw); m != nil {
 			obj.Source = m[1]
 		}
@@ -242,33 +243,77 @@ func firstUpgradeRestart(o Options) (res scenario.Result) {
 	return res
 }
 
-// regeneratedSecrets renders the chart twice and lists Secret keys that differ, in Secrets that are
-// not hooks and whose template does not use lookup: they get a new value on every upgrade.
+// regeneratedSecrets renders the chart twice as an install and once as an upgrade, and lists the
+// Secret keys that differ between the two installs, in Secrets whose template does not use lookup.
+// Which scenario confirms one depends on when Helm renders it: a Secret Helm renders on upgrade
+// gets a new value on every upgrade (HB-SCAN-003, upgrade-without-values), while one Helm renders
+// only at install, under .Release.IsInstall or in an install-only hook, keeps its first value under
+// Helm and gets a new one on every Argo CD sync (HB-SCAN-006, gitops-render; #86).
 func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 	res.Scenario = "scan:regenerated-secrets"
-	a, err := render(ctx, o, o.Chart)
-	if err != nil {
-		res.Verdict = scenario.Inconclusive
-		res.Summary = "could not render the chart: " + err.Error()
+	var renders [3][]object
+	for i, extra := range [][]string{nil, nil, {"--is-upgrade"}} {
+		objs, err := render(ctx, o, o.Chart, extra...)
+		if err != nil {
+			res.Verdict = scenario.Inconclusive
+			res.Summary = "could not render the chart: " + err.Error()
+			return res
+		}
+		renders[i] = objs
+	}
+	onUpgrade, onSync := regenerated(renders[0], renders[1], renders[2], func(source string) bool {
+		return sourceUsesLookup(o.Chart, source)
+	})
+	if len(onUpgrade)+len(onSync) == 0 {
+		res.Verdict = scenario.Pass
+		res.Summary = "no Secret value is generated anew on every render"
 		return res
 	}
-	b, err := render(ctx, o, o.Chart)
-	if err != nil {
-		res.Verdict = scenario.Inconclusive
-		res.Summary = "could not render the chart: " + err.Error()
-		return res
+	res.Verdict = scenario.Fail
+	res.Summary = fmt.Sprintf("%d Secret(s) with values generated on every render (candidates)", len(onUpgrade)+len(onSync))
+	if len(onUpgrade) > 0 {
+		res.Findings = append(res.Findings, scenario.Finding{
+			ID:        "HB-SCAN-003",
+			Title:     "Candidate: Secret values are generated anew on every upgrade",
+			Severity:  "candidate",
+			Evidence:  onUpgrade,
+			Impact:    "If confirmed, every `helm upgrade` replaces these values: credentials stop matching what the data was created with, and pods that hash the Secret restart.",
+			Fix:       "Keep generated values with `lookup`, and support an existingSecret for tools that render without cluster access. A pre-install hook keeps the value under Helm but not under Argo CD, which runs the hook on every sync (HB-GR-001).",
+			Reproduce: []string{fmt.Sprintf("helmbulance test %s --scenario upgrade-without-values   # HB-UV-001", o.Chart)},
+		})
 	}
-	second := map[string]object{}
+	if len(onSync) > 0 {
+		res.Findings = append(res.Findings, scenario.Finding{
+			ID:        "HB-SCAN-006",
+			Title:     "Candidate: Secret values are generated anew on every GitOps sync",
+			Severity:  "candidate",
+			Evidence:  onSync,
+			Impact:    "If confirmed, Helm keeps the first value, but Argo CD and other tools that render with `helm template` render every sync as an install and run install hooks each time, so each sync writes a value the running release does not use.",
+			Fix:       "Take the value from values or an existingSecret. For a hook, an ignoreDifferences entry does not help: Argo CD applies hooks on every sync, outside the diff.",
+			Reproduce: []string{fmt.Sprintf("helmbulance test %s --scenario gitops-render   # HB-GR-001", o.Chart)},
+		})
+	}
+	return res
+}
+
+// regenerated compares two install renders (a, b) of the Secrets and sorts the keys that differ by
+// when Helm renders them, using the upgrade render u: onUpgrade for a Secret Helm renders on
+// upgrade, onSync for one only an install renders. A Secret whose template uses lookup is left
+// out, and so is a hook that runs neither at install nor at upgrade (test, delete, rollback).
+func regenerated(a, b, u []object, usesLookup func(source string) bool) (onUpgrade, onSync []string) {
+	second, upgraded := map[string]object{}, map[string]bool{}
 	for _, x := range b {
 		second[x.Kind+"/"+x.Name] = x
 	}
-	var evidence []string
+	for _, x := range u {
+		upgraded[x.Kind+"/"+x.Name] = true
+	}
 	for _, x := range a {
-		if x.Kind != "Secret" || x.Hook {
+		if x.Kind != "Secret" {
 			continue
 		}
 		y, ok := second["Secret/"+x.Name]
-		if !ok || sourceUsesLookup(o.Chart, x.Source) {
+		if !ok || usesLookup(x.Source) {
 			continue
 		}
 		var changed []string
@@ -281,29 +326,26 @@ func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 				}
 			}
 		}
-		if len(changed) > 0 {
-			sort.Strings(changed)
-			evidence = append(evidence, fmt.Sprintf("`Secret/%s` keys %s differ between two renders (%s)", x.Name, strings.Join(changed, ", "), x.Source))
+		if len(changed) == 0 {
+			continue
+		}
+		sort.Strings(changed)
+		differ := fmt.Sprintf("`Secret/%s` keys %s differ between two renders (%s)", x.Name, strings.Join(changed, ", "), x.Source)
+		switch {
+		case x.Hook && helm.UpgradeHook(x.HookEvents):
+			onUpgrade = append(onUpgrade, differ+"; a `"+x.HookEvents+"` hook, run again on every upgrade")
+		case x.Hook && helm.InstallOnlyHook(x.HookEvents):
+			onSync = append(onSync, differ+"; a `"+x.HookEvents+"` hook: Helm runs it once, Argo CD on every sync")
+		case x.Hook:
+		case !upgraded["Secret/"+x.Name]:
+			onSync = append(onSync, differ+"; rendered only at install (`.Release.IsInstall`), so Helm keeps the first value")
+		default:
+			onUpgrade = append(onUpgrade, differ)
 		}
 	}
-	sort.Strings(evidence)
-	if len(evidence) == 0 {
-		res.Verdict = scenario.Pass
-		res.Summary = "no Secret value is generated anew on every render"
-		return res
-	}
-	res.Verdict = scenario.Fail
-	res.Summary = fmt.Sprintf("%d Secret(s) with values generated on every render (candidates)", len(evidence))
-	res.Findings = []scenario.Finding{{
-		ID:        "HB-SCAN-003",
-		Title:     "Candidate: Secret values are generated anew on every upgrade",
-		Severity:  "candidate",
-		Evidence:  evidence,
-		Impact:    "If confirmed, every `helm upgrade` replaces these values: credentials stop matching what the data was created with, and pods that hash the Secret restart.",
-		Fix:       "Keep generated values with `lookup`, and support an existingSecret for tools that render without cluster access. A pre-install hook keeps the value under Helm but not under Argo CD, which runs the hook on every sync (HB-GR-001).",
-		Reproduce: []string{fmt.Sprintf("helmbulance test %s --scenario upgrade-without-values   # HB-UV-001", o.Chart)},
-	}}
-	return res
+	sort.Strings(onUpgrade)
+	sort.Strings(onSync)
+	return onUpgrade, onSync
 }
 
 // maxUnquoted caps how many default values unquotedValues tries, one render each.

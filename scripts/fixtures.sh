@@ -119,6 +119,14 @@ scan() {
 }
 scan regenerates-secret 1 "HB-SCAN-003" testdata/charts/regenerates-secret
 scan keeps-secret       0 ""            testdata/charts/keeps-secret
+# A password Helm renders only at install, in a pre-install hook or under .Release.IsInstall: Helm
+# keeps it, Argo CD renders a new one on every sync, so scan names gitops-render (HB-SCAN-006, #86).
+# A hook that runs on upgrade too is regenerated under Helm as well (HB-SCAN-003). The twin takes it
+# from values.
+scan gitops-install-hook  1 "HB-SCAN-006" testdata/charts/gitops-install-hook
+scan gitops-install-only  1 "HB-SCAN-006" testdata/charts/gitops-install-only
+scan gitops-upgrade-hook  1 "HB-SCAN-003" testdata/charts/gitops-upgrade-hook
+scan gitops-values-secret 0 ""            testdata/charts/gitops-values-secret
 # A quoted default that renders another field unquoted (env value becomes valueFrom). Its twin renders scalars alike.
 scan scan-unquoted-env  1 "HB-SCAN-004" testdata/charts/scan-unquoted-env
 scan scan-typed-env     0 ""            testdata/charts/scan-typed-env
