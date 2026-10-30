@@ -59,7 +59,7 @@ func UpgradedSecrets(manifest []byte, ns string) []kube.Secret {
 func InstallOnlyHooks(manifest []byte, ns string) map[string]string {
 	hooks := map[string]string{}
 	for _, d := range secretDocs(manifest, ns) {
-		if events := d.Metadata.Annotations["helm.sh/hook"]; installOnlyHook(events) {
+		if events := d.Metadata.Annotations["helm.sh/hook"]; InstallOnlyHook(events) {
 			hooks[d.Metadata.Name] = events
 		}
 	}
@@ -69,7 +69,7 @@ func InstallOnlyHooks(manifest []byte, ns string) map[string]string {
 func renderedSecrets(manifest []byte, ns string, upgrade bool) []kube.Secret {
 	var secrets []kube.Secret
 	for _, d := range secretDocs(manifest, ns) {
-		if upgrade && installOnlyHook(d.Metadata.Annotations["helm.sh/hook"]) {
+		if upgrade && InstallOnlyHook(d.Metadata.Annotations["helm.sh/hook"]) {
 			continue
 		}
 		data := map[string][]byte{}
@@ -106,8 +106,18 @@ func secretDocs(manifest []byte, ns string) []secretDoc {
 	return docs
 }
 
-// installOnlyHook reports whether a helm.sh/hook annotation runs at install and never at upgrade.
-func installOnlyHook(events string) bool {
+// UpgradeHook reports whether a helm.sh/hook annotation runs on helm upgrade.
+func UpgradeHook(events string) bool {
+	for _, e := range strings.Split(events, ",") {
+		if e = strings.TrimSpace(e); e == "pre-upgrade" || e == "post-upgrade" {
+			return true
+		}
+	}
+	return false
+}
+
+// InstallOnlyHook reports whether a helm.sh/hook annotation runs at install and never at upgrade.
+func InstallOnlyHook(events string) bool {
 	install := false
 	for _, e := range strings.Split(events, ",") {
 		switch strings.TrimSpace(e) {
