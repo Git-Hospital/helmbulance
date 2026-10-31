@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,10 +10,11 @@ import (
 )
 
 // timedOutWaiting reports whether a helm command failed because `--wait` timed out with the
-// release applied, as opposed to a cancelled run, the chart's own webhook, or a pull or tool
-// error. Only then is it worth reading the release's pods for what kept it from being ready.
+// release applied, as opposed to a cancelled run, a helm call stopped at our own deadline (helm may
+// not have applied anything yet), the chart's own webhook, or a pull or tool error. Only then is it
+// worth reading the release's pods for what kept it from being ready.
 func timedOutWaiting(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
 	msg := strings.ToLower(err.Error())

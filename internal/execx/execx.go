@@ -5,6 +5,7 @@ package execx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os/exec"
@@ -71,6 +72,12 @@ func (r *Runner) RunCapture(ctx context.Context, name string, args ...string) ([
 
 	errText := []byte(r.hide(stderr.String()))
 	if err != nil {
+		// A command stopped by the deadline that handles SIGTERM, as helm does, exits with its own
+		// status, and Wait returns that instead of the context's error. Keep both, so callers can
+		// tell the deadline from a failure of the command.
+		if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+			return stdout.Bytes(), errText, fmt.Errorf("%s: %w: %w: %s", rec.Line, ctxErr, err, r.errorText(stderr.String()))
+		}
 		return stdout.Bytes(), errText, fmt.Errorf("%s: %w: %s", rec.Line, err, r.errorText(stderr.String()))
 	}
 	return stdout.Bytes(), errText, nil
