@@ -11,9 +11,11 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/egezamb/helmbulance/internal/execx"
 	"github.com/egezamb/helmbulance/internal/helm"
@@ -92,7 +94,7 @@ func test(args []string) int {
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
 	from := fs.String("from", "", "chart to upgrade from in chart-upgrade (repo/chart, oci://… or a path); defaults to the chart under test")
 	fromVersion := fs.String("from-version", "", "chart version to upgrade from; enables the chart-upgrade scenario. A local chart also needs --from")
-	trafficTarget := fs.String("traffic-target", "", "Service and port that zero-downtime sends requests to (service:port); default: the most HTTP-like Service port")
+	trafficTarget := fs.String("traffic-target", "", "Service and port that zero-downtime sends requests to, as service:port with a numeric port (no scheme or brackets); default: the most HTTP-like Service port")
 	trafficPath := fs.String("traffic-path", "/", "path that zero-downtime requests; it must answer 2xx")
 	allowRemote := fs.Bool("allow-remote", false, "run a chart from a repository, OCI registry or URL; it runs without the third-party protections, which arrive in v0.3")
 
@@ -104,7 +106,7 @@ func test(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+	if refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) || refuseTraffic(*trafficTarget, *trafficPath) {
 		return exitError
 	}
 	if err := checkRotations(rotations); err != nil {
@@ -210,7 +212,12 @@ func pick(names []string) ([]scenario.Scenario, error) {
 		return scenarios, nil
 	}
 	var out []scenario.Scenario
+	seen := make(map[string]bool, len(names))
 	for _, n := range names {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
 		found := false
 		for _, s := range scenarios {
 			if s.Name() == n {
@@ -327,6 +334,34 @@ func refuseFromVersion(chart, from, fromVersion string, versionOf func(string) (
 	}
 	fmt.Fprintf(os.Stderr, "--from-version %s needs --from with a local chart: helm ignores --version for a path, so %s would be upgraded to itself.\nGive the earlier chart, e.g. --from ./old-chart or --from repo/chart.\n", fromVersion, chart)
 	return true
+}
+
+// refuseTraffic stops a run whose --traffic-path or --traffic-target cannot work. zero-downtime
+// builds the URL itself from "http://" + target + path, so a missing slash or a target that is not
+// service:port fails the control traffic after a cluster is created and the chart installed.
+func refuseTraffic(target, path string) bool {
+	// An empty path is allowed: zero-downtime treats it as "/".
+	if path != "" && (!strings.HasPrefix(path, "/") || strings.IndexFunc(path, unicode.IsSpace) >= 0) {
+		fmt.Fprintf(os.Stderr, "--traffic-path must start with \"/\" and contain no whitespace, got %q\n", redactTrafficValue(path))
+		return true
+	}
+	if target == "" {
+		return false
+	}
+	name, portText, ok := strings.Cut(target, ":")
+	port, err := strconv.Atoi(portText)
+	if !ok || name == "" || err != nil || port < 1 || port > 65535 {
+		fmt.Fprintf(os.Stderr, "--traffic-target must be service:port with a port from 1 to 65535, got %q\n", redactTrafficValue(target))
+		return true
+	}
+	return false
+}
+
+// redactTrafficValue hides a token in a traffic flag the way zero-downtime's reports do. The value
+// is read as the path of a URL, since a bare path carries no scheme for execx.RedactURLs to find.
+func redactTrafficValue(v string) string {
+	const host = "http://helmbulance.invalid"
+	return strings.TrimPrefix(execx.RedactURLs(host+v), host)
 }
 
 // localVersion reads the version of a chart on disk, outside the run's transcript.
