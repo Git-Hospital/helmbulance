@@ -164,6 +164,7 @@ func TestCrashAtInstallIsBlamedOnlyWhenAnotherVersionRan(t *testing.T) {
 		return installFailed(t.Context(), scenario.Result{Scenario: "k8s-" + v}, v, errors.New(installTimeout), crash, nil, nil)
 	}
 	healthyWithWarning := result("1.36", scenario.Fail, "HB-K8S-003")
+	deprecation := []string{"API warning: policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+; use policy/v1 PodDisruptionBudget"}
 	cases := []struct {
 		name    string
 		results []scenario.Result
@@ -177,6 +178,10 @@ func TestCrashAtInstallIsBlamedOnlyWhenAnotherVersionRan(t *testing.T) {
 		// Unhealthy after an install that finished is not healthy.
 		{"unhealthy on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-002"), crashed("1.37")}, scenario.Inconclusive},
 		{"install failure on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-001"), crashed("1.37")}, scenario.Inconclusive},
+		// API warnings alone do not make a version healthy when its workloads were never checked:
+		// an install whose --wait timed out with no crash, or a health check cut short.
+		{"timed out with a warning on 1.36", []scenario.Result{installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.36"}, "1.36", errors.New(installTimeout), nil, deprecation, nil), crashed("1.37")}, scenario.Inconclusive},
+		{"health not checked, with a warning on 1.36", []scenario.Result{judge(scenario.Result{Scenario: "k8s-1.36"}, "1.36", nil, errors.New("interrupted"), deprecation, nil), crashed("1.37")}, scenario.Inconclusive},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -189,6 +194,12 @@ func TestCrashAtInstallIsBlamedOnlyWhenAnotherVersionRan(t *testing.T) {
 				t.Errorf("1.37 = %s with %d finding(s) (%s), want no finding and the reason", r.Verdict, len(r.Findings), r.Summary)
 			}
 		})
+	}
+	// A crash Attribute left with only its warnings is still not a healthy run: fed back next to a
+	// crash on another version, it must not get that crash blamed.
+	attributed := Attribute([]scenario.Result{installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.36"}, "1.36", errors.New(installTimeout), crash, deprecation, nil)})[0]
+	if r := Attribute([]scenario.Result{attributed, crashed("1.37")})[1]; r.Verdict != scenario.Inconclusive {
+		t.Errorf("1.36 crashed with a warning (attributed), 1.37 crashed: 1.37 = %s (%s), want INCONCLUSIVE", r.Verdict, r.Summary)
 	}
 	// The install's deprecation warning stands without the crash.
 	warned := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.37"}, "1.37", errors.New(installTimeout), crash,
