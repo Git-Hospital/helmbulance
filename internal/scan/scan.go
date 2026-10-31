@@ -249,28 +249,43 @@ func firstUpgradeRestart(o Options) (res scenario.Result) {
 // gets a new value on every upgrade (HB-SCAN-003, upgrade-without-values), while one Helm renders
 // only at install, under .Release.IsInstall or in an install-only hook, keeps its first value under
 // Helm and gets a new one on every Argo CD sync (HB-SCAN-006, gitops-render; #86).
+//
+// Some charts refuse to render as an upgrade on purpose (Bitnami's "PASSWORDS ERROR" without the
+// current passwords). Then hooks are still sorted by their annotation, and every other Secret goes
+// to HB-SCAN-003 as it did before #107, with a note: one rendered only at install cannot be told
+// apart without the upgrade render.
 func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 	res.Scenario = "scan:regenerated-secrets"
-	var renders [3][]object
-	for i, extra := range [][]string{nil, nil, {"--is-upgrade"}} {
-		objs, err := render(ctx, o, o.Chart, extra...)
+	var installs [2][]object
+	for i := range installs {
+		objs, err := render(ctx, o, o.Chart)
 		if err != nil {
 			res.Verdict = scenario.Inconclusive
 			res.Summary = "could not render the chart: " + err.Error()
 			return res
 		}
-		renders[i] = objs
+		installs[i] = objs
 	}
-	onUpgrade, onSync := regenerated(renders[0], renders[1], renders[2], func(source string) bool {
+	var upgraded map[string]bool // nil: the chart did not render as an upgrade
+	note := ""
+	if objs, err := render(ctx, o, o.Chart, "--is-upgrade"); err != nil {
+		note = "; the chart does not render as an upgrade (" + helmError(err.Error()) + "), so a Secret rendered only at install is not told apart from one rendered on upgrade"
+	} else {
+		upgraded = map[string]bool{}
+		for _, x := range objs {
+			upgraded[x.Kind+"/"+x.Name] = true
+		}
+	}
+	onUpgrade, onSync := regenerated(installs[0], installs[1], upgraded, func(source string) bool {
 		return sourceUsesLookup(o.Chart, source)
 	})
 	if len(onUpgrade)+len(onSync) == 0 {
 		res.Verdict = scenario.Pass
-		res.Summary = "no Secret value is generated anew on every render"
+		res.Summary = "no Secret value is generated anew on every render" + note
 		return res
 	}
 	res.Verdict = scenario.Fail
-	res.Summary = fmt.Sprintf("%d Secret(s) with values generated on every render (candidates)", len(onUpgrade)+len(onSync))
+	res.Summary = fmt.Sprintf("%d Secret(s) with values generated on every render (candidates)", len(onUpgrade)+len(onSync)) + note
 	if len(onUpgrade) > 0 {
 		res.Findings = append(res.Findings, scenario.Finding{
 			ID:        "HB-SCAN-003",
@@ -297,16 +312,15 @@ func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 }
 
 // regenerated compares two install renders (a, b) of the Secrets and sorts the keys that differ by
-// when Helm renders them, using the upgrade render u: onUpgrade for a Secret Helm renders on
-// upgrade, onSync for one only an install renders. A Secret whose template uses lookup is left
-// out, and so is a hook that runs neither at install nor at upgrade (test, delete, rollback).
-func regenerated(a, b, u []object, usesLookup func(source string) bool) (onUpgrade, onSync []string) {
-	second, upgraded := map[string]object{}, map[string]bool{}
+// when Helm renders them: onUpgrade for a Secret Helm renders on upgrade, onSync for one only an
+// install renders. upgraded holds the objects of the upgrade render ("Secret/name"); nil means the
+// chart did not render as an upgrade, and then only hooks can be told apart, by their annotation.
+// A Secret whose template uses lookup is left out, and so is a hook that runs neither at install
+// nor at upgrade (test, delete, rollback).
+func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source string) bool) (onUpgrade, onSync []string) {
+	second := map[string]object{}
 	for _, x := range b {
 		second[x.Kind+"/"+x.Name] = x
-	}
-	for _, x := range u {
-		upgraded[x.Kind+"/"+x.Name] = true
 	}
 	for _, x := range a {
 		if x.Kind != "Secret" {
@@ -337,7 +351,7 @@ func regenerated(a, b, u []object, usesLookup func(source string) bool) (onUpgra
 		case x.Hook && helm.InstallOnlyHook(x.HookEvents):
 			onSync = append(onSync, differ+"; a `"+x.HookEvents+"` hook: Helm runs it once, Argo CD on every sync")
 		case x.Hook:
-		case !upgraded["Secret/"+x.Name]:
+		case upgraded != nil && !upgraded["Secret/"+x.Name]:
 			onSync = append(onSync, differ+"; rendered only at install (`.Release.IsInstall`), so Helm keeps the first value")
 		default:
 			onUpgrade = append(onUpgrade, differ)
@@ -608,4 +622,23 @@ func str(v any) string {
 
 func hash(v any) [32]byte {
 	return sha256.Sum256([]byte(fmt.Sprint(v)))
+}
+
+// helmError shortens a failed helm command to its error: the text after its last "Error: ", up to
+// two lines (a chart's `fail` message often starts on the second, as Bitnami's do), without helm's
+// "Use --debug" hint.
+func helmError(s string) string {
+	if i := strings.LastIndex(s, "Error: "); i >= 0 {
+		s = s[i+len("Error: "):]
+	}
+	var lines []string
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimSpace(l); l == "" || strings.HasPrefix(l, "Use --debug") {
+			continue
+		}
+		if lines = append(lines, l); len(lines) == 2 {
+			break
+		}
+	}
+	return strings.Join(lines, " ")
 }

@@ -127,6 +127,9 @@ scan gitops-install-hook  1 "HB-SCAN-006" testdata/charts/gitops-install-hook
 scan gitops-install-only  1 "HB-SCAN-006" testdata/charts/gitops-install-only
 scan gitops-upgrade-hook  1 "HB-SCAN-003" testdata/charts/gitops-upgrade-hook
 scan gitops-values-secret 0 ""            testdata/charts/gitops-values-secret
+# A chart that refuses to render as an upgrade (Bitnami's "PASSWORDS ERROR"): the check still runs,
+# sorting the hook by its annotation and the plain Secret to HB-SCAN-003, with a note (#107).
+scan scan-refuses-upgrade 1 "HB-SCAN-003 HB-SCAN-006" testdata/charts/scan-refuses-upgrade
 # A quoted default that renders another field unquoted (env value becomes valueFrom). Its twin renders scalars alike.
 scan scan-unquoted-env  1 "HB-SCAN-004" testdata/charts/scan-unquoted-env
 scan scan-typed-env     0 ""            testdata/charts/scan-typed-env
