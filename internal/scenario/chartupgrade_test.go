@@ -132,6 +132,17 @@ func TestHealthUnread(t *testing.T) {
 	}
 }
 
+// With no --from-version there is no earlier version to upgrade from: chart-upgrade tests nothing,
+// which is SKIPPED (§2), not INCONCLUSIVE. The CLI never gets here (the default set leaves
+// chart-upgrade out, and naming it without --from-version is refused), but the scenario must not
+// call a run it never started inconclusive.
+func TestChartUpgradeWithoutFromVersionIsSkipped(t *testing.T) {
+	res := ChartUpgrade{}.Run(context.Background(), &Env{})
+	if res.Verdict != Skipped || len(res.Findings) > 0 {
+		t.Errorf("verdict = %s with %d finding(s) (%s), want SKIPPED and none", res.Verdict, len(res.Findings), res.Summary)
+	}
+}
+
 func TestChartUpgradeTimeoutIsInconclusive(t *testing.T) {
 	res := runChartUpgrade(t, "Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: InProgress\ncontext deadline exceeded")
 	if res.Verdict != Inconclusive || len(res.Findings) > 0 {

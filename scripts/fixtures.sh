@@ -29,10 +29,10 @@ check() {
   local name=$1 got=$2 want=$3 want_ids=$4 dir=$5 log=$6
   local got_ids
   # A setup error (2) stops before the run, so it writes no report. The only ones here are a missing
-  # chart or values file, and the message proves the run stopped for that and not for another
-  # usage error.
+  # chart or values file and chart-upgrade without --from-version, and the message proves the run
+  # stopped for that and not for another usage error.
   if [ "$want" = 2 ]; then
-    if [ "$got" = 2 ] && [ ! -e "$dir/report.json" ] && grep -qE 'path not found|values file not found' "$log"; then
+    if [ "$got" = 2 ] && [ ! -e "$dir/report.json" ] && grep -qE 'path not found|values file not found|needs --from-version' "$log"; then
       echo "ok    $name (exit $got)"
     else
       echo "FAIL  $name (exit $got, want 2, no report.json and 'not found')  log: $log"
@@ -78,6 +78,8 @@ run keeps-set-key      0 ""                    testdata/charts/keeps-set-key --s
 run refuses-dropped-key 0 ""                   testdata/charts/refuses-dropped-key --set "encryptionKey=$key" --scenario upgrade-without-values
 run upgrade-v2-breaks  1 "HB-CU-001"           testdata/charts/upgrade-v2-breaks --scenario chart-upgrade --from testdata/charts/upgrade-v1 --from-version 1.0.0
 run upgrade-v2-ok      0 ""                    testdata/charts/upgrade-v2-ok --scenario chart-upgrade --from testdata/charts/upgrade-v1 --from-version 1.0.0
+# Named with no --from-version, chart-upgrade would be SKIPPED and the run could pass untested: refused.
+run upgrade-no-from-version 2 ""               testdata/charts/upgrade-v2-ok --scenario upgrade-without-values --scenario chart-upgrade
 # v2 crash-loops, so --wait times out (the full --timeout): a finding, not INCONCLUSIVE (#28). Its twin is upgrade-v2-ok.
 run upgrade-v2-crashes 1 "HB-CU-001"          testdata/charts/upgrade-v2-crashes --scenario chart-upgrade --from testdata/charts/upgrade-v1 --from-version 1.0.0
 run reinstall-loses-creds 1 "HB-RI-001"         testdata/charts/reinstall-loses-creds --scenario reinstall
