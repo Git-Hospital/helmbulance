@@ -176,6 +176,8 @@ func TestRefuseTraffic(t *testing.T) {
 	}{
 		{"", "/", false},
 		{"", "/healthz", false},
+		{"", "", false},
+		{"web:80", "", false},
 		{"web:80", "/", false},
 		{"web:65535", "/healthz", false},
 		{"", "healthz", true},
@@ -195,6 +197,23 @@ func TestRefuseTraffic(t *testing.T) {
 		}
 		if refused && out == "" {
 			t.Errorf("refuseTraffic(%q, %q) printed no message", c.target, c.path)
+		}
+	}
+}
+
+// A refusal names the value it rejected, but never the token a query can carry.
+func TestRefuseTrafficRedactsTokens(t *testing.T) {
+	for _, c := range []struct{ target, path string }{
+		{"", "health?token=hunter2"},
+		{"web:80?token=hunter2", "/"},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseTraffic(c.target, c.path) })
+		if !refused {
+			t.Fatalf("refuseTraffic(%q, %q) = false, want a refusal", c.target, c.path)
+		}
+		if !strings.Contains(out, "token=***") || strings.Contains(out, "hunter2") {
+			t.Errorf("refuseTraffic(%q, %q) = %q, want the token hidden", c.target, c.path, out)
 		}
 	}
 }
