@@ -64,6 +64,33 @@ func TestRunStopsTheWholeCommandAtTheDeadline(t *testing.T) {
 	}
 }
 
+// helm handles SIGTERM itself and exits 1 with "context canceled", so the exit status alone does
+// not say the deadline stopped it. The error must, or the caller blames the chart.
+func TestRunErrorSaysTheDeadlineStoppedTheCommand(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+
+	_, err := (&Runner{}).Run(ctx, "/bin/sh", "-c",
+		`trap 'echo "Error: UPGRADE FAILED: context canceled" >&2; exit 1' TERM; sleep 10 & wait`)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want it to wrap context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "UPGRADE FAILED: context canceled") {
+		t.Errorf("err = %v, want helm's own error text kept", err)
+	}
+}
+
+// A command that fails on its own, before the deadline, is not blamed on it.
+func TestRunErrorBeforeTheDeadlineIsNotTheDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+
+	_, err := (&Runner{}).Run(ctx, "/bin/sh", "-c", `exit 1`)
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want a plain exit error", err)
+	}
+}
+
 // A child that ignores SIGTERM is killed once killDelay has passed.
 func TestRunKillsAChildThatIgnoresSIGTERM(t *testing.T) {
 	old := killDelay
