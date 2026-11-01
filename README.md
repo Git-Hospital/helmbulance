@@ -131,6 +131,7 @@ Issues and ideas are welcome, especially failures you have seen in production th
 
 - [Ege Zambelli](https://github.com/egezamb)
 - [Kadirhan Emre](https://github.com/kassvl)
+- [Arda](https://github.com/ardasemihyy)
 
 ## License
 
