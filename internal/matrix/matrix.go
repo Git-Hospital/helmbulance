@@ -136,6 +136,7 @@ func judge(res scenario.Result, version string, bad []string, healthErr error, w
 		res.Summary = fmt.Sprintf("runs on Kubernetes %s, with %d API warning(s)", version, len(warnings))
 		if healthErr != nil {
 			res.Summary = fmt.Sprintf("installs on Kubernetes %s, with %d API warning(s); workload health was not checked: %v", version, len(warnings), healthErr)
+			res.HealthUnchecked = true
 		}
 		res.Findings = append(res.Findings, findings...)
 		return res
@@ -182,6 +183,7 @@ func Attribute(results []scenario.Result) []scenario.Result {
 				}
 			}
 			r.Verdict = scenario.Inconclusive
+			r.HealthUnchecked = true // its workloads crashed: the warnings left below do not make it healthy
 			r.Summary += "; it ran healthy on no version tested, so the cause is not a Kubernetes version (run helmbulance test)"
 			r.Findings = warningFindings(strings.TrimPrefix(r.Scenario, "k8s-"), warnings, crash.Reproduce)
 			if len(r.Findings) > 0 {
@@ -194,12 +196,12 @@ func Attribute(results []scenario.Result) []scenario.Result {
 }
 
 // ranHealthy reports whether the chart installed and its workloads became healthy: a PASS, or a
-// FAIL with API warnings only.
+// FAIL with API warnings only, from workloads that were checked.
 func ranHealthy(r scenario.Result) bool {
 	if r.Verdict == scenario.Pass {
 		return true
 	}
-	if r.Verdict != scenario.Fail {
+	if r.Verdict != scenario.Fail || r.HealthUnchecked {
 		return false
 	}
 	for _, f := range r.Findings {
