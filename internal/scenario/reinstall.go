@@ -478,6 +478,9 @@ func reinstallPassSummary(volumes []volume, changes []oracle.Change) string {
 	switch {
 	case len(volumes) == 0 && len(changes) > 0:
 		return "the release has no volumes, so new Secrets after a reinstall lose nothing"
+	case len(changes) > 0 && len(claimsIn(volumes, "kept")) > 0:
+		// The notes say why each change is not a finding (#59, item 2).
+		summary = "some Secrets changed, and none of the changes is a finding"
 	case len(changes) > 0:
 		summary = "no volume kept its data, so new Secrets are expected"
 	}
