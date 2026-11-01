@@ -131,7 +131,7 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 		}
 	}
 	for _, item := range list.Items {
-		if item.Kind == "Job" && (ownedBy(item.Metadata.OwnerReferences, "CronJob") || finished(item.Status.Conditions)) {
+		if leftOut(item.Kind, item.Metadata.OwnerReferences, item.Status.Conditions) {
 			continue
 		}
 		workload := item.Kind + "/" + item.Metadata.Name
@@ -167,29 +167,40 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 
 // StatefulWorkloads returns the workloads (kind/name) in ns that keep data across restarts: a
 // StatefulSet with volume claim templates, or any workload whose pods mount a PersistentVolumeClaim.
-// A credential such a workload reads was probably written into its data at first start.
+// A credential such a workload reads was probably written into its data at first start. Jobs and
+// CronJobs count, left out as in SecretConsumers (#80).
 func (c *Client) StatefulWorkloads(ctx context.Context, ns string) (map[string]bool, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
-		"get", "deployments,statefulsets,daemonsets", "-o", "json")
+		"get", "deployments,statefulsets,daemonsets,jobs,cronjobs", "-o", "json")
 	if err != nil {
 		return nil, err
+	}
+	type claimVolumes struct {
+		Spec struct {
+			Volumes []struct {
+				PersistentVolumeClaim *json.RawMessage `json:"persistentVolumeClaim"`
+			} `json:"volumes"`
+		} `json:"spec"`
 	}
 	var list struct {
 		Items []struct {
 			Kind     string `json:"kind"`
 			Metadata struct {
-				Name string `json:"name"`
+				Name            string     `json:"name"`
+				OwnerReferences []ownerRef `json:"ownerReferences"`
 			} `json:"metadata"`
 			Spec struct {
 				VolumeClaimTemplates []json.RawMessage `json:"volumeClaimTemplates"`
-				Template             struct {
+				Template             claimVolumes      `json:"template"`
+				JobTemplate          struct {
 					Spec struct {
-						Volumes []struct {
-							PersistentVolumeClaim *json.RawMessage `json:"persistentVolumeClaim"`
-						} `json:"volumes"`
+						Template claimVolumes `json:"template"`
 					} `json:"spec"`
-				} `json:"template"`
+				} `json:"jobTemplate"`
 			} `json:"spec"`
+			Status struct {
+				Conditions []condition `json:"conditions"`
+			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
@@ -197,8 +208,15 @@ func (c *Client) StatefulWorkloads(ctx context.Context, ns string) (map[string]b
 	}
 	stateful := map[string]bool{}
 	for _, item := range list.Items {
+		if leftOut(item.Kind, item.Metadata.OwnerReferences, item.Status.Conditions) {
+			continue
+		}
+		volumes := item.Spec.Template.Spec.Volumes
+		if item.Kind == "CronJob" {
+			volumes = item.Spec.JobTemplate.Spec.Template.Spec.Volumes
+		}
 		keeps := len(item.Spec.VolumeClaimTemplates) > 0
-		for _, v := range item.Spec.Template.Spec.Volumes {
+		for _, v := range volumes {
 			keeps = keeps || v.PersistentVolumeClaim != nil
 		}
 		if keeps {
@@ -249,6 +267,13 @@ func ownedBy(refs []ownerRef, kind string) bool {
 type condition struct {
 	Type   string `json:"type"`
 	Status string `json:"status"`
+}
+
+// leftOut reports whether a workload is not counted on its own: a Job a CronJob started is that
+// CronJob, and a finished Job reads and mounts nothing any more. SecretConsumers, StatefulWorkloads
+// and ClaimUsers share it, so a reader is also a keeper when it mounts kept data (#80).
+func leftOut(kind string, refs []ownerRef, conds []condition) bool {
+	return kind == "Job" && (ownedBy(refs, "CronJob") || finished(conds))
 }
 
 // finished reports whether a Job has ended for good: its Complete or Failed condition is True.
@@ -766,18 +791,29 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 
 // ClaimUsers maps each of the given claims to the workloads (kind/name) that mount it: through a
 // persistentVolumeClaim volume, or as a StatefulSet's claim from a volume claim template
-// (<template>-<statefulset>-<ordinal>).
+// (<template>-<statefulset>-<ordinal>). A CronJob that mounts a claim is its user, as it is a
+// Secret reader in SecretConsumers (#80).
 func (c *Client) ClaimUsers(ctx context.Context, ns string, claims []string) (map[string][]string, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
-		"get", "deployments,statefulsets,daemonsets", "-o", "json")
+		"get", "deployments,statefulsets,daemonsets,jobs,cronjobs", "-o", "json")
 	if err != nil {
 		return nil, err
+	}
+	type claimVolumes struct {
+		Spec struct {
+			Volumes []struct {
+				PersistentVolumeClaim struct {
+					ClaimName string `json:"claimName"`
+				} `json:"persistentVolumeClaim"`
+			} `json:"volumes"`
+		} `json:"spec"`
 	}
 	var list struct {
 		Items []struct {
 			Kind     string `json:"kind"`
 			Metadata struct {
-				Name string `json:"name"`
+				Name            string     `json:"name"`
+				OwnerReferences []ownerRef `json:"ownerReferences"`
 			} `json:"metadata"`
 			Spec struct {
 				VolumeClaimTemplates []struct {
@@ -785,16 +821,16 @@ func (c *Client) ClaimUsers(ctx context.Context, ns string, claims []string) (ma
 						Name string `json:"name"`
 					} `json:"metadata"`
 				} `json:"volumeClaimTemplates"`
-				Template struct {
+				Template    claimVolumes `json:"template"`
+				JobTemplate struct {
 					Spec struct {
-						Volumes []struct {
-							PersistentVolumeClaim struct {
-								ClaimName string `json:"claimName"`
-							} `json:"persistentVolumeClaim"`
-						} `json:"volumes"`
+						Template claimVolumes `json:"template"`
 					} `json:"spec"`
-				} `json:"template"`
+				} `json:"jobTemplate"`
 			} `json:"spec"`
+			Status struct {
+				Conditions []condition `json:"conditions"`
+			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
@@ -802,10 +838,17 @@ func (c *Client) ClaimUsers(ctx context.Context, ns string, claims []string) (ma
 	}
 	users := map[string][]string{}
 	for _, item := range list.Items {
+		if leftOut(item.Kind, item.Metadata.OwnerReferences, item.Status.Conditions) {
+			continue
+		}
 		w := item.Kind + "/" + item.Metadata.Name
+		volumes := item.Spec.Template.Spec.Volumes
+		if item.Kind == "CronJob" {
+			volumes = item.Spec.JobTemplate.Spec.Template.Spec.Volumes
+		}
 		for _, claim := range claims {
 			uses := false
-			for _, v := range item.Spec.Template.Spec.Volumes {
+			for _, v := range volumes {
 				uses = uses || v.PersistentVolumeClaim.ClaimName == claim
 			}
 			for _, t := range item.Spec.VolumeClaimTemplates {

@@ -76,7 +76,7 @@ It is a report and not a gate: the job has no threshold and is not a required ch
 
 ## What this does not show
 
-- **Eight finding IDs have no pair yet**: `HB-CU-002`, `HB-CU-003`, `HB-K8S-001`, `HB-K8S-002`, `HB-K8S-004`, `HB-RI-002`, `HB-RI-003` and `HB-SCAN-002`. Nothing checks them. They are listed under `uncovered` in the table, and `go test ./tools/verdicts` keeps that list current.
+- **Seven finding IDs have no pair yet**: `HB-CU-002`, `HB-CU-003`, `HB-K8S-001`, `HB-K8S-004`, `HB-RI-002`, `HB-RI-003` and `HB-SCAN-002`. Nothing checks them. They are listed under `uncovered` in the table, and `go test ./tools/verdicts` keeps that list current.
 - **The fixture charts are small and written by us.** They show that an oracle tells one defect from its fix. They do not show how often it is right on real charts.
 - **The table is only as right as the people who wrote it.** A wrong expectation makes a wrong verdict look checked.
 - **Evidence is checked for what it must contain, not for what it must not.** A defect case whose finding also lists an object that is fine still passes.

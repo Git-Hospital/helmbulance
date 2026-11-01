@@ -1,0 +1,28 @@
+# Stands in for a backup that encrypts the kept data with the password. Its pod template is under
+# spec.jobTemplate, and it is suspended, so the check reads the template and no Job runs.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-backup
+spec:
+  schedule: "0 3 * * *"
+  suspend: true
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext: {runAsNonRoot: true, runAsUser: 65535}
+          containers:
+            - name: backup
+              image: registry.k8s.io/pause:3.10
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+              env:
+                - name: BACKUP_PASSWORD
+                  valueFrom: {secretKeyRef: {name: {{ .Release.Name }}-backup, key: password}}
+              volumeMounts:
+                - {name: data, mountPath: /data}
+          volumes:
+            - name: data
+              persistentVolumeClaim: {claimName: {{ .Release.Name }}-data}

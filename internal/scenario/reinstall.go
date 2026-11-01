@@ -368,19 +368,12 @@ func (Reinstall) readSentinels(ctx context.Context, env *Env, ns string, volumes
 	return nil
 }
 
-// reinstallRunErrors are error texts that come from the run, not the chart. They match the list in
-// #22's IsEnvironmentError, which replaces this once it is merged.
-var reinstallRunErrors = []string{
-	"context deadline exceeded", "timed out waiting for the condition", "signal: killed",
-	"errimagepull", "imagepullbackoff", "toomanyrequests", "connection refused", "i/o timeout",
-	"tls handshake timeout",
-}
-
 // installFailed is the result when the second install fails.
 //   - The chart refusing at render time (`fail`, `required`) is safe behaviour, a PASS (D4): it may
 //     be asking for an existingSecret, which is what HB-RI-001's fix recommends.
-//   - A timeout, a killed helm or a pull error says more about the run: INCONCLUSIVE. A failing
-//     call to the chart's own webhook is the chart's fault, though, whatever words it carries.
+//   - An error IsEnvironmentError gives to the run (a timeout, a killed helm, a pull error, the
+//     cluster or chart host not answering) is INCONCLUSIVE. A failing call to the chart's own
+//     webhook is the chart's fault, though, whatever words it carries.
 //   - Anything else is a release that cannot be recreated.
 func (Reinstall) installFailed(ctx context.Context, res Result, err error, repro []string) Result {
 	msg := strings.ToLower(err.Error())
@@ -389,15 +382,8 @@ func (Reinstall) installFailed(ctx context.Context, res Result, err error, repro
 		res.Summary = "refuses safely on reinstall: " + helmMessage(err)
 		return res
 	}
-	if ctx.Err() != nil {
+	if IsEnvironmentError(ctx, err) {
 		return inconclusive(res, "the reinstall did not finish", err)
-	}
-	if !strings.Contains(msg, "failed calling webhook") {
-		for _, s := range reinstallRunErrors {
-			if strings.Contains(msg, s) {
-				return inconclusive(res, "the reinstall did not finish", err)
-			}
-		}
 	}
 	res.Verdict = Fail
 	res.Summary = "the release does not install again after an uninstall"
