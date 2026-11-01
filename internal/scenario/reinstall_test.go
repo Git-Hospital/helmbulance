@@ -82,6 +82,9 @@ func TestReinstallPassSummary(t *testing.T) {
 		{[]volume{{claim: "a", state: "kept"}}, nil, "Secrets came back unchanged after uninstall and install; 1 volume(s) kept their data"},
 		{[]volume{{claim: "a", state: "recreated"}}, []oracle.Change{{Ref: "s/k", Kind: oracle.Changed}},
 			"no volume kept its data, so new Secrets are expected; deleted with the release (depends on the StorageClass reclaim policy): `a`"},
+		// A volume kept its data and a Secret changed that nothing reading it uses (#59, item 2).
+		{[]volume{{claim: "a", state: "kept"}}, []oracle.Change{{Ref: "s/k", Kind: oracle.Changed}},
+			"some Secrets changed, and none of the changes is a finding; 1 volume(s) kept their data"},
 	} {
 		if got := reinstallPassSummary(c.volumes, c.changes); got != c.want {
 			t.Errorf("reinstallPassSummary = %q, want %q", got, c.want)

@@ -376,8 +376,7 @@ func (Reinstall) readSentinels(ctx context.Context, env *Env, ns string, volumes
 //     webhook is the chart's fault, though, whatever words it carries.
 //   - Anything else is a release that cannot be recreated.
 func (Reinstall) installFailed(ctx context.Context, res Result, err error, repro []string) Result {
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "execution error at (") {
+	if RefusedAtRender(ctx, err) {
 		res.Verdict = Pass
 		res.Summary = "refuses safely on reinstall: " + helmMessage(err)
 		return res
@@ -478,6 +477,9 @@ func reinstallPassSummary(volumes []volume, changes []oracle.Change) string {
 	switch {
 	case len(volumes) == 0 && len(changes) > 0:
 		return "the release has no volumes, so new Secrets after a reinstall lose nothing"
+	case len(changes) > 0 && len(claimsIn(volumes, "kept")) > 0:
+		// The notes say why each change is not a finding (#59, item 2).
+		summary = "some Secrets changed, and none of the changes is a finding"
 	case len(changes) > 0:
 		summary = "no volume kept its data, so new Secrets are expected"
 	}

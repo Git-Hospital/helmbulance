@@ -15,6 +15,9 @@ func TestIsEnvironmentError(t *testing.T) {
 		// Helm 4.3 on kind, a Deployment that never became ready under --wait --timeout 15s.
 		{"Error: INSTALLATION FAILED: resource Deployment/nr/nr not ready. status: InProgress, message: Available: 0/1\ncontext deadline exceeded", true},
 		{"Error: UPGRADE FAILED: timed out waiting for the condition", true},
+		// Helm 4's kstatus wait stops on a Deployment past its progressDeadlineSeconds, a slow image
+		// pull for one; a crash behind it is read from the containers before this check.
+		{"Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: Failed, message: Progress deadline exceeded", true},
 		{"signal: killed", true},
 		{"Back-off pulling image: ErrImagePull", true},
 		{"toomanyrequests: You have reached your pull rate limit", true},
@@ -57,6 +60,20 @@ func TestIsEnvironmentErrorFromTheContext(t *testing.T) {
 	if !IsEnvironmentError(context.Background(), fmt.Errorf("helm: %w", context.DeadlineExceeded)) {
 		t.Error("a wrapped deadline is not an environment error")
 	}
+	// Our own deadline on one helm call: the caller's context is still alive, helm handled SIGTERM
+	// and printed its own error, and execx wraps the deadline in.
+	ours := fmt.Errorf("helm upgrade x: %w: exit status 1: Error: UPGRADE FAILED: context canceled", context.DeadlineExceeded)
+	if !IsEnvironmentError(context.Background(), ours) {
+		t.Error("helm stopped at our deadline is not an environment error")
+	}
+	// The deadline is ours even when helm was waiting on the chart's webhook at that moment.
+	webhook := fmt.Errorf(`helm install x: %w: exit status 1: Error: INSTALLATION FAILED: Internal error occurred: failed calling webhook "m.example.io": context canceled`, context.DeadlineExceeded)
+	if !IsEnvironmentError(context.Background(), webhook) {
+		t.Error("our deadline during a webhook call is blamed on the chart")
+	}
+	if !IsEnvironmentError(context.Background(), fmt.Errorf("helm: %w: exit status 1", context.Canceled)) {
+		t.Error("a wrapped cancel is not an environment error")
+	}
 }
 
 func TestRefusedAtRender(t *testing.T) {
@@ -82,5 +99,8 @@ func TestRefusedAtRender(t *testing.T) {
 	cancel()
 	if RefusedAtRender(ctx, errors.New(cases[0].err)) {
 		t.Error("a cancelled run is a refusal")
+	}
+	if RefusedAtRender(context.Background(), fmt.Errorf("helm: %w: %s", context.DeadlineExceeded, cases[0].err)) {
+		t.Error("a call stopped at its deadline is a refusal")
 	}
 }
