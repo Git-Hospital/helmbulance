@@ -376,8 +376,7 @@ func (Reinstall) readSentinels(ctx context.Context, env *Env, ns string, volumes
 //     webhook is the chart's fault, though, whatever words it carries.
 //   - Anything else is a release that cannot be recreated.
 func (Reinstall) installFailed(ctx context.Context, res Result, err error, repro []string) Result {
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "execution error at (") {
+	if RefusedAtRender(ctx, err) {
 		res.Verdict = Pass
 		res.Summary = "refuses safely on reinstall: " + helmMessage(err)
 		return res
