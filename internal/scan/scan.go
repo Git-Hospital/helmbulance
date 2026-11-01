@@ -16,9 +16,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // Options is what a scan needs.

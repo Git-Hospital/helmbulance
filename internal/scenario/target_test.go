@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 func svc(name string, ports ...kube.ServicePort) kube.Service {

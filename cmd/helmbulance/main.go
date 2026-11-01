@@ -16,15 +16,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/matrix"
-	"github.com/egezamb/helmbulance/internal/oracle"
-	"github.com/egezamb/helmbulance/internal/report"
-	"github.com/egezamb/helmbulance/internal/sandbox"
-	"github.com/egezamb/helmbulance/internal/scan"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/matrix"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/report"
+	"github.com/Git-Hospital/helmbulance/internal/sandbox"
+	"github.com/Git-Hospital/helmbulance/internal/scan"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // Exit codes.

@@ -3,7 +3,7 @@ package report
 import (
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 func TestWorst(t *testing.T) {

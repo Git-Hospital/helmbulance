@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 func TestDiff(t *testing.T) {

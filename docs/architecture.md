@@ -253,7 +253,7 @@ Targets are checked when the connection is made, not when a name is resolved. A 
 
 **Supply chain of the tool:**
 - Release binaries and the probe image are signed with cosign (keyless) and published with an SBOM and SLSA provenance.
-- Images are published under `ghcr.io/egezamb/`. The probe image digest is embedded in the binary.
+- Images are published under `ghcr.io/git-hospital/`. The probe image digest is embedded in the binary.
 - Node images and add-on manifests are pinned by digest.
 - The GitHub Action verifies the binary signature before running it, and users are told to pin the Action by commit SHA.
 

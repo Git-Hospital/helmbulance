@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
 
 func TestRenderedSecrets(t *testing.T) {

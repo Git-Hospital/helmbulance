@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // Reinstall checks what comes back after `helm uninstall` and `helm install` with the same values,

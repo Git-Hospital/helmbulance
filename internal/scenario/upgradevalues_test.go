@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // fakeUpgradeTools answers upgrade-without-values. Pod reads, in order, show pod-template-hash

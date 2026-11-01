@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // Evidence quotes helm and the cluster, so a chart controls part of it. It must not reach
