@@ -5,6 +5,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -94,6 +95,33 @@ func TestScanExit(t *testing.T) {
 	} {
 		if got := scanExit(c.strict, c.worst, c.interrupted); got != c.want {
 			t.Errorf("scanExit(strict %v, %s, interrupted %v) = %d, want %d", c.strict, c.worst, c.interrupted, got, c.want)
+		}
+	}
+}
+
+// Only the tools found on PATH pass; the message names the missing ones, before any cluster (#58).
+func TestRefuseMissingTools(t *testing.T) {
+	bin := t.TempDir()
+	for _, name := range []string{"kind", "helm"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	for _, c := range []struct {
+		tools   []string
+		refused bool
+		missing string
+	}{
+		{[]string{"helm"}, false, ""},
+		{[]string{"kind", "helm"}, false, ""},
+		{[]string{"kind", "helm", "kubectl"}, true, "not found in PATH: kubectl."},
+		{[]string{"kubectl", "oc"}, true, "not found in PATH: kubectl, oc."},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseMissingTools(c.tools...) })
+		if refused != c.refused || !strings.Contains(out, c.missing) || (!refused && out != "") {
+			t.Errorf("refuseMissingTools(%q) = %v, %q; want %v with %q", c.tools, refused, out, c.refused, c.missing)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package scenario
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -285,6 +286,11 @@ func TestTimedOutWaiting(t *testing.T) {
 	cancel()
 	if timedOutWaiting(ctx, errors.New("context deadline exceeded")) {
 		t.Error("a cancelled run counts as a --wait timeout")
+	}
+	// Our deadline on one helm call is not helm's --wait: helm may have hung before applying.
+	ours := fmt.Errorf("helm install x: %w: exit status 1: Error: INSTALLATION FAILED: context canceled", context.DeadlineExceeded)
+	if timedOutWaiting(t.Context(), ours) {
+		t.Error("a helm call stopped at our deadline counts as a --wait timeout")
 	}
 }
 
