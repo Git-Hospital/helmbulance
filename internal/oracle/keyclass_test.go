@@ -19,6 +19,8 @@ func TestKeyClass(t *testing.T) {
 		"mongodb-passwords": ClassCredential, "api-tokens": ClassCredential, "keys": ClassCredential,
 		"DBPassword": ClassCredential, "JWTSecret": ClassCredential, "htpasswd": ClassCredential,
 		"secretkey": ClassCredential, "dbpassword": ClassCredential, "DBPass": ClassCredential, "JWTKey": ClassCredential,
+		// Connection strings named uri and MongoDB's replica set keyfile (#59).
+		"mongodb-uri": ClassCredential, "DATABASE_URI": ClassCredential, "keyfile": ClassCredential, "mongodb-keyfile": ClassCredential,
 		// Bare substrings must not make ordinary keys credentials (review item 2).
 		"keyspace": ClassOther, "author": ClassOther, "monkey": ClassOther,
 		"username": ClassOther, "database": ClassOther, "config.yaml": ClassOther, "host": ClassOther,
