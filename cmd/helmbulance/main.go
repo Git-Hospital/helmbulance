@@ -90,7 +90,7 @@ func test(args []string) int {
 	keep := fs.Bool("keep-cluster", false, "keep the sandbox cluster after the run")
 	nodeImage := fs.String("node-image", "", "kind node image")
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install or upgrade")
-	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
+	out := fs.String("report-dir", "helmbulance-report", "where to write report.md, report.json and report.sarif")
 	from := fs.String("from", "", "chart to upgrade from in chart-upgrade (repo/chart, oci://… or a path); defaults to the chart under test")
 	fromVersion := fs.String("from-version", "", "chart version to upgrade from; enables the chart-upgrade scenario. A local chart also needs --from")
 	trafficTarget := fs.String("traffic-target", "", "Service and port that zero-downtime sends requests to (service:port); default: the most HTTP-like Service port")
@@ -388,7 +388,7 @@ func matrixCmd(args []string) int {
 	fs.Var(&sets, "set", "value, key=value (repeatable). Values of four or more characters are hidden in reports.")
 	versions := fs.String("k8s", strings.Join(matrix.Versions(), ","), "Kubernetes versions to test, comma-separated")
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install")
-	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
+	out := fs.String("report-dir", "helmbulance-report", "where to write report.md, report.json and report.sarif")
 	allowRemote := fs.Bool("allow-remote", false, "run a chart from a repository, OCI registry or URL; it runs without the third-party protections, which arrive in v0.3")
 	chart, ok := parseArgs(fs, args)
 	if !ok {
@@ -457,7 +457,7 @@ func scanCmd(args []string) int {
 	from := fs.String("from", "", "chart to compare against for immutable fields (repo/chart, oci://… or a path); defaults to the chart")
 	fromVersion := fs.String("from-version", "", "version users upgrade from; enables the immutable-field check. A local chart also needs --from")
 	strict := fs.Bool("strict", false, "exit 1 when there are candidates, otherwise 3 when a check could not run")
-	out := fs.String("report-dir", "helmbulance-report", "where to write report.md and report.json")
+	out := fs.String("report-dir", "helmbulance-report", "where to write report.md, report.json and report.sarif")
 	chart, ok := parseArgs(fs, args)
 	if !ok {
 		return exitError
