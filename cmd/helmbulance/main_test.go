@@ -6,9 +6,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/egezamb/helmbulance/internal/execx"
 	"github.com/egezamb/helmbulance/internal/scenario"
 )
 
@@ -266,5 +269,86 @@ func TestParseArgs(t *testing.T) {
 		if ok && (*strict != c.strict || files.String() != c.files || *out != c.out) {
 			t.Errorf("parseArgs(%q): strict %v, -f %q, --report-dir %q; want %v, %q, %q", c.args, *strict, files.String(), *out, c.strict, c.files, c.out)
 		}
+	}
+}
+
+// A values file passed with -f can hold the same secrets as --set, and helm quotes them back in
+// schema errors, a chart's fail message or a Kubernetes "Invalid value" (#58 reviews, N3). Values
+// under a key that names a credential or TLS material are redacted like --set values; the rest
+// of the file is not, so image names and hosts stay readable in error text.
+func TestFileSecrets(t *testing.T) {
+	dir := t.TempDir()
+	values := filepath.Join(dir, "values.yaml")
+	if err := os.WriteFile(values, []byte(`
+image: nginx-1.27
+image: nginx-1.28
+1: one
+db:
+  host: db.example.internal
+  password: FileSecret-7f3a91
+access:
+  users:
+    - name: alice
+      token: tok-0a1b2c3d
+auth:
+  username: admin-user
+  existingSecret: my-release-pg
+  secretKeys:
+    userPasswordKey: user-password
+    password: pg-password-entry
+  tlsSecretName: my-tls-cert
+  passwordFile: /run/secrets/db-pass
+  rootPasswordKey: root-password-key
+apiToken: 12345678
+apiKey: 0x1F2E3D4C
+secretKey: aws-secret-0a1b
+tls:
+  key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQ
+    -----END PRIVATE KEY-----
+passwordUpdateJob:
+  image:
+    tag: latest-1001
+extraEnv:
+  - name: DB_PASSWORD
+    value: EnvSecret-55aa
+  - name: LOG_LEVEL
+    value: debug-level
+featureFlags:
+  enabled: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "other.yaml")
+	if err := os.WriteFile(other, []byte("password: OtherFile-9e8d\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := fileSecrets([]string{values, "-", other + ",https://charts.example/values.yaml", filepath.Join(dir, "missing.yaml")})
+	for _, want := range []string{
+		"FileSecret-7f3a91", "tok-0a1b2c3d", "EnvSecret-55aa", "aws-secret-0a1b", "OtherFile-9e8d",
+		"-----BEGIN PRIVATE KEY-----\nMIIEvQ\n-----END PRIVATE KEY-----\n",
+		// As written, and as helm prints a number it read as float64.
+		"12345678", "1.2345678e+07", "0x1F2E3D4C", "5.23124044e+08",
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("fileSecrets is missing %q: %q", want, got)
+		}
+	}
+	for _, not := range []string{
+		"nginx-1.28", "db.example.internal", "alice", "admin-user", "my-release-pg", "user-password",
+		"root-password-key", "pg-password-entry", "my-tls-cert", "/run/secrets/db-pass", "latest-1001", "debug-level", "true", "one",
+	} {
+		if slices.Contains(got, not) {
+			t.Errorf("fileSecrets hides %q, which is not a secret: %q", not, got)
+		}
+	}
+	if text := execx.Redact("password FileSecret-7f3a91 rejected", execx.SecretValues(got)); strings.Contains(text, "FileSecret") {
+		t.Errorf("Redact left the value: %q", text)
+	}
+	// helm and Kubernetes quote a value in their errors: the PEM key with escaped line breaks.
+	quotedPEM := strconv.Quote("-----BEGIN PRIVATE KEY-----\nMIIEvQ\n-----END PRIVATE KEY-----\n")
+	if text := execx.Redact("invalid value "+quotedPEM, execx.SecretValues(got)); strings.Contains(text, "MIIEvQ") {
+		t.Errorf("Redact left the quoted key: %q", text)
 	}
 }
