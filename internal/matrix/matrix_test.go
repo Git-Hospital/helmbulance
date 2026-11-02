@@ -178,6 +178,10 @@ func TestCrashAtInstallIsBlamedOnlyWhenAnotherVersionRan(t *testing.T) {
 		// Unhealthy after an install that finished is not healthy.
 		{"unhealthy on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-002"), crashed("1.37")}, scenario.Inconclusive},
 		{"install failure on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-001"), crashed("1.37")}, scenario.Inconclusive},
+		{"INCONCLUSIVE on 1.36", []scenario.Result{result("1.36", scenario.Inconclusive, ""), crashed("1.37")}, scenario.Inconclusive},
+		// The last result here is the install failure on 1.37: 1.36 accepted the manifests, so
+		// the crash counts as installed and the failure stays a finding.
+		{"crash on 1.36, install failure on 1.37", []scenario.Result{crashed("1.36"), result("1.37", scenario.Fail, "HB-K8S-001")}, scenario.Fail},
 		// API warnings alone do not make a version healthy when its workloads were never checked:
 		// an install whose --wait timed out with no crash, or a health check cut short.
 		{"timed out with a warning on 1.36", []scenario.Result{installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.36"}, "1.36", errors.New(installTimeout), nil, deprecation, nil), crashed("1.37")}, scenario.Inconclusive},

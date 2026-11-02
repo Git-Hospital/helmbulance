@@ -189,7 +189,10 @@ func TestUpgradeValuesTreatmentFails(t *testing.T) {
 		{"refuses, a=1,b=2 is two keys", map[string]string{"REVISIONS": "a", "REFUSE_TREATMENT": "1", "SETS": "a=1,b=2"},
 			Inconclusive, "", "; the other --set values it dropped were not tested"},
 		{"control regenerated, refused with two keys dropped", map[string]string{"REVISIONS": "a", "REFUSE_TREATMENT": "1", "SECRET_CHANGES_FROM": "3", "SETS": "host=a.example second=1"},
-			Fail, "HB-UV-001", "; the upgrade with the values files is refused: UPGRADE FAILED: execution error at ("},
+			Fail, "HB-UV-001", "encryptionKey is required; the other --set values it dropped were not tested"},
+		// The same key twice is one key dropped, so the refusal is about it.
+		{"refuses, a=1 and a=2 is one key", map[string]string{"REVISIONS": "a", "REFUSE_TREATMENT": "1", "SETS": "a=1 a=2"},
+			Pass, "", "refuses safely when the release is upgraded from its values files only"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

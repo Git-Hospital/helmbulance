@@ -351,6 +351,118 @@ cases:
       scan:unquoted-values: PASS
       scan:duplicate-env: PASS
 
+  # A password Helm renders only at install, in a pre-install hook or under .Release.IsInstall: Helm
+  # keeps it, Argo CD renders a new one on every sync, so scan names gitops-render (HB-SCAN-006,
+  # #107). A hook that runs on upgrade too is regenerated under Helm as well (HB-SCAN-003). Each
+  # twin is the same chart taking the password from values.
+  - name: scan-gitops-install-hook
+    pair: scan-gitops-install-hook
+    role: defect
+    command: scan
+    args: [testdata/charts/gitops-install-hook, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: FAIL
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+    findings:
+      HB-SCAN-006: [Secret/hb-db, "`pre-install` hook"]
+  - name: scan-gitops-values-secret
+    pair: scan-gitops-install-hook
+    role: fixed
+    command: scan
+    args: [testdata/charts/gitops-values-secret, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+  - name: scan-gitops-install-only
+    pair: scan-gitops-install-only
+    role: defect
+    command: scan
+    args: [testdata/charts/gitops-install-only, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: FAIL
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+    findings:
+      HB-SCAN-006: [Secret/hb-db, "`.Release.IsInstall`"]
+  - name: scan-gitops-values-secret-for-install-only
+    pair: scan-gitops-install-only
+    role: fixed
+    command: scan
+    args: [testdata/charts/gitops-values-secret, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+  - name: scan-gitops-upgrade-hook
+    pair: scan-gitops-upgrade-hook
+    role: defect
+    command: scan
+    args: [testdata/charts/gitops-upgrade-hook, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: FAIL
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+    findings:
+      HB-SCAN-003: [Secret/hb-db, run again on every upgrade]
+  - name: scan-gitops-values-secret-for-upgrade-hook
+    pair: scan-gitops-upgrade-hook
+    role: fixed
+    command: scan
+    args: [testdata/charts/gitops-values-secret, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+  # A chart that refuses to render as an upgrade (Bitnami's "PASSWORDS ERROR"): the check still
+  # runs, sorting the hook by its annotation and the plain Secret to HB-SCAN-003 (#107).
+  - name: scan-refuses-upgrade
+    pair: scan-refuses-upgrade
+    role: defect
+    command: scan
+    args: [testdata/charts/scan-refuses-upgrade, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: FAIL
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+    findings:
+      HB-SCAN-003: [Secret/hb-db]
+      HB-SCAN-006: [Secret/hb-init, "`pre-install` hook"]
+  - name: scan-gitops-values-secret-for-refuses-upgrade
+    pair: scan-refuses-upgrade
+    role: fixed
+    command: scan
+    args: [testdata/charts/gitops-values-secret, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+
   # A quoted default that renders another field unquoted (an env value becomes valueFrom). Its twin
   # renders scalars alike.
   - name: scan-unquoted-env
