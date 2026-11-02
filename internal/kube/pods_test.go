@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
 
 func TestFinishedJob(t *testing.T) {

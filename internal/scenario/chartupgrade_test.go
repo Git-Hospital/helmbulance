@@ -3,6 +3,7 @@ package scenario
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // runChartUpgrade runs chart-upgrade against a fake helm whose upgrade to the chart under test (the
@@ -274,6 +275,11 @@ func TestTimedOutWaiting(t *testing.T) {
 	cancel()
 	if timedOutWaiting(ctx, errors.New("context deadline exceeded")) {
 		t.Error("a cancelled run counts as a --wait timeout")
+	}
+	// Our deadline on one helm call is not helm's --wait: helm may have hung before applying.
+	ours := fmt.Errorf("helm install x: %w: exit status 1: Error: INSTALLATION FAILED: context canceled", context.DeadlineExceeded)
+	if timedOutWaiting(t.Context(), ours) {
+		t.Error("a helm call stopped at our deadline counts as a --wait timeout")
 	}
 }
 

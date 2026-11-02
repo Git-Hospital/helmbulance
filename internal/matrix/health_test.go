@@ -3,7 +3,7 @@ package matrix
 import (
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 func TestNotReady(t *testing.T) {

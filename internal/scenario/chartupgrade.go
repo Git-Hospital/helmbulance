@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // ChartUpgrade installs an earlier version of the chart and upgrades it to the chart under test,

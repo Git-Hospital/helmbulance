@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // containerLists are the pod spec fields that hold containers.

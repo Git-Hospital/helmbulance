@@ -6,10 +6,10 @@ import (
 	"io"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // Verdicts. A scenario that cannot finish (install fails, timeout) is Inconclusive, never Fail:
@@ -64,6 +64,10 @@ type Result struct {
 	Verdict  string    `json:"verdict"`
 	Summary  string    `json:"summary"`
 	Findings []Finding `json:"findings,omitempty"`
+	// HealthUnchecked marks a result whose workloads were never seen settle, such as an install
+	// whose --wait timed out with no crash: its findings say nothing about whether the chart runs.
+	// matrix reads it across versions; it is not part of the report.
+	HealthUnchecked bool `json:"-"`
 }
 
 // Scenario is one day-two situation tested against a live release.

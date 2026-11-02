@@ -1,4 +1,4 @@
-module github.com/egezamb/helmbulance
+module github.com/Git-Hospital/helmbulance
 
 go 1.27.2
 
