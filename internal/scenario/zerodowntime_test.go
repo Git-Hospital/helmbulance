@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"maps"
 	"os"
@@ -383,8 +384,8 @@ const oneNodeDaemonSet = `{"items":[
 ]}`
 
 // Review #85, point 3: on the one-node sandbox, a DaemonSet with maxSurge 0 always leaves its
-// Service without an endpoint while its pod is replaced. That comes from the sandbox, not the
-// chart, so it is INCONCLUSIVE, not a finding.
+// Service without an endpoint while its pod is replaced, when no other workload's pods serve the
+// Service. That comes from the sandbox, not the chart, so it is INCONCLUSIVE, not a finding.
 func TestZeroDowntimeOneNodeDaemonSetIsInconclusive(t *testing.T) {
 	res := runZeroDowntime(t, map[string]string{
 		"workloads":          oneNodeDaemonSet,
@@ -394,6 +395,75 @@ func TestZeroDowntimeOneNodeDaemonSetIsInconclusive(t *testing.T) {
 	})
 	if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "`DaemonSet/web`") || len(res.Findings) != 0 {
 		t.Errorf("verdict = %s (%s), %d findings; want INCONCLUSIVE naming DaemonSet/web", res.Verdict, res.Summary, len(res.Findings))
+	}
+}
+
+// A Deployment behind web, then a one-node DaemonSet with maxSurge unset. %s is the DaemonSet's
+// labels, %s its preStop.
+const deploymentAndDaemonSet = `{"items":[
+	{"kind":"Deployment","metadata":{"name":"web"},"spec":{"replicas":2,"strategy":{"type":"RollingUpdate"},"template":{"metadata":{"labels":{"app":"web"}},"spec":{"containers":[{"readinessProbe":{},"lifecycle":{"preStop":{}}}]}}}},
+	{"kind":"DaemonSet","metadata":{"name":"proxy"},"spec":{"updateStrategy":{"type":"RollingUpdate"},"template":{"metadata":{"labels":{%s}},"spec":{"containers":[{"readinessProbe":{}%s}]}}},"status":{"desiredNumberScheduled":1}}
+]}`
+
+// Review #85 by Arda, point 1: when a counted window and a one-node DaemonSet window both have
+// failures, the summary, the first line and the longest outage come from the counted windows
+// only; the DaemonSet's failures are named as not counted.
+func TestZeroDowntimeFailLeavesTheOneNodeGapOutOfItsCounts(t *testing.T) {
+	// web and db fail for a second each, then proxy, which does not serve web, for six.
+	proxy := `{"kind":"DaemonSet","metadata":{"name":"proxy"},"spec":{"updateStrategy":{"type":"RollingUpdate"},"template":{"metadata":{"labels":{"app":"proxy"}},"spec":{"containers":[{"readinessProbe":{},"lifecycle":{"preStop":{}}}]}}},"status":{"desiredNumberScheduled":1}}`
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":           strings.Replace(twoWorkloads, "\n]}", ",\n\t"+proxy+"\n]}", 1),
+		"hb-traffic-control":  "100 ok\n",
+		"hb-traffic.before.0": "300 ok\n",
+		"hb-traffic.before.1": "310 ok\n",
+		"hb-traffic.before.2": "320 ok\n",
+		"hb-traffic": "300 ok\n301 fail\n302 ok\n310 ok\n311 fail\n312 ok\n" +
+			"320 ok\n321 fail\n322 fail\n323 fail\n324 fail\n325 fail\n326 fail\n327 ok\n",
+	})
+	if res.Verdict != Fail || len(res.Findings) != 1 {
+		t.Fatalf("verdict = %s (%s), want FAIL", res.Verdict, res.Summary)
+	}
+	if !strings.HasPrefix(res.Summary, "2 of 14 requests failed") || !strings.Contains(res.Summary, "6 more while `DaemonSet/proxy` restarted are not counted") {
+		t.Errorf("summary = %q, want 2 of 14 failed and the 6 in DaemonSet/proxy's window not counted", res.Summary)
+	}
+	// The longest outage is the longest of the counted windows', not their sum.
+	ev := strings.Join(res.Findings[0].Evidence, "\n")
+	for _, want := range []string{"2 of 14 requests to `http://web:80/` failed (14.3%)", "Longest outage: about 1s."} {
+		if !strings.Contains(ev, want) {
+			t.Errorf("evidence does not contain %q:\n%s", want, ev)
+		}
+	}
+}
+
+// Review #85 by Arda, point 2: a Deployment's ready pods behind the same Service keep it serving
+// while the DaemonSet's one pod is replaced, so failures in that window are the chart's, and the
+// DaemonSet's missing preStop is the finding.
+func TestZeroDowntimeOneNodeDaemonSetWithOtherPodsBehindTheServiceCounts(t *testing.T) {
+	res := runZeroDowntime(t, map[string]string{
+		"workloads":           fmt.Sprintf(deploymentAndDaemonSet, `"app":"web"`, ``),
+		"hb-traffic-control":  "100 ok\n",
+		"hb-traffic.before.0": "300 ok\n",
+		"hb-traffic.before.1": "310 ok\n",
+		"hb-traffic":          "300 ok\n301 ok\n310 ok\n311 fail\n312 fail\n313 ok\n",
+	})
+	if res.Verdict != Fail || len(res.Findings) != 1 {
+		t.Fatalf("verdict = %s (%s), want FAIL", res.Verdict, res.Summary)
+	}
+	ev := strings.Join(res.Findings[0].Evidence, "\n")
+	if !strings.Contains(ev, "`DaemonSet/proxy` has no preStop hook") || strings.Contains(ev, "not counted") {
+		t.Errorf("evidence does not blame DaemonSet/proxy's missing preStop, or calls its window not counted:\n%s", ev)
+	}
+
+	// A Deployment scaled to zero keeps nothing serving, so the gap is the sandbox's again.
+	res = runZeroDowntime(t, map[string]string{
+		"workloads":           strings.Replace(fmt.Sprintf(deploymentAndDaemonSet, `"app":"web"`, ``), `"replicas":2`, `"replicas":0`, 1),
+		"hb-traffic-control":  "100 ok\n",
+		"hb-traffic.before.0": "300 ok\n",
+		"hb-traffic.before.1": "310 ok\n",
+		"hb-traffic":          "300 ok\n301 ok\n310 ok\n311 fail\n312 fail\n313 ok\n",
+	})
+	if res.Verdict != Inconclusive || len(res.Findings) != 0 {
+		t.Errorf("with web scaled to 0: verdict = %s (%s), %d findings; want INCONCLUSIVE", res.Verdict, res.Summary, len(res.Findings))
 	}
 }
 

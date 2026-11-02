@@ -266,11 +266,12 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 
 	windows := restartWindows(log, restarts, finished, workloads)
 	var real, sandbox []window
-	for _, w := range windows {
-		if oneNodeGap(w.workload) {
-			sandbox = append(sandbox, w)
+	for i := range windows {
+		windows[i].gap = sandboxGap(windows[i].workload, workloads, svc, svcKnown)
+		if windows[i].gap {
+			sandbox = append(sandbox, windows[i])
 		} else {
-			real = append(real, w)
+			real = append(real, windows[i])
 		}
 	}
 	switch {
@@ -292,12 +293,30 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, operation+" failed", actErr)
 	}
 
+	// The one-node gap's windows are left out of the counts as well as the blame: every request after
+	// the start falls in one window, so the counted windows' failures add up exactly. Their longest
+	// outage can only be shorter than one that crosses a window's edge.
+	counted := treatment
+	if len(sandbox) > 0 {
+		counted.Failed, counted.LongestOutage = 0, 0
+		for _, w := range real {
+			counted.Failed += w.stats.Failed
+			counted.LongestOutage = max(counted.LongestOutage, w.stats.LongestOutage)
+		}
+	}
 	res.Verdict = Fail
-	res.Summary = fmt.Sprintf("%d of %d requests failed during %s", treatment.Failed, treatment.Total, operation)
+	res.Summary = fmt.Sprintf("%d of %d requests failed during %s", counted.Failed, counted.Total, operation)
+	if len(sandbox) > 0 {
+		var refs []string
+		for _, w := range sandbox {
+			refs = append(refs, "`"+w.ref()+"`")
+		}
+		res.Summary += fmt.Sprintf("; %d more while %s restarted are not counted", treatment.Failed-counted.Failed, strings.Join(refs, ", "))
+	}
 	evidence := []string{
 		fmt.Sprintf("%d of %d requests to `%s` failed (%.1f%%) during %s; none failed in the %s control.",
-			treatment.Failed, treatment.Total, shown, treatment.FailedPercent(), operation, controlDuration),
-		"Longest outage: " + outageText(treatment.LongestOutage) + ".",
+			counted.Failed, counted.Total, shown, counted.FailedPercent(), operation, controlDuration),
+		"Longest outage: " + outageText(counted.LongestOutage) + ".",
 	}
 	if firstControl.Failed > 0 {
 		evidence = append(evidence, fmt.Sprintf("The first control lost %d of %d requests with nothing changing and was repeated; the cluster itself dropped requests before the operation.",
@@ -526,10 +545,12 @@ func targetService(services []kube.Service, target string) (kube.Service, bool) 
 	return kube.Service{}, false
 }
 
-// window is one workload's share of a one-at-a-time restart, with its failures.
+// window is one workload's share of a one-at-a-time restart, with its failures. gap marks the
+// one-node sandbox's gap (sandboxGap), which is not counted.
 type window struct {
 	workload kube.Workload
 	stats    oracle.TrafficStats
+	gap      bool
 }
 
 func (w window) ref() string { return w.workload.Kind + "/" + w.workload.Name }
@@ -541,7 +562,7 @@ func (w window) line(svc kube.Service, svcKnown bool) string {
 	if svcKnown && !w.workload.Serves(svc) {
 		line += fmt.Sprintf(" `%s` does not serve `%s`; the pods behind `%s` may depend on it.", w.ref(), svc.Name, svc.Name)
 	}
-	if oneNodeGap(w.workload) {
+	if w.gap {
 		line += " On this one-node sandbox a DaemonSet with maxSurge 0 always has this gap, so it is not counted."
 	}
 	return line
@@ -574,6 +595,24 @@ func cutoff(restarts []int64, next int) int64 {
 // before the new one starts.
 func oneNodeGap(w kube.Workload) bool {
 	return w.Kind == "DaemonSet" && w.Replicas == 1 && (w.MaxSurge == "" || w.MaxSurge == "0" || w.MaxSurge == "0%")
+}
+
+// sandboxGap reports whether failures while w restarted come from the one-node sandbox, not the
+// chart: w has oneNodeGap, and if it serves the target Service, no other workload with pods serves
+// it too. Those pods would keep the Service serving while w's one pod is replaced, so failures then
+// are the chart's on any number of nodes.
+func sandboxGap(w kube.Workload, workloads []kube.Workload, svc kube.Service, svcKnown bool) bool {
+	if !oneNodeGap(w) {
+		return false
+	}
+	if svcKnown && w.Serves(svc) {
+		for _, o := range workloads {
+			if (o.Kind != w.Kind || o.Name != w.Name) && o.Replicas > 0 && o.Serves(svc) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // count writes n with its noun: "1 pod", "3 pods".
