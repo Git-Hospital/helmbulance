@@ -266,10 +266,10 @@ func refuseRemote(allow bool, refs ...string) bool {
 			continue
 		}
 		if !allow {
-			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote.\n", ref)
+			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote.\n", execx.RedactURLs(ref))
 			return true
 		}
-		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", ref)
+		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", execx.RedactURLs(ref))
 	}
 	return false
 }

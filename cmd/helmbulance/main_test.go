@@ -41,6 +41,9 @@ func TestRefuseRemote(t *testing.T) {
 		{false, []string{"./nonexistent"}, true, "path not found"},
 		{true, []string{"~/chart"}, true, "path not found"},
 		{false, []string{"../../testdata/charts/keeps-secret", "bitnami/redis"}, true, "bitnami/redis is not a chart on disk"},
+		// The ref is printed with its credentials hidden, refused or not.
+		{false, []string{"https://bob:hunter2@charts.example/x.tgz"}, true, "https://***@charts.example/x.tgz is not a chart on disk"},
+		{true, []string{"https://bob:hunter2@charts.example/x.tgz"}, false, "warning: running https://***@charts.example/x.tgz"},
 	}
 	for _, c := range cases {
 		var refused bool
