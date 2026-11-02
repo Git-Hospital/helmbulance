@@ -136,21 +136,70 @@ func (r *Report) Markdown() string {
 			for _, e := range f.Evidence {
 				fmt.Fprintf(&b, "- %s\n", escape(e))
 			}
-			fmt.Fprintf(&b, "\n**Impact.** %s\n\n**Fix.** %s\n\n**Reproduce**\n\n```sh\n", f.Impact, f.Fix)
+			fence := codeFence(f.Reproduce)
+			fmt.Fprintf(&b, "\n**Impact.** %s\n\n**Fix.** %s\n\n**Reproduce**\n\n%ssh\n", inline(f.Impact), inline(f.Fix), fence)
 			for _, c := range f.Reproduce {
-				b.WriteString(c + "\n")
+				b.WriteString(commandLine(c) + "\n")
 			}
-			b.WriteString("```\n")
+			b.WriteString(fence + "\n")
 		}
 	}
 	return b.String()
 }
 
-// escape keeps text from the cluster from breaking a Markdown table or injecting markup. A lone
+// markdownText makes text inert in a Markdown table cell or list item: it cannot end the cell, start
+// a line, or open HTML, and "](" and "][" become "]&#40;" and "]&#91;", so no inline or reference
+// link or image ([text](url), ![](url), [text][ref]) can form, which the job summary would render
+// and fetch. Brackets alone stay as they are: a field path such as containers[app].env[FOO] in a
+// code span must read the same. A bare URL is still autolinked by GitHub; its text is the URL.
+var markdownText = strings.NewReplacer("|", "\\|", "\n", " ", "\r", " ", "\t", " ", "<", "&lt;", ">", "&gt;",
+	"](", "]&#40;", "][", "]&#91;")
+
+// inline keeps text from the cluster from breaking a Markdown table or injecting markup. A lone
 // carriage return is a line ending in CommonMark too, so it is turned into a space like a newline;
-// otherwise a chart's `fail "x\r## Heading"` would start a heading in the report.
+// otherwise a chart's `fail "x\r## Heading"` would start a heading in the report. Control
+// characters and the bidirectional overrides that reorder what is shown are dropped: report.md is
+// also read in a terminal.
+func inline(s string) string {
+	return dropControls(markdownText.Replace(s))
+}
+
+// commandLine keeps a reproduce command on one line of its code block: a values key the chart
+// chose can hold a line break.
+func commandLine(s string) string {
+	return dropControls(strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s))
+}
+
+func dropControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// codeFence is a fence longer than any run of backticks in lines, so none of them closes the block.
+func codeFence(lines []string) string {
+	longest := 2
+	for _, l := range lines {
+		run := 0
+		for _, r := range l {
+			if r != '`' {
+				run = 0
+				continue
+			}
+			if run++; run > longest {
+				longest = run
+			}
+		}
+	}
+	return strings.Repeat("`", longest+1)
+}
+
+// escape is inline with a length limit, for text that comes from the cluster.
 func escape(s string) string {
-	s = strings.NewReplacer("|", "\\|", "\n", " ", "\r", " ", "<", "&lt;", ">", "&gt;").Replace(s)
+	s = inline(s)
 	if len(s) > 500 {
 		s = s[:500]
 		// Do not cut a multi-byte rune in half, which would leave invalid UTF-8.

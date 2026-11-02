@@ -102,3 +102,71 @@ func TestWriteHidesChartURLCredentials(t *testing.T) {
 		}
 	}
 }
+
+// A chart's fail message reaches the evidence, and the job summary renders report.md: a Markdown
+// link or image in it must stay text, and control characters must not reach report.md at all.
+// Impact and Fix are escaped too, without the evidence's length cut.
+func TestMarkdownNeutralisesLinksAndControls(t *testing.T) {
+	long := strings.Repeat("x", 600)
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "chart-upgrade",
+		Verdict:  scenario.Fail,
+		Findings: []scenario.Finding{{
+			ID:    "HB-CU-001",
+			Title: "Upgrading fails",
+			Evidence: []string{
+				"Error: [Re-run with your token](https://evil.example/login) ![p](https://evil.example/pixel.png)",
+				`Error: \[escaped\](https://evil.example/2) [ref][r]`,
+				"`Deployment/x spec.template.spec.containers[app].env[FOO].value`",
+				"Error: a" + "\x1b]0;title" + "\x07" + "b " + "\u202egnp.exe" + "\u202c" + " c" + "\u009b" + "d",
+			},
+			Impact: "<img src=x>" + "\n## Not a heading",
+			Fix:    "Set it. " + long,
+		}},
+	}}}
+	md := r.Markdown()
+	for _, bad := range []string{"![p](", "](https://evil.example/2)", "][r]", "\x1b", "\x07", "\u202e", "\u009b", "<img", "\n## Not a heading"} {
+		if strings.Contains(md, bad) {
+			t.Errorf("report.md contains %q:\n%s", bad, md)
+		}
+	}
+	if !strings.Contains(md, "[Re-run with your token]&#40;https://evil.example/login)") {
+		t.Errorf("the link text is not kept as text:\n%s", md)
+	}
+	if !strings.Contains(md, "`Deployment/x spec.template.spec.containers[app].env[FOO].value`") {
+		t.Errorf("a field path in a code span was changed:\n%s", md)
+	}
+	if !strings.Contains(md, long) {
+		t.Error("Fix was cut: only evidence has a length limit")
+	}
+}
+
+// A reproduce line can carry a values key from the chart. A line break and a fence in it must not
+// close the code block and let the rest render as Markdown.
+func TestMarkdownKeepsReproduceInItsBlock(t *testing.T) {
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "scan",
+		Verdict:  scenario.Fail,
+		Findings: []scenario.Finding{{
+			ID:        "HB-SCAN-004",
+			Title:     "x",
+			Reproduce: []string{"helm template c --set-json 'a\n```\n![i](https://evil.example/r.png)=1'"},
+		}},
+	}}}
+	md := r.Markdown()
+	fences := 0
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "```") {
+			fences++
+		}
+		if strings.HasPrefix(line, "![i]") {
+			t.Errorf("the reproduce line left its code block:\n%s", md)
+		}
+	}
+	if fences != 2 {
+		t.Errorf("got %d fence lines, want the block's own 2:\n%s", fences, md)
+	}
+	if !strings.Contains(md, "````sh\n") {
+		t.Errorf("the fence is not longer than the backticks inside:\n%s", md)
+	}
+}
