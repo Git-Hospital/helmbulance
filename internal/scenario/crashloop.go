@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,10 +10,11 @@ import (
 )
 
 // timedOutWaiting reports whether a helm command failed because `--wait` timed out with the
-// release applied, as opposed to a cancelled run, the chart's own webhook, or a pull or tool
-// error. Only then is it worth reading the release's pods for what kept it from being ready.
+// release applied, as opposed to a cancelled run, a helm call stopped at our own deadline (helm may
+// not have applied anything yet), the chart's own webhook, or a pull or tool error. Only then is it
+// worth reading the release's pods for what kept it from being ready.
 func timedOutWaiting(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
@@ -30,6 +32,17 @@ func timedOutWaiting(ctx context.Context, err error) bool {
 	return strings.Contains(msg, "timed out waiting for the condition") ||
 		strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "not ready. status: failed")
+}
+
+// TimedOutWaiting is timedOutWaiting for matrix, which reads the release after an install's
+// `--wait` timeout as chart-upgrade does (#49).
+func TimedOutWaiting(ctx context.Context, err error) bool { return timedOutWaiting(ctx, err) }
+
+// StartFailures lists the containers of a release installed just now that crash or cannot start.
+// Every pod is new and has no count from before, so only the waiting reason counts: a container
+// that is only slow, or still pulling its image, is not listed.
+func StartFailures(containers []kube.Container) []string {
+	return crashedSince(containers, nil, nil, false)
 }
 
 // startFailures are waiting reasons that come from the pod spec the chart renders, not from the
