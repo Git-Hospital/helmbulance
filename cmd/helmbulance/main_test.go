@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // stderrOf runs f and returns what it wrote to os.Stderr.
@@ -41,6 +41,9 @@ func TestRefuseRemote(t *testing.T) {
 		{false, []string{"./nonexistent"}, true, "path not found"},
 		{true, []string{"~/chart"}, true, "path not found"},
 		{false, []string{"../../testdata/charts/keeps-secret", "bitnami/redis"}, true, "bitnami/redis is not a chart on disk"},
+		// The ref is printed with its credentials hidden, refused or not.
+		{false, []string{"https://bob:hunter2@charts.example/x.tgz"}, true, "https://***@charts.example/x.tgz is not a chart on disk"},
+		{true, []string{"https://bob:hunter2@charts.example/x.tgz"}, false, "warning: running https://***@charts.example/x.tgz"},
 	}
 	for _, c := range cases {
 		var refused bool
@@ -144,6 +147,30 @@ func TestRefuseMissingValues(t *testing.T) {
 		out := stderrOf(t, func() { refused = refuseMissingValues(c.files) })
 		if refused != c.refused || refused != strings.Contains(out, "values file not found") {
 			t.Errorf("refuseMissingValues(%q) = %v, %q; want %v", c.files, refused, out, c.refused)
+		}
+	}
+}
+
+// chart-upgrade named on the command line (or in the Action's scenarios input) with no
+// --from-version would test nothing: it is SKIPPED, which counts for nothing, so a run whose other
+// scenarios pass would exit 0 and look as if the upgrade was tested. It is refused before any
+// cluster starts. Without --scenario the default set leaves chart-upgrade out quietly, as before.
+func TestRefuseChartUpgradeWithoutFromVersion(t *testing.T) {
+	for _, c := range []struct {
+		only        []string
+		fromVersion string
+		refused     bool
+	}{
+		{nil, "", false},
+		{[]string{"upgrade-without-values"}, "", false},
+		{[]string{"upgrade-without-values", "chart-upgrade"}, "", true},
+		{[]string{"chart-upgrade"}, "", true},
+		{[]string{"chart-upgrade"}, "1.0.0", false},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseChartUpgradeWithoutFromVersion(c.only, c.fromVersion) })
+		if refused != c.refused || refused != strings.Contains(out, "--from-version") {
+			t.Errorf("refuseChartUpgradeWithoutFromVersion(%q, %q) = %v, %q; want %v", c.only, c.fromVersion, refused, out, c.refused)
 		}
 	}
 }

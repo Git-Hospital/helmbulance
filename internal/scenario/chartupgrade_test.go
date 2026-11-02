@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // runChartUpgrade runs chart-upgrade against a fake helm whose upgrade to the chart under test (the
@@ -133,6 +133,17 @@ func TestHealthUnread(t *testing.T) {
 	}
 }
 
+// With no --from-version there is no earlier version to upgrade from: chart-upgrade tests nothing,
+// which is SKIPPED (§2), not INCONCLUSIVE. The CLI never gets here (the default set leaves
+// chart-upgrade out, and naming it without --from-version is refused), but the scenario must not
+// call a run it never started inconclusive.
+func TestChartUpgradeWithoutFromVersionIsSkipped(t *testing.T) {
+	res := ChartUpgrade{}.Run(context.Background(), &Env{})
+	if res.Verdict != Skipped || len(res.Findings) > 0 {
+		t.Errorf("verdict = %s with %d finding(s) (%s), want SKIPPED and none", res.Verdict, len(res.Findings), res.Summary)
+	}
+}
+
 func TestChartUpgradeTimeoutIsInconclusive(t *testing.T) {
 	res := runChartUpgrade(t, "Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: InProgress\ncontext deadline exceeded")
 	if res.Verdict != Inconclusive || len(res.Findings) > 0 {
@@ -241,6 +252,31 @@ func TestChartUpgradeTimeoutWithACrashIsAFinding(t *testing.T) {
 			if c.want == Fail && (len(res.Findings) != 1 || res.Findings[0].ID != "HB-CU-001" ||
 				!strings.Contains(strings.Join(res.Findings[0].Evidence, " "), "pod `web-")) {
 				t.Errorf("findings = %+v, want HB-CU-001 naming the pod", res.Findings)
+			}
+		})
+	}
+}
+
+// A crash-looping container is running or just ended for a moment between two back-offs. A read at
+// that moment lists nothing, so the containers are read again until one waits in its back-off, at
+// most crashReads times (matrix-crashes-on-1-37 on Helm 4). matrix reads them the same way.
+func TestCrashReadBetweenTwoRunsIsReadAgain(t *testing.T) {
+	const timeout = "Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: InProgress\ncontext deadline exceeded"
+	between, backOff := items(podJSON("new", 3, "")), items(podJSON("new", 3, "CrashLoopBackOff"))
+	for name, c := range map[string]struct {
+		after []string
+		want  string
+	}{
+		"in its back-off at the second read": {[]string{between, backOff}, Fail},
+		"in its back-off at the last read":   {[]string{between, between, backOff}, Fail},
+		"only after the last read":           {[]string{between, between, between, backOff}, Inconclusive},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Reads: pods before the upgrade, containers before it (unreadable, so only the waiting
+			// reason counts, as in matrix), then the containers after the timeout, one per read.
+			res := runChartUpgrade(t, timeout, append([]string{items(podJSON("old", 0, "")), "not json"}, c.after...)...)
+			if res.Verdict != c.want {
+				t.Fatalf("verdict = %s (%s), want %s", res.Verdict, res.Summary, c.want)
 			}
 		})
 	}

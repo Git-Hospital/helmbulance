@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 func TestOwnedOnly(t *testing.T) {

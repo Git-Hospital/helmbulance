@@ -16,15 +16,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/matrix"
-	"github.com/egezamb/helmbulance/internal/oracle"
-	"github.com/egezamb/helmbulance/internal/report"
-	"github.com/egezamb/helmbulance/internal/sandbox"
-	"github.com/egezamb/helmbulance/internal/scan"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/matrix"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/report"
+	"github.com/Git-Hospital/helmbulance/internal/sandbox"
+	"github.com/Git-Hospital/helmbulance/internal/scan"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // Exit codes.
@@ -107,7 +107,7 @@ func test(args []string) int {
 	}
 	// Tools first: refuseFromVersion already runs helm.
 	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) ||
-		refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+		refuseFromVersion(chart, *from, *fromVersion, localVersion) || refuseChartUpgradeWithoutFromVersion(only, *fromVersion) {
 		return exitError
 	}
 	if err := checkRotations(rotations); err != nil {
@@ -266,10 +266,10 @@ func refuseRemote(allow bool, refs ...string) bool {
 			continue
 		}
 		if !allow {
-			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote.\n", ref)
+			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote.\n", execx.RedactURLs(ref))
 			return true
 		}
-		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", ref)
+		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", execx.RedactURLs(ref))
 	}
 	return false
 }
@@ -319,6 +319,18 @@ func refuseMissingValues(files []string) bool {
 		return true
 	}
 	return false
+}
+
+// refuseChartUpgradeWithoutFromVersion stops a run that names chart-upgrade but gives no
+// --from-version. chart-upgrade would have no earlier version to upgrade from and be SKIPPED, which
+// counts for nothing, so the run could exit 0 with the upgrade never tested. Without --scenario the
+// default set leaves chart-upgrade out instead.
+func refuseChartUpgradeWithoutFromVersion(only []string, fromVersion string) bool {
+	if fromVersion != "" || !slices.Contains(only, "chart-upgrade") {
+		return false
+	}
+	fmt.Fprintln(os.Stderr, "--scenario chart-upgrade needs --from-version: give the version users upgrade from, e.g. --from-version 1.2.3 (and --from with a local chart).")
+	return true
 }
 
 // refuseFromVersion stops a run whose --from-version cannot take effect. helm ignores --version for
