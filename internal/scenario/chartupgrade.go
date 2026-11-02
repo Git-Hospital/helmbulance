@@ -30,8 +30,8 @@ func (ChartUpgrade) Description() string {
 func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	res.Scenario = s.Name()
 	if env.FromVersion == "" {
-		res.Verdict = Inconclusive
-		res.Summary = "skipped: give --from-version to say which version users upgrade from"
+		res.Verdict = Skipped
+		res.Summary = "no earlier version: give --from-version to say which version users upgrade from"
 		return res
 	}
 	from := env.From

@@ -107,7 +107,7 @@ func test(args []string) int {
 	}
 	// Tools first: refuseFromVersion already runs helm.
 	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) ||
-		refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+		refuseFromVersion(chart, *from, *fromVersion, localVersion) || refuseChartUpgradeWithoutFromVersion(only, *fromVersion) {
 		return exitError
 	}
 	if err := checkRotations(rotations); err != nil {
@@ -319,6 +319,18 @@ func refuseMissingValues(files []string) bool {
 		return true
 	}
 	return false
+}
+
+// refuseChartUpgradeWithoutFromVersion stops a run that names chart-upgrade but gives no
+// --from-version. chart-upgrade would have no earlier version to upgrade from and be SKIPPED, which
+// counts for nothing, so the run could exit 0 with the upgrade never tested. Without --scenario the
+// default set leaves chart-upgrade out instead.
+func refuseChartUpgradeWithoutFromVersion(only []string, fromVersion string) bool {
+	if fromVersion != "" || !slices.Contains(only, "chart-upgrade") {
+		return false
+	}
+	fmt.Fprintln(os.Stderr, "--scenario chart-upgrade needs --from-version: give the version users upgrade from, e.g. --from-version 1.2.3 (and --from with a local chart).")
+	return true
 }
 
 // refuseFromVersion stops a run whose --from-version cannot take effect. helm ignores --version for

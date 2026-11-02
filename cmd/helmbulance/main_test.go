@@ -148,6 +148,30 @@ func TestRefuseMissingValues(t *testing.T) {
 	}
 }
 
+// chart-upgrade named on the command line (or in the Action's scenarios input) with no
+// --from-version would test nothing: it is SKIPPED, which counts for nothing, so a run whose other
+// scenarios pass would exit 0 and look as if the upgrade was tested. It is refused before any
+// cluster starts. Without --scenario the default set leaves chart-upgrade out quietly, as before.
+func TestRefuseChartUpgradeWithoutFromVersion(t *testing.T) {
+	for _, c := range []struct {
+		only        []string
+		fromVersion string
+		refused     bool
+	}{
+		{nil, "", false},
+		{[]string{"upgrade-without-values"}, "", false},
+		{[]string{"upgrade-without-values", "chart-upgrade"}, "", true},
+		{[]string{"chart-upgrade"}, "", true},
+		{[]string{"chart-upgrade"}, "1.0.0", false},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseChartUpgradeWithoutFromVersion(c.only, c.fromVersion) })
+		if refused != c.refused || refused != strings.Contains(out, "--from-version") {
+			t.Errorf("refuseChartUpgradeWithoutFromVersion(%q, %q) = %v, %q; want %v", c.only, c.fromVersion, refused, out, c.refused)
+		}
+	}
+}
+
 // version1 stands in for helm show chart: every chart is version 1.0.0.
 func version1(string) (string, error) { return "1.0.0", nil }
 

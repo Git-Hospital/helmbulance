@@ -582,6 +582,13 @@ cases:
     args: [testdata/charts/regenerates-secret, -f, testdata/charts/regenerates-secret/does-not-exist.yaml, --strict]
     exit: 2
     log: [not found]
+  # Named with no --from-version, chart-upgrade would be SKIPPED and the run could pass untested: refused.
+  - name: upgrade-no-from-version
+    role: setup-error
+    command: test
+    args: [testdata/charts/upgrade-v2-ok, --scenario, upgrade-without-values, --scenario, chart-upgrade]
+    exit: 2
+    log: [needs --from-version]
 
   # Kubernetes matrix, on one version unless k8s names more.
   - name: matrix-deprecated-api
