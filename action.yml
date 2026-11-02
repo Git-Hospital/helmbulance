@@ -159,8 +159,14 @@ runs:
         # A report left by an earlier run must not be published as this run's.
         rm -f "$REPORT_DIR/report.md" "$REPORT_DIR/report.json"
 
+        # Helmbulance prints text a chart controls (its fail messages, helm's and kubectl's errors), on
+        # stdout and stderr alike. While it runs the runner reads no workflow command from the log
+        # (::… or ##[…]); a random token, which the runner masks, resumes them afterwards (#58).
+        resume=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+        echo "::stop-commands::$resume"
         code=0
         PATH="$RUNNER_TEMP/helmbulance-bin:$PATH" helmbulance "${args[@]}" || code=$?
+        echo "::$resume::"
         case "$code" in
           0) verdict=PASS ;;
           1) verdict=FAIL ;;

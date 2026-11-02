@@ -48,6 +48,29 @@ type multiFlag []string
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
+// oneLine makes a summary safe to print as one terminal line. A summary can carry a chart's own
+// error text: after a newline in it, a line that starts with "::" is a workflow command in the
+// Action's log (#58), the runner's older "##[command]" form works anywhere in a line, and escape
+// sequences would act on the terminal. Line breaks and tabs become spaces; other control
+// characters, and the bidirectional overrides that reorder what is shown, are dropped; "##[" gets
+// a space. The Action also stops workflow commands while Helmbulance runs. report.md is escaped on
+// its own and goes to the job summary, not the log.
+func oneLine(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t' || r == '\v' || r == '\f' || r == 0x85 ||
+			r == '\u2028' || r == '\u2029':
+			return ' '
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0):
+			return -1
+		case (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069):
+			return -1
+		}
+		return r
+	}, s)
+	return strings.ReplaceAll(s, "##[", "## [")
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -193,7 +216,7 @@ func test(args []string) int {
 	for _, s := range selected {
 		fmt.Printf("▶ %s\n", s.Name())
 		res := s.Run(ctx, env)
-		fmt.Printf("  %s: %s\n", res.Verdict, res.Summary)
+		fmt.Printf("  %s: %s\n", res.Verdict, oneLine(res.Summary))
 		rep.Results = append(rep.Results, res)
 	}
 	rep.Duration = time.Since(started).Round(time.Second).String()
@@ -415,13 +438,13 @@ func matrixCmd(args []string) int {
 		}
 		fmt.Printf("▶ Kubernetes %s\n", v)
 		res := matrix.Run(ctx, v, opts)
-		fmt.Printf("  %s: %s\n", res.Verdict, res.Summary)
+		fmt.Printf("  %s: %s\n", res.Verdict, oneLine(res.Summary))
 		rep.Results = append(rep.Results, res)
 	}
 	attributed := matrix.Attribute(rep.Results)
 	for i, res := range attributed {
 		if res.Verdict != rep.Results[i].Verdict {
-			fmt.Printf("%s is now %s: %s\n", res.Scenario, res.Verdict, res.Summary)
+			fmt.Printf("%s is now %s: %s\n", res.Scenario, res.Verdict, oneLine(res.Summary))
 		}
 	}
 	rep.Results = attributed
@@ -476,7 +499,7 @@ func scanCmd(args []string) int {
 	}
 	rep.Results = scan.Run(ctx, scan.Options{Runner: runner, Chart: chart, Values: helm.Values{Files: files, Sets: sets}, From: *from, FromVersion: *fromVersion})
 	for _, r := range rep.Results {
-		fmt.Printf("%-30s %s: %s\n", r.Scenario, r.Verdict, r.Summary)
+		fmt.Printf("%-30s %s: %s\n", r.Scenario, r.Verdict, oneLine(r.Summary))
 	}
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()

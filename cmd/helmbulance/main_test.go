@@ -268,3 +268,30 @@ func TestParseArgs(t *testing.T) {
 		}
 	}
 }
+
+// A summary can carry a chart's fail message. Printed raw, its newline starts a line that the
+// Action's log reads as a workflow command, and its escape sequences reach the terminal (#58).
+func TestOneLine(t *testing.T) {
+	cases := map[string]string{
+		"plain summary":                              "plain summary",
+		"upgrade failed\n::warning::from chart":      "upgrade failed ::warning::from chart",
+		"a\r\nb\tc":                                  "a  b c",
+		"title\x1b]0;x\x07 and \x1b[2Jclear":         "title]0;x and [2Jclear",
+		"c1 \u009b31m control":                       "c1 31m control",
+		"del\x7f and nul\x00":                        "del and nul",
+		"bidi \u202egnp.exe\u202c and \u2066x\u2069": "bidi gnp.exe and x",
+		"line\u2028sep":                              "line sep",
+		// The runner's older command form is read anywhere in a line, not only at its start.
+		"x ##[error]from chart": "x ## [error]from chart",
+		// Other line breaks become spaces too, so words do not run together.
+		"a\u0085b\vc\fd": "a b c d",
+		// A byte that is not UTF-8, as a summary cut at 600 bytes can end with, is replaced.
+		"cut \xe2\x9c":          "cut \ufffd\ufffd",
+		"unicode stays: çğış ✓": "unicode stays: çğış ✓",
+	}
+	for in, want := range cases {
+		if got := oneLine(in); got != want {
+			t.Errorf("oneLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
