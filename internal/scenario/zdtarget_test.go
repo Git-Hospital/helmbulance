@@ -60,11 +60,12 @@ case "$*" in
 	echo '{"items":[{"metadata":{"name":"web"},"spec":{"clusterIP":"10.96.0.10","selector":{"app":"web"},"ports":[{"name":"http","port":80}]}}]}' ;;
 *"get endpointslices"*)
 	echo '{"items":[{"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web","endpointslice.kubernetes.io/managed-by":"endpointslice-controller.k8s.io"}},"endpoints":[{"addresses":["10.244.0.5"]}]},
-	 {"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web"}},"endpoints":[{"addresses":["203.0.113.9"]}]}]}' ;;
+	 {"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web"}},"endpoints":[{"addresses":["203.0.113.9"]}]},
+	 {"kind":"Pod","metadata":{"name":"web-1"},"status":{"podIP":"10.244.0.5","podIPs":[{"ip":"10.244.0.5"}]}}]}' ;;
 esac
 exit 0
 `)
-	if res.Verdict != Skipped || !strings.Contains(res.Summary, "203.0.113.9") {
-		t.Errorf("verdict = %s (%s), want SKIPPED naming 203.0.113.9", res.Verdict, res.Summary)
+	if res.Verdict != Skipped || !strings.Contains(res.Summary, "203.0.113.9") || strings.Contains(res.Summary, "10.244.0.5") {
+		t.Errorf("verdict = %s (%s), want SKIPPED naming 203.0.113.9 and not the pod's 10.244.0.5", res.Verdict, res.Summary)
 	}
 }
