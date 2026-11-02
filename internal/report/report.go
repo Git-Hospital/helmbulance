@@ -1,5 +1,5 @@
-// Package report writes the results of a run as JSON (stable, for machines) and Markdown (for
-// people). Neither ever contains a Secret value.
+// Package report writes the results of a run as JSON (stable, for machines), Markdown (for
+// people) and SARIF (for code scanning). None ever contains a Secret value.
 package report
 
 import (
@@ -58,13 +58,13 @@ func (r *Report) Worst() string {
 	return scenario.Pass
 }
 
-// Write saves report.json and report.md in dir.
+// Write saves report.json, report.md and report.sarif in dir.
 func (r *Report) Write(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	// Report files are shared. Mask credentials, local paths and secret values in one place, so no
-	// field reaches either file around the runner's masking.
+	// field reaches any of the files around the runner's masking.
 	r.redact()
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
@@ -73,7 +73,14 @@ func (r *Report) Write(dir string) error {
 	if err := os.WriteFile(filepath.Join(dir, "report.json"), append(data, '\n'), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "report.md"), []byte(r.Markdown()), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte(r.Markdown()), 0o644); err != nil {
+		return err
+	}
+	sarif, err := r.SARIF()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "report.sarif"), sarif, 0o644)
 }
 
 // redact masks every text field of the report. With no Hide func it falls back to redacting the

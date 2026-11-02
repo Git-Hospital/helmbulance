@@ -54,7 +54,7 @@ Nothing is released yet, so pin the Action to a full commit SHA.
 | `allow-remote` | `false` | `true` lets `chart` and `from` name a chart from a repository, OCI registry or URL. Without it such a reference ends the run with exit 2. |
 | `from-version` | | Version to upgrade from. Setting it enables `chart-upgrade`. For a local `chart`, also set `from` to the earlier chart; without it the run stops with exit 2, because helm ignores the version of a path. |
 | `timeout` | `10m` | Timeout for each install or upgrade. |
-| `report-dir` | `helmbulance-report` | Where `report.md` and `report.json` are written. |
+| `report-dir` | `helmbulance-report` | Where `report.md`, `report.json` and `report.sarif` are written. |
 | `fail-on` | `findings` | `findings` fails the step on exit 1, 2 or 3. `error` fails only on 2 or 3. `never` always passes; read the `exit-code` output. |
 
 There is no input for `--set` on purpose. Values given on the command line end up in logs. Put test values in a values file instead.
@@ -65,7 +65,7 @@ There is no input for `--set` on purpose. Values given on the command line end u
 |---|---|
 | `exit-code` | 0 clean, 1 findings, 2 error, 3 incomplete. |
 | `verdict` | `PASS`, `FAIL`, `ERROR` or `INCONCLUSIVE`, from the exit code. |
-| `report-dir` | The directory with `report.md` and `report.json`, for example to upload them as an artifact. |
+| `report-dir` | The directory with `report.md`, `report.json` and `report.sarif`, for example to upload them as an artifact. |
 
 ## Security notes
 
