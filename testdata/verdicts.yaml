@@ -314,6 +314,14 @@ cases:
     args: [testdata/charts/zd-rolling, --scenario, zero-downtime]
     exit: 0
     verdicts: {zero-downtime: PASS}
+  # A ResourceQuota on requests and limits rejects a traffic pod without them: INCONCLUSIVE before #97.
+  - name: zd-rolling-quota
+    pair: zero-downtime
+    role: fixed
+    command: test
+    args: [testdata/charts/zd-rolling-quota, --scenario, zero-downtime]
+    exit: 0
+    verdicts: {zero-downtime: PASS}
 
   # A run that cannot finish is INCONCLUSIVE, never a finding and never a PASS.
   - name: unpullable-image
