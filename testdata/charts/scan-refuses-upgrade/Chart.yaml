@@ -1,0 +1,5 @@
+apiVersion: v2
+name: scan-refuses-upgrade
+description: "Helmbulance fixture: refuses to render as an upgrade, as Bitnami charts do without the current passwords. scan still sorts its hook by annotation (HB-SCAN-006) and its plain Secret goes to HB-SCAN-003 (#107)."
+type: application
+version: 0.1.0
