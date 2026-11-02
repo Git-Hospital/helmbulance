@@ -246,6 +246,31 @@ func TestChartUpgradeTimeoutWithACrashIsAFinding(t *testing.T) {
 	}
 }
 
+// A crash-looping container is running or just ended for a moment between two back-offs. A read at
+// that moment lists nothing, so the containers are read again until one waits in its back-off, at
+// most crashReads times (matrix-crashes-on-1-37 on Helm 4). matrix reads them the same way.
+func TestCrashReadBetweenTwoRunsIsReadAgain(t *testing.T) {
+	const timeout = "Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: InProgress\ncontext deadline exceeded"
+	between, backOff := items(podJSON("new", 3, "")), items(podJSON("new", 3, "CrashLoopBackOff"))
+	for name, c := range map[string]struct {
+		after []string
+		want  string
+	}{
+		"in its back-off at the second read": {[]string{between, backOff}, Fail},
+		"in its back-off at the last read":   {[]string{between, between, backOff}, Fail},
+		"only after the last read":           {[]string{between, between, between, backOff}, Inconclusive},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Reads: pods before the upgrade, containers before it (unreadable, so only the waiting
+			// reason counts, as in matrix), then the containers after the timeout, one per read.
+			res := runChartUpgrade(t, timeout, append([]string{items(podJSON("old", 0, "")), "not json"}, c.after...)...)
+			if res.Verdict != c.want {
+				t.Fatalf("verdict = %s (%s), want %s", res.Verdict, res.Summary, c.want)
+			}
+		})
+	}
+}
+
 // Only a --wait timeout with the release applied is worth reading pods or collecting evidence for;
 // a cancelled run, the chart's own webhook, a pull error or a render refusal are not. The upgrade
 // (#34) and both installs of reinstall (#30) share it. Helm 4 stops at a resource that reports

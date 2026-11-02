@@ -98,11 +98,7 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	if err != nil {
 		var crashes []string
 		if scenario.TimedOutWaiting(ctx, err) {
-			containers, readErr := k.Containers(ctx, ns)
-			if readErr != nil {
-				fmt.Fprintf(o.Log, "could not read containers after the timeout: %v\n", readErr)
-			}
-			crashes = scenario.StartFailures(containers)
+			crashes = scenario.ReadCrashes(ctx, k, ns, o.Log, scenario.StartFailures)
 		}
 		return installFailed(ctx, res, version, err, crashes, warnings, repro)
 	}

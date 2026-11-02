@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"time"
 
 	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
@@ -121,10 +123,36 @@ func describeContainer(c kube.Container) string {
 // that crashed since before. An error reading them is logged and lists nothing, so the result
 // stays INCONCLUSIVE.
 func crashesAfterTimeout(ctx context.Context, env *Env, ns string, beforePods []kube.Pod, beforeContainers []kube.Container, beforeKnown bool) []string {
-	containers, err := env.Kube.Containers(ctx, ns)
-	if err != nil {
-		fmt.Fprintf(env.Log, "could not read containers after the timeout: %v\n", err)
-		return nil
+	return ReadCrashes(ctx, env.Kube, ns, env.Log, func(containers []kube.Container) []string {
+		return crashedSince(containers, beforeContainers, beforePods, beforeKnown)
+	})
+}
+
+// A crash-looping container waits as CrashLoopBackOff for most of its back-off, but between two
+// runs it is starting, running or just ended, and a read at that moment lists nothing: the timeout
+// stays INCONCLUSIVE though the container crashes (matrix-crashes-on-1-37 on Helm 4). So the
+// containers are read again, crashReadGap apart, up to crashReads times, until one is listed.
+var (
+	crashReads   = 3
+	crashReadGap = 3 * time.Second
+)
+
+// ReadCrashes reads the containers of ns after a `--wait` timeout until crashed lists one, at most
+// crashReads times. An error reading them is logged and lists nothing.
+func ReadCrashes(ctx context.Context, k *kube.Client, ns string, log io.Writer, crashed func([]kube.Container) []string) []string {
+	for i := 1; ; i++ {
+		containers, err := k.Containers(ctx, ns)
+		if err != nil {
+			fmt.Fprintf(log, "could not read containers after the timeout: %v\n", err)
+			return nil
+		}
+		if c := crashed(containers); len(c) > 0 || i == crashReads {
+			return c
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(crashReadGap):
+		}
 	}
-	return crashedSince(containers, beforeContainers, beforePods, beforeKnown)
 }
