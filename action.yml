@@ -157,7 +157,7 @@ runs:
         fi
 
         # A report left by an earlier run must not be published as this run's.
-        rm -f "$REPORT_DIR/report.md" "$REPORT_DIR/report.json"
+        rm -f "$REPORT_DIR/report.md" "$REPORT_DIR/report.json" "$REPORT_DIR/report.sarif"
 
         code=0
         PATH="$RUNNER_TEMP/helmbulance-bin:$PATH" helmbulance "${args[@]}" || code=$?
