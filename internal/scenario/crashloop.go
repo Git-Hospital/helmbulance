@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 // timedOutWaiting reports whether a helm command failed because `--wait` timed out with the

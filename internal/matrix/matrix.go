@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/sandbox"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/sandbox"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // NodeImages are the kind node images for kind v0.33, pinned by digest.

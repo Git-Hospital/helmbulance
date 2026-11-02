@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
 
 // Client reads one sandbox cluster.

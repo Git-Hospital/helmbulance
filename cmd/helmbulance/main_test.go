@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // stderrOf runs f and returns what it wrote to os.Stderr.

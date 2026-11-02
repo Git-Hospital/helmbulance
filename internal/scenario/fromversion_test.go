@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
 )
 
 // envWithRelease returns an Env whose helm reports that the release runs version.

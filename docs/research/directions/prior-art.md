@@ -3,7 +3,7 @@
 Date: 2026-10-11. Read-only research (web search + `gh` repo stats). Nothing posted anywhere.
 Stats from `gh repo view` on 2026-10-11. Limits: web search snippets, not full-text reads, for most papers; the Springer EMSE page was behind a login redirect, so Minna et al. is cited from arXiv/MSR records. "Nothing found" means nothing found with the searches listed, not proof of absence.
 
-Helmbulance itself: https://github.com/egezamb/helmbulance (0 stars, pushed 2026-10-10, no release).
+Helmbulance itself: https://github.com/Git-Hospital/helmbulance (0 stars, pushed 2026-10-10, no release).
 
 ## Direction 1: Lifecycle-sequence exploration with shrinking ("Jepsen for Helm charts")
 
