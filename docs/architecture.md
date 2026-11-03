@@ -300,9 +300,9 @@ docs/                   architecture, scenario reference, case studies
 
 | Version | Scope |
 |---|---|
-| v0.1 | CLI, kind sandbox, `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan`, `matrix`, Markdown and JSON, fixtures, an experimental composite GitHub Action that runs the CLI |
+| v0.1 | CLI, kind sandbox, `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan`, `matrix`, Markdown, JSON and SARIF, fixtures, an experimental composite GitHub Action that runs the CLI |
 | v0.1.x | `network-isolation` (TCP, CNI canary, port discovery) |
-| v0.2 | `secret-rotation`, `immutable-fields`, `process-kill`, SARIF, double-run confirmation of failures, signed releases with SBOM |
+| v0.2 | `secret-rotation`, `immutable-fields`, `process-kill`, SARIF upload to code scanning, double-run confirmation of failures, signed releases with SBOM |
 | v0.3 | `probe-abuse` with egress isolation outside the cluster, third-party chart mode, application plug-ins, optional AI hypotheses |
 | Ongoing | Running against popular community charts and sending fixes upstream (README, "Found in public charts") |
 | Later | A hosted service, only if there is demand |

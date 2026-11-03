@@ -93,9 +93,9 @@ More case studies:
 
 ## Roadmap
 
-- **v0.1:** the CLI with `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan` and `matrix`, Markdown and JSON reports, and an experimental GitHub Action ([its limits](docs/github-action.md#status-experimental)).
+- **v0.1:** the CLI with `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan` and `matrix`, Markdown, JSON and SARIF reports, and an experimental GitHub Action ([its limits](docs/github-action.md#status-experimental)).
 - **v0.1.x:** `network-isolation`.
-- **v0.2:** `secret-rotation`, `immutable-fields`, `process-kill`, SARIF for GitHub code scanning, and signed releases.
+- **v0.2:** `secret-rotation`, `immutable-fields`, `process-kill`, uploading the SARIF report to GitHub code scanning, and signed releases.
 - **v0.3:** `probe-abuse`, a hardened mode for charts you did not write, and optional AI hypotheses that the cluster must confirm.
 - **Ongoing:** running against popular community charts and sending fixes upstream ([found so far](#found-in-public-charts)).
 
