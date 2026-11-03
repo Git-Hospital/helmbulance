@@ -20,8 +20,9 @@ import (
 // "logs --tail=1 <pod>" (0 just before the operation, then one before each workload after the first
 // is restarted) prints the last line of $FAKE_LOGS/<pod>.before.<n>, or of $FAKE_LOGS/<pod>.before.
 // The workloads are $FAKE_LOGS/workloads, or one Deployment behind web. "rollout" calls are appended to $FAKE_LOGS/calls.
-// The n-th "get endpointslices" (0 when the target is chosen, 1 right after the operation, 2 at the
-// end of the tail) prints $FAKE_LOGS/slices.<n>, or no slices.
+// The n-th "get endpointslices" prints $FAKE_LOGS/slices.<n>, or no slices: 0 when the target is
+// chosen, 1 right after the operation, 2 at the end of the tail, each followed by one more read when
+// it finds an outside address.
 const fakeKubectl = `#!/bin/sh
 for a in "$@"; do last="$a"; done
 case "$*" in
@@ -85,20 +86,26 @@ func runZeroDowntimePath(t *testing.T, logs map[string]string, path string, opts
 const chartSlice = `{"items":[{"kind":"EndpointSlice","metadata":{"labels":{"kubernetes.io/service-name":"web"}},"endpoints":[{"addresses":["203.0.113.9"]}]}]}`
 
 // Review round 2: the check before the operation does not see a slice the upgrade adds, so the
-// chosen Service is read again; a gained address makes the run neither PASS nor FAIL.
+// chosen Service is read again; a gained address makes the run neither PASS nor FAIL. Each sighting
+// is read once more, so the address must be there in both reads.
 func TestZeroDowntimeServiceGainsAnOutsideEndpoint(t *testing.T) {
 	for name, reads := range map[string]map[string]string{
-		"right after the operation": {"slices.1": chartSlice},
-		"at the end of the tail":    {"slices.2": chartSlice},
+		"right after the operation": {"slices.1": chartSlice, "slices.2": chartSlice},
+		"at the end of the tail":    {"slices.2": chartSlice, "slices.3": chartSlice},
 	} {
 		t.Run(name, func(t *testing.T) {
 			logs := map[string]string{"hb-traffic-control": "100 ok\n", "hb-traffic": "9999999999 ok\n"}
 			maps.Copy(logs, reads)
 			res := runZeroDowntime(t, logs)
-			if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "web gained endpoints the control plane did not write: 203.0.113.9") {
+			if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "web gained endpoints that are not pods in the namespace: 203.0.113.9") {
 				t.Errorf("verdict = %s (%s), want INCONCLUSIVE naming 203.0.113.9", res.Verdict, res.Summary)
 			}
 		})
+	}
+	// Gone by the second read, as a deleted pod's address is once the controller catches up.
+	logs := map[string]string{"hb-traffic-control": "100 ok\n", "hb-traffic": "9999999999 ok\n", "slices.1": chartSlice}
+	if res := runZeroDowntime(t, logs); res.Verdict != Pass {
+		t.Errorf("an address seen once: verdict = %s (%s), want PASS", res.Verdict, res.Summary)
 	}
 }
 

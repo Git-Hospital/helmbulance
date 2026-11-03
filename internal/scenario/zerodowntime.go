@@ -202,7 +202,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		res.Summary = fmt.Sprintf("a rolling restart would not replace the pods behind %s: no Deployment, StatefulSet or DaemonSet in the release selects them", svc.Name)
 		return res
 	}
-	gained := map[string]bool{} // addresses the chosen Service gained in slices the control plane did not write
+	gained := map[string]bool{} // addresses the chosen Service gained that are not pods in the namespace
 	recheck := func() {
 		if service == "" || recheckErr != nil {
 			return
@@ -250,7 +250,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	if len(gained) > 0 {
 		return inconclusive(res, "the traffic may have left the release's pods during "+operation,
-			fmt.Errorf("%s gained endpoints the control plane did not write: %s",
+			fmt.Errorf("%s gained endpoints that are not pods in the namespace: %s",
 				service, strings.Join(slices.Sorted(maps.Keys(gained)), ", ")))
 	}
 	finished := len(restarts)
@@ -379,7 +379,7 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 // then any port with http in its name. Services whose traffic would not stay on the release's pods
 // are skipped: ExternalName (an outside host), headless (no port translation, so a request can
 // reach a pod that is not ready), externalIPs, and those with an address in outside (endpoints in
-// slices the control plane did not write, keyed by Service name).
+// slices that are not pods in the namespace, keyed by Service name).
 func pickTarget(services []kube.Service, outside map[string][]string) (string, error) {
 	score := func(p kube.ServicePort) int {
 		switch {
@@ -423,7 +423,7 @@ func pickTarget(services []kube.Service, outside map[string][]string) (string, e
 }
 
 // leavesThePods says why traffic to s would not stay on the release's pods, or "" if it would.
-// outside holds the addresses of s's endpoints that the control plane did not write.
+// outside holds the addresses of s's endpoints that are not pods in the namespace.
 func leavesThePods(s kube.Service, outside []string) string {
 	switch {
 	case s.Type == "ExternalName":
@@ -433,7 +433,7 @@ func leavesThePods(s kube.Service, outside []string) string {
 	case len(s.ExternalIPs) > 0:
 		return "externalIPs"
 	case len(outside) > 0:
-		return "endpoints the control plane did not write: " + strings.Join(outside, ", ")
+		return "endpoints that are not pods in the namespace: " + strings.Join(outside, ", ")
 	}
 	return ""
 }
