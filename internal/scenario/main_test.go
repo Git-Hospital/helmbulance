@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 // The production waits are for real clusters: Settle's 90 s / 30 s / 10 s, the Secret snapshot's
