@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // settleInterval and settleReads bound how long a Secret snapshot waits for the namespace to stop

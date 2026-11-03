@@ -12,8 +12,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 const gitopsRenderNamespace = "hb-gitops-render"

@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/sandbox"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/sandbox"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // NodeImages are the kind node images for kind v0.33, pinned by digest.
@@ -96,7 +96,11 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	warnings := apiWarnings(stderr)
 
 	if err != nil {
-		return installFailed(ctx, res, version, err, warnings, repro)
+		var crashes []string
+		if scenario.TimedOutWaiting(ctx, err) {
+			crashes = scenario.ReadCrashes(ctx, k, ns, o.Log, scenario.StartFailures)
+		}
+		return installFailed(ctx, res, version, err, crashes, warnings, repro)
 	}
 
 	bad, healthErr := unhealthy(ctx, k, ns)
@@ -128,6 +132,7 @@ func judge(res scenario.Result, version string, bad []string, healthErr error, w
 		res.Summary = fmt.Sprintf("runs on Kubernetes %s, with %d API warning(s)", version, len(warnings))
 		if healthErr != nil {
 			res.Summary = fmt.Sprintf("installs on Kubernetes %s, with %d API warning(s); workload health was not checked: %v", version, len(warnings), healthErr)
+			res.HealthUnchecked = true
 		}
 		res.Findings = append(res.Findings, findings...)
 		return res
@@ -147,22 +152,66 @@ func judge(res scenario.Result, version string, bad []string, healthErr error, w
 // INCONCLUSIVE. A version installed when its result is not an install failure or INCONCLUSIVE.
 // A failure that names a missing API stays a finding either way: the API was removed in a
 // Kubernetes version, perhaps one older than every version tested.
+//
+// A crash that kept an install's --wait from finishing (HB-K8S-002) is kept the same way, but only
+// if the chart ran healthy on another version: a PASS, or API warnings alone. A Secret the sandbox
+// lacks or an app with no database crashes on every version, and an older version would not help
+// (#78). The install's API warnings, lines of the crash's evidence, still stand as HB-K8S-003/004.
 func Attribute(results []scenario.Result) []scenario.Result {
+	installed, healthy := false, false
 	for _, r := range results {
-		if r.Verdict != scenario.Inconclusive && !installFailure(r) {
-			return results
-		}
+		installed = installed || (r.Verdict != scenario.Inconclusive && !installFailure(r))
+		healthy = healthy || ranHealthy(r)
 	}
 	out := make([]scenario.Result, len(results))
 	for i, r := range results {
-		if installFailure(r) && !missingAPI(r) {
+		switch {
+		case !installed && installFailure(r) && !missingAPI(r):
 			r.Verdict = scenario.Inconclusive
 			r.Summary += "; it installed on no version tested, so the cause is not a Kubernetes version (run helmbulance test)"
 			r.Findings = nil
+		case !healthy && crashedWaiting(r):
+			crash := r.Findings[0]
+			var warnings []string
+			for _, e := range crash.Evidence {
+				if strings.HasPrefix(e, "API warning: ") {
+					warnings = append(warnings, e)
+				}
+			}
+			r.Verdict = scenario.Inconclusive
+			r.HealthUnchecked = true // its workloads crashed: the warnings left below do not make it healthy
+			r.Summary += "; it ran healthy on no version tested, so the cause is not a Kubernetes version (run helmbulance test)"
+			r.Findings = warningFindings(strings.TrimPrefix(r.Scenario, "k8s-"), warnings, crash.Reproduce)
+			if len(r.Findings) > 0 {
+				r.Verdict = scenario.Fail
+			}
 		}
 		out[i] = r
 	}
 	return out
+}
+
+// ranHealthy reports whether the chart installed and its workloads became healthy: a PASS, or a
+// FAIL with API warnings only, from workloads that were checked.
+func ranHealthy(r scenario.Result) bool {
+	if r.Verdict == scenario.Pass {
+		return true
+	}
+	if r.Verdict != scenario.Fail || r.HealthUnchecked {
+		return false
+	}
+	for _, f := range r.Findings {
+		if f.ID != "HB-K8S-003" && f.ID != "HB-K8S-004" {
+			return false
+		}
+	}
+	return true
+}
+
+// crashedWaiting reports whether the result is an HB-K8S-002 from an install whose --wait timed out.
+func crashedWaiting(r scenario.Result) bool {
+	return r.Verdict == scenario.Fail && len(r.Findings) > 0 && r.Findings[0].ID == "HB-K8S-002" &&
+		len(r.Findings[0].Evidence) > 0 && strings.HasPrefix(r.Findings[0].Evidence[0], waitTimedOut)
 }
 
 // missingAPI reports whether an install failure says the cluster does not serve a built-in kind the
@@ -208,9 +257,23 @@ func installFailure(r scenario.Result) bool {
 	return r.Verdict == scenario.Fail && len(r.Findings) > 0 && r.Findings[0].ID == "HB-K8S-001"
 }
 
-// installFailed is the result when helm install failed on Kubernetes version. A timeout, a pull
-// error or a cluster that did not answer says nothing about the version, so it is INCONCLUSIVE.
-func installFailed(ctx context.Context, res scenario.Result, version string, err error, warnings, repro []string) scenario.Result {
+// waitTimedOut starts the evidence of an HB-K8S-002 from an install whose --wait timed out.
+const waitTimedOut = "`helm install --wait` timed out while containers crashed or could not start: "
+
+// installFailed is the result when helm install failed on Kubernetes version.
+//   - After a `--wait` timeout the release was applied, so it is judged like an install that
+//     finished: crashes are the containers that crash or cannot start (HB-K8S-002), and the
+//     install's API warnings stand (#49).
+//   - Otherwise a timeout, a pull error or a cluster that did not answer says nothing about the
+//     version, so it is INCONCLUSIVE.
+func installFailed(ctx context.Context, res scenario.Result, version string, err error, crashes, warnings, repro []string) scenario.Result {
+	if scenario.TimedOutWaiting(ctx, err) && (len(crashes) > 0 || len(warnings) > 0) {
+		var bad []string
+		if len(crashes) > 0 {
+			bad = append([]string{waitTimedOut + helmMessage(err)}, crashes...)
+		}
+		return judge(res, version, bad, fmt.Errorf("`helm install --wait` timed out: %s", helmMessage(err)), warnings, repro)
+	}
 	if scenario.IsEnvironmentError(ctx, err) {
 		res.Verdict = scenario.Inconclusive
 		res.Summary = "the install did not finish on Kubernetes " + version + ": " + helmMessage(err)

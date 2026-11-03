@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
 
 // Client reads one sandbox cluster.
@@ -84,33 +84,9 @@ func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 // those keys, and one without maps "secret/*", as it mounts the whole Secret. Used to explain the
 // impact of a changed key.
 func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]string, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
-		"get", "deployments,statefulsets,daemonsets,jobs,cronjobs", "-o", "json")
+	workloads, err := c.podWorkloads(ctx, ns)
 	if err != nil {
 		return nil, err
-	}
-	var list struct {
-		Items []struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name            string     `json:"name"`
-				OwnerReferences []ownerRef `json:"ownerReferences"`
-			} `json:"metadata"`
-			Spec struct {
-				Template    podTemplate `json:"template"`
-				JobTemplate struct {
-					Spec struct {
-						Template podTemplate `json:"template"`
-					} `json:"spec"`
-				} `json:"jobTemplate"` // a CronJob's pod template is one level further down
-			} `json:"spec"`
-			Status struct {
-				Conditions []condition `json:"conditions"`
-			} `json:"status"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(out, &list); err != nil {
-		return nil, fmt.Errorf("parse workloads: %w", err)
 	}
 	consumers := map[string][]string{}
 	add := func(ref, workload string) {
@@ -130,34 +106,27 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 			add(secret+"/"+it.Key, workload)
 		}
 	}
-	for _, item := range list.Items {
-		if item.Kind == "Job" && (ownedBy(item.Metadata.OwnerReferences, "CronJob") || finished(item.Status.Conditions)) {
-			continue
-		}
-		workload := item.Kind + "/" + item.Metadata.Name
-		spec := item.Spec.Template.Spec
-		if item.Kind == "CronJob" {
-			spec = item.Spec.JobTemplate.Spec.Template.Spec
-		}
+	for _, w := range workloads {
+		spec := podSpecOf(w)
 		for _, ctr := range append(spec.InitContainers, spec.Containers...) {
 			for _, e := range ctr.Env {
 				if ref := e.ValueFrom.SecretKeyRef; ref.Name != "" {
-					add(ref.Name+"/"+ref.Key, workload)
+					add(ref.Name+"/"+ref.Key, w.ref())
 				}
 			}
 			for _, e := range ctr.EnvFrom {
 				if e.SecretRef.Name != "" {
-					add(e.SecretRef.Name+"/*", workload)
+					add(e.SecretRef.Name+"/*", w.ref())
 				}
 			}
 		}
 		for _, v := range spec.Volumes {
 			if v.Secret.SecretName != "" {
-				mount(v.Secret.SecretName, v.Secret.Items, workload)
+				mount(v.Secret.SecretName, v.Secret.Items, w.ref())
 			}
 			for _, src := range v.Projected.Sources {
 				if src.Secret.Name != "" {
-					mount(src.Secret.Name, src.Secret.Items, workload)
+					mount(src.Secret.Name, src.Secret.Items, w.ref())
 				}
 			}
 		}
@@ -167,42 +136,21 @@ func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]s
 
 // StatefulWorkloads returns the workloads (kind/name) in ns that keep data across restarts: a
 // StatefulSet with volume claim templates, or any workload whose pods mount a PersistentVolumeClaim.
-// A credential such a workload reads was probably written into its data at first start.
+// A credential such a workload reads was probably written into its data at first start. Jobs and
+// CronJobs count, left out as in SecretConsumers (#80).
 func (c *Client) StatefulWorkloads(ctx context.Context, ns string) (map[string]bool, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
-		"get", "deployments,statefulsets,daemonsets", "-o", "json")
+	workloads, err := c.podWorkloads(ctx, ns)
 	if err != nil {
 		return nil, err
 	}
-	var list struct {
-		Items []struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-			Spec struct {
-				VolumeClaimTemplates []json.RawMessage `json:"volumeClaimTemplates"`
-				Template             struct {
-					Spec struct {
-						Volumes []struct {
-							PersistentVolumeClaim *json.RawMessage `json:"persistentVolumeClaim"`
-						} `json:"volumes"`
-					} `json:"spec"`
-				} `json:"template"`
-			} `json:"spec"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(out, &list); err != nil {
-		return nil, fmt.Errorf("parse workloads: %w", err)
-	}
 	stateful := map[string]bool{}
-	for _, item := range list.Items {
-		keeps := len(item.Spec.VolumeClaimTemplates) > 0
-		for _, v := range item.Spec.Template.Spec.Volumes {
-			keeps = keeps || v.PersistentVolumeClaim != nil
+	for _, w := range workloads {
+		keeps := len(w.Spec.VolumeClaimTemplates) > 0
+		for _, v := range podSpecOf(w).Volumes {
+			keeps = keeps || v.PersistentVolumeClaim.ClaimName != ""
 		}
 		if keeps {
-			stateful[item.Kind+"/"+item.Metadata.Name] = true
+			stateful[w.ref()] = true
 		}
 	}
 	return stateful, nil
@@ -228,7 +176,72 @@ type podSpec struct {
 				} `json:"secret"`
 			} `json:"sources"`
 		} `json:"projected"`
+		PersistentVolumeClaim struct {
+			ClaimName string `json:"claimName"`
+		} `json:"persistentVolumeClaim"`
 	} `json:"volumes"`
+}
+
+// workloadObject is a Deployment, StatefulSet, DaemonSet, Job or CronJob as kubectl prints it, with
+// what SecretConsumers, StatefulWorkloads and ClaimUsers read from it.
+type workloadObject struct {
+	Kind     string `json:"kind"`
+	Metadata struct {
+		Name            string     `json:"name"`
+		OwnerReferences []ownerRef `json:"ownerReferences"`
+	} `json:"metadata"`
+	Spec struct {
+		VolumeClaimTemplates []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"volumeClaimTemplates"`
+		Template    podTemplate `json:"template"`
+		JobTemplate struct {
+			Spec struct {
+				Template podTemplate `json:"template"`
+			} `json:"spec"`
+		} `json:"jobTemplate"`
+	} `json:"spec"`
+	Status struct {
+		Conditions []condition `json:"conditions"`
+	} `json:"status"`
+}
+
+// ref is the workload as reports name it: kind/name.
+func (w workloadObject) ref() string { return w.Kind + "/" + w.Metadata.Name }
+
+// podSpecOf returns the pod spec a workload's pods run: a CronJob's is one level further down,
+// under spec.jobTemplate.
+func podSpecOf(w workloadObject) podSpec {
+	if w.Kind == "CronJob" {
+		return w.Spec.JobTemplate.Spec.Template.Spec
+	}
+	return w.Spec.Template.Spec
+}
+
+// podWorkloads lists the workloads in ns whose pods read Secrets and mount claims, in one kubectl
+// call, leaving out the Jobs leftOut names. The three readers share it, so a kind or a volume
+// source is added in one place (#81).
+func (c *Client) podWorkloads(ctx context.Context, ns string) ([]workloadObject, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
+		"get", "deployments,statefulsets,daemonsets,jobs,cronjobs", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []workloadObject `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse workloads: %w", err)
+	}
+	var workloads []workloadObject
+	for _, w := range list.Items {
+		if !leftOut(w.Kind, w.Metadata.OwnerReferences, w.Status.Conditions) {
+			workloads = append(workloads, w)
+		}
+	}
+	return workloads, nil
 }
 
 // ownerRef is the part of a metadata.ownerReferences entry that says what made an object.
@@ -249,6 +262,13 @@ func ownedBy(refs []ownerRef, kind string) bool {
 type condition struct {
 	Type   string `json:"type"`
 	Status string `json:"status"`
+}
+
+// leftOut reports whether a workload is not counted on its own: a Job a CronJob started is that
+// CronJob, and a finished Job reads and mounts nothing any more. podWorkloads applies it for all
+// three readers, so a reader is also a keeper when it mounts kept data (#80).
+func leftOut(kind string, refs []ownerRef, conds []condition) bool {
+	return kind == "Job" && (ownedBy(refs, "CronJob") || finished(conds))
 }
 
 // finished reports whether a Job has ended for good: its Complete or Failed condition is True.
@@ -629,9 +649,19 @@ func (c *Client) StartPod(ctx context.Context, ns, name, image, script string, l
 	return err
 }
 
+// smallPod are the requests and limits of the pods helmbulance runs in the chart's namespace. A
+// ResourceQuota there that counts requests or limits rejects a pod without them, and a LimitRange
+// would give it the chart's defaults (#97). A busybox loop needs no more.
+func smallPod() map[string]any {
+	return map[string]any{
+		"requests": map[string]string{"cpu": "10m", "memory": "16Mi"},
+		"limits":   map[string]string{"cpu": "100m", "memory": "32Mi"},
+	}
+}
+
 // hardenedPod is merged into the pod kubectl run makes. The pod lives in the chart's namespace,
-// so it carries no ServiceAccount token and meets Pod Security "restricted": no root, no
-// privilege escalation, no capabilities, a read-only root filesystem.
+// so it carries no ServiceAccount token, meets Pod Security "restricted" (no root, no privilege
+// escalation, no capabilities, a read-only root filesystem) and sets its own resources.
 func hardenedPod(container string) map[string]any {
 	return map[string]any{
 		"spec": map[string]any{
@@ -649,6 +679,7 @@ func hardenedPod(container string) map[string]any {
 					"readOnlyRootFilesystem":   true,
 					"capabilities":             map[string]any{"drop": []string{"ALL"}},
 				},
+				"resources": smallPod(),
 			}},
 		},
 	}
@@ -723,10 +754,7 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 				"runAsUser": 0, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
 				"capabilities": map[string]any{"drop": []string{"ALL"}, "add": []string{"CHOWN", "DAC_OVERRIDE", "FOWNER"}},
 			},
-			"resources": map[string]any{
-				"requests": map[string]string{"cpu": "10m", "memory": "16Mi"},
-				"limits":   map[string]string{"cpu": "100m", "memory": "32Mi"},
-			},
+			"resources": smallPod(),
 		}},
 		"volumes": []any{map[string]any{"name": "pvc", "persistentVolumeClaim": map[string]any{"claimName": claim}}},
 	}})
@@ -766,53 +794,26 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 
 // ClaimUsers maps each of the given claims to the workloads (kind/name) that mount it: through a
 // persistentVolumeClaim volume, or as a StatefulSet's claim from a volume claim template
-// (<template>-<statefulset>-<ordinal>).
+// (<template>-<statefulset>-<ordinal>). A CronJob that mounts a claim is its user, as it is a
+// Secret reader in SecretConsumers (#80).
 func (c *Client) ClaimUsers(ctx context.Context, ns string, claims []string) (map[string][]string, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
-		"get", "deployments,statefulsets,daemonsets", "-o", "json")
+	workloads, err := c.podWorkloads(ctx, ns)
 	if err != nil {
 		return nil, err
 	}
-	var list struct {
-		Items []struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-			Spec struct {
-				VolumeClaimTemplates []struct {
-					Metadata struct {
-						Name string `json:"name"`
-					} `json:"metadata"`
-				} `json:"volumeClaimTemplates"`
-				Template struct {
-					Spec struct {
-						Volumes []struct {
-							PersistentVolumeClaim struct {
-								ClaimName string `json:"claimName"`
-							} `json:"persistentVolumeClaim"`
-						} `json:"volumes"`
-					} `json:"spec"`
-				} `json:"template"`
-			} `json:"spec"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(out, &list); err != nil {
-		return nil, fmt.Errorf("parse workloads: %w", err)
-	}
 	users := map[string][]string{}
-	for _, item := range list.Items {
-		w := item.Kind + "/" + item.Metadata.Name
+	for _, w := range workloads {
+		volumes := podSpecOf(w).Volumes
 		for _, claim := range claims {
 			uses := false
-			for _, v := range item.Spec.Template.Spec.Volumes {
+			for _, v := range volumes {
 				uses = uses || v.PersistentVolumeClaim.ClaimName == claim
 			}
-			for _, t := range item.Spec.VolumeClaimTemplates {
-				uses = uses || strings.HasPrefix(claim, t.Metadata.Name+"-"+item.Metadata.Name+"-")
+			for _, t := range w.Spec.VolumeClaimTemplates {
+				uses = uses || strings.HasPrefix(claim, t.Metadata.Name+"-"+w.Metadata.Name+"-")
 			}
 			if uses {
-				users[claim] = append(users[claim], w)
+				users[claim] = append(users[claim], w.ref())
 			}
 		}
 	}

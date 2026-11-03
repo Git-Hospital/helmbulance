@@ -3,6 +3,7 @@ package scenario
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // runChartUpgrade runs chart-upgrade against a fake helm whose upgrade to the chart under test (the
@@ -132,6 +133,17 @@ func TestHealthUnread(t *testing.T) {
 	}
 }
 
+// With no --from-version there is no earlier version to upgrade from: chart-upgrade tests nothing,
+// which is SKIPPED (§2), not INCONCLUSIVE. The CLI never gets here (the default set leaves
+// chart-upgrade out, and naming it without --from-version is refused), but the scenario must not
+// call a run it never started inconclusive.
+func TestChartUpgradeWithoutFromVersionIsSkipped(t *testing.T) {
+	res := ChartUpgrade{}.Run(context.Background(), &Env{})
+	if res.Verdict != Skipped || len(res.Findings) > 0 {
+		t.Errorf("verdict = %s with %d finding(s) (%s), want SKIPPED and none", res.Verdict, len(res.Findings), res.Summary)
+	}
+}
+
 func TestChartUpgradeTimeoutIsInconclusive(t *testing.T) {
 	res := runChartUpgrade(t, "Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: InProgress\ncontext deadline exceeded")
 	if res.Verdict != Inconclusive || len(res.Findings) > 0 {
@@ -139,10 +151,29 @@ func TestChartUpgradeTimeoutIsInconclusive(t *testing.T) {
 	}
 }
 
+// etcd under load or a chart host that does not serve the chart is the run, not the chart (#49).
+func TestChartUpgradeServerErrorIsInconclusive(t *testing.T) {
+	for _, msg := range []string{
+		"Error: UPGRADE FAILED: etcdserver: leader changed",
+		"Error: failed to fetch https://charts.example.com/x-1.0.0.tgz : 503 Service Unavailable",
+	} {
+		res := runChartUpgrade(t, msg)
+		if res.Verdict != Inconclusive || len(res.Findings) > 0 {
+			t.Errorf("%q: verdict = %s with %d finding(s) (%s), want INCONCLUSIVE and none", msg, res.Verdict, len(res.Findings), res.Summary)
+		}
+	}
+}
+
 func TestChartUpgradeRejectionIsAFinding(t *testing.T) {
-	res := runChartUpgrade(t, "Error: UPGRADE FAILED: cannot patch db with kind StatefulSet: spec: Forbidden: field is immutable")
-	if res.Verdict != Fail || len(res.Findings) != 1 || res.Findings[0].ID != "HB-CU-001" {
-		t.Errorf("verdict = %s (%s), want FAIL with HB-CU-001", res.Verdict, res.Summary)
+	for _, msg := range []string{
+		"Error: UPGRADE FAILED: cannot patch db with kind StatefulSet: spec: Forbidden: field is immutable",
+		// An object over etcd's request limit: the same on every cluster, so the chart's (#84).
+		"Error: UPGRADE FAILED: failed to create resource: etcdserver: request is too large",
+	} {
+		res := runChartUpgrade(t, msg)
+		if res.Verdict != Fail || len(res.Findings) != 1 || res.Findings[0].ID != "HB-CU-001" {
+			t.Errorf("%q: verdict = %s (%s), want FAIL with HB-CU-001", msg, res.Verdict, res.Summary)
+		}
 	}
 }
 
@@ -226,6 +257,31 @@ func TestChartUpgradeTimeoutWithACrashIsAFinding(t *testing.T) {
 	}
 }
 
+// A crash-looping container is running or just ended for a moment between two back-offs. A read at
+// that moment lists nothing, so the containers are read again until one waits in its back-off, at
+// most crashReads times (matrix-crashes-on-1-37 on Helm 4). matrix reads them the same way.
+func TestCrashReadBetweenTwoRunsIsReadAgain(t *testing.T) {
+	const timeout = "Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: InProgress\ncontext deadline exceeded"
+	between, backOff := items(podJSON("new", 3, "")), items(podJSON("new", 3, "CrashLoopBackOff"))
+	for name, c := range map[string]struct {
+		after []string
+		want  string
+	}{
+		"in its back-off at the second read": {[]string{between, backOff}, Fail},
+		"in its back-off at the last read":   {[]string{between, between, backOff}, Fail},
+		"only after the last read":           {[]string{between, between, between, backOff}, Inconclusive},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Reads: pods before the upgrade, containers before it (unreadable, so only the waiting
+			// reason counts, as in matrix), then the containers after the timeout, one per read.
+			res := runChartUpgrade(t, timeout, append([]string{items(podJSON("old", 0, "")), "not json"}, c.after...)...)
+			if res.Verdict != c.want {
+				t.Fatalf("verdict = %s (%s), want %s", res.Verdict, res.Summary, c.want)
+			}
+		})
+	}
+}
+
 // Only a --wait timeout with the release applied is worth reading pods or collecting evidence for;
 // a cancelled run, the chart's own webhook, a pull error or a render refusal are not. The upgrade
 // (#34) and both installs of reinstall (#30) share it. Helm 4 stops at a resource that reports
@@ -255,5 +311,28 @@ func TestTimedOutWaiting(t *testing.T) {
 	cancel()
 	if timedOutWaiting(ctx, errors.New("context deadline exceeded")) {
 		t.Error("a cancelled run counts as a --wait timeout")
+	}
+	// Our deadline on one helm call is not helm's --wait: helm may have hung before applying.
+	ours := fmt.Errorf("helm install x: %w: exit status 1: Error: INSTALLATION FAILED: context canceled", context.DeadlineExceeded)
+	if timedOutWaiting(t.Context(), ours) {
+		t.Error("a helm call stopped at our deadline counts as a --wait timeout")
+	}
+}
+
+// A release installed just now has no count from before: only a waiting reason the chart's pod
+// spec causes is a start failure, never restarts alone or an image pull (#49).
+func TestStartFailures(t *testing.T) {
+	got := StartFailures([]kube.Container{
+		{Pod: "web-1", PodUID: "1", Owner: "ReplicaSet/web-7d9", Name: "app", Waiting: "CrashLoopBackOff", LastReason: "Error", LastExit: 1, Restarts: 3},
+		{Pod: "web-1", PodUID: "1", Owner: "ReplicaSet/web-7d9", Name: "conf", Init: true, Waiting: "CreateContainerConfigError"},
+		{Pod: "db-0", PodUID: "2", Owner: "StatefulSet/db", Name: "db", Waiting: "ImagePullBackOff"},
+		{Pod: "db-0", PodUID: "2", Owner: "StatefulSet/db", Name: "slow", Restarts: 1},
+	})
+	want := []string{
+		"pod `web-1` (ReplicaSet/web-7d9), container `app`: CrashLoopBackOff, last run Error (exit 1), 3 restart(s)",
+		"pod `web-1` (ReplicaSet/web-7d9), init container `conf`: CreateContainerConfigError",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("StartFailures = %q, want %q", got, want)
 	}
 }

@@ -5,10 +5,11 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // stderrOf runs f and returns what it wrote to os.Stderr.
@@ -40,6 +41,9 @@ func TestRefuseRemote(t *testing.T) {
 		{false, []string{"./nonexistent"}, true, "path not found"},
 		{true, []string{"~/chart"}, true, "path not found"},
 		{false, []string{"../../testdata/charts/keeps-secret", "bitnami/redis"}, true, "bitnami/redis is not a chart on disk"},
+		// The ref is printed with its credentials hidden, refused or not.
+		{false, []string{"https://bob:hunter2@charts.example/x.tgz"}, true, "https://***@charts.example/x.tgz is not a chart on disk"},
+		{true, []string{"https://bob:hunter2@charts.example/x.tgz"}, false, "warning: running https://***@charts.example/x.tgz"},
 	}
 	for _, c := range cases {
 		var refused bool
@@ -98,6 +102,33 @@ func TestScanExit(t *testing.T) {
 	}
 }
 
+// Only the tools found on PATH pass; the message names the missing ones, before any cluster (#58).
+func TestRefuseMissingTools(t *testing.T) {
+	bin := t.TempDir()
+	for _, name := range []string{"kind", "helm"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	for _, c := range []struct {
+		tools   []string
+		refused bool
+		missing string
+	}{
+		{[]string{"helm"}, false, ""},
+		{[]string{"kind", "helm"}, false, ""},
+		{[]string{"kind", "helm", "kubectl"}, true, "not found in PATH: kubectl."},
+		{[]string{"kubectl", "oc"}, true, "not found in PATH: kubectl, oc."},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseMissingTools(c.tools...) })
+		if refused != c.refused || !strings.Contains(out, c.missing) || (!refused && out != "") {
+			t.Errorf("refuseMissingTools(%q) = %v, %q; want %v with %q", c.tools, refused, out, c.refused, c.missing)
+		}
+	}
+}
+
 // A -f value is a file, a URL or "-", never a chart repository, so a missing file is refused
 // even when it has a slash and no "./", which refuseMissing would take for repo/chart (#68).
 func TestRefuseMissingValues(t *testing.T) {
@@ -116,6 +147,30 @@ func TestRefuseMissingValues(t *testing.T) {
 		out := stderrOf(t, func() { refused = refuseMissingValues(c.files) })
 		if refused != c.refused || refused != strings.Contains(out, "values file not found") {
 			t.Errorf("refuseMissingValues(%q) = %v, %q; want %v", c.files, refused, out, c.refused)
+		}
+	}
+}
+
+// chart-upgrade named on the command line (or in the Action's scenarios input) with no
+// --from-version would test nothing: it is SKIPPED, which counts for nothing, so a run whose other
+// scenarios pass would exit 0 and look as if the upgrade was tested. It is refused before any
+// cluster starts. Without --scenario the default set leaves chart-upgrade out quietly, as before.
+func TestRefuseChartUpgradeWithoutFromVersion(t *testing.T) {
+	for _, c := range []struct {
+		only        []string
+		fromVersion string
+		refused     bool
+	}{
+		{nil, "", false},
+		{[]string{"upgrade-without-values"}, "", false},
+		{[]string{"upgrade-without-values", "chart-upgrade"}, "", true},
+		{[]string{"chart-upgrade"}, "", true},
+		{[]string{"chart-upgrade"}, "1.0.0", false},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseChartUpgradeWithoutFromVersion(c.only, c.fromVersion) })
+		if refused != c.refused || refused != strings.Contains(out, "--from-version") {
+			t.Errorf("refuseChartUpgradeWithoutFromVersion(%q, %q) = %v, %q; want %v", c.only, c.fromVersion, refused, out, c.refused)
 		}
 	}
 }
@@ -302,6 +357,33 @@ func TestParseArgs(t *testing.T) {
 		}
 		if ok && (*strict != c.strict || files.String() != c.files || *out != c.out) {
 			t.Errorf("parseArgs(%q): strict %v, -f %q, --report-dir %q; want %v, %q, %q", c.args, *strict, files.String(), *out, c.strict, c.files, c.out)
+		}
+	}
+}
+
+// A summary can carry a chart's fail message. Printed raw, its newline starts a line that the
+// Action's log reads as a workflow command, and its escape sequences reach the terminal (#58).
+func TestOneLine(t *testing.T) {
+	cases := map[string]string{
+		"plain summary":                              "plain summary",
+		"upgrade failed\n::warning::from chart":      "upgrade failed ::warning::from chart",
+		"a\r\nb\tc":                                  "a  b c",
+		"title\x1b]0;x\x07 and \x1b[2Jclear":         "title]0;x and [2Jclear",
+		"c1 \u009b31m control":                       "c1 31m control",
+		"del\x7f and nul\x00":                        "del and nul",
+		"bidi \u202egnp.exe\u202c and \u2066x\u2069": "bidi gnp.exe and x",
+		"line\u2028sep":                              "line sep",
+		// The runner's older command form is read anywhere in a line, not only at its start.
+		"x ##[error]from chart": "x ## [error]from chart",
+		// Other line breaks become spaces too, so words do not run together.
+		"a\u0085b\vc\fd": "a b c d",
+		// A byte that is not UTF-8, as a summary cut at 600 bytes can end with, is replaced.
+		"cut \xe2\x9c":          "cut \ufffd\ufffd",
+		"unicode stays: çğış ✓": "unicode stays: çğış ✓",
+	}
+	for in, want := range cases {
+		if got := oneLine(in); got != want {
+			t.Errorf("oneLine(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

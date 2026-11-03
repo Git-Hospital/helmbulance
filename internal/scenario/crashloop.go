@@ -2,17 +2,21 @@ package scenario
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"time"
 
-	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 // timedOutWaiting reports whether a helm command failed because `--wait` timed out with the
-// release applied, as opposed to a cancelled run, the chart's own webhook, or a pull or tool
-// error. Only then is it worth reading the release's pods for what kept it from being ready.
+// release applied, as opposed to a cancelled run, a helm call stopped at our own deadline (helm may
+// not have applied anything yet), the chart's own webhook, or a pull or tool error. Only then is it
+// worth reading the release's pods for what kept it from being ready.
 func timedOutWaiting(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
@@ -30,6 +34,17 @@ func timedOutWaiting(ctx context.Context, err error) bool {
 	return strings.Contains(msg, "timed out waiting for the condition") ||
 		strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "not ready. status: failed")
+}
+
+// TimedOutWaiting is timedOutWaiting for matrix, which reads the release after an install's
+// `--wait` timeout as chart-upgrade does (#49).
+func TimedOutWaiting(ctx context.Context, err error) bool { return timedOutWaiting(ctx, err) }
+
+// StartFailures lists the containers of a release installed just now that crash or cannot start.
+// Every pod is new and has no count from before, so only the waiting reason counts: a container
+// that is only slow, or still pulling its image, is not listed.
+func StartFailures(containers []kube.Container) []string {
+	return crashedSince(containers, nil, nil, false)
 }
 
 // startFailures are waiting reasons that come from the pod spec the chart renders, not from the
@@ -108,10 +123,36 @@ func describeContainer(c kube.Container) string {
 // that crashed since before. An error reading them is logged and lists nothing, so the result
 // stays INCONCLUSIVE.
 func crashesAfterTimeout(ctx context.Context, env *Env, ns string, beforePods []kube.Pod, beforeContainers []kube.Container, beforeKnown bool) []string {
-	containers, err := env.Kube.Containers(ctx, ns)
-	if err != nil {
-		fmt.Fprintf(env.Log, "could not read containers after the timeout: %v\n", err)
-		return nil
+	return ReadCrashes(ctx, env.Kube, ns, env.Log, func(containers []kube.Container) []string {
+		return crashedSince(containers, beforeContainers, beforePods, beforeKnown)
+	})
+}
+
+// A crash-looping container waits as CrashLoopBackOff for most of its back-off, but between two
+// runs it is starting, running or just ended, and a read at that moment lists nothing: the timeout
+// stays INCONCLUSIVE though the container crashes (matrix-crashes-on-1-37 on Helm 4). So the
+// containers are read again, crashReadGap apart, up to crashReads times, until one is listed.
+var (
+	crashReads   = 3
+	crashReadGap = 3 * time.Second
+)
+
+// ReadCrashes reads the containers of ns after a `--wait` timeout until crashed lists one, at most
+// crashReads times. An error reading them is logged and lists nothing.
+func ReadCrashes(ctx context.Context, k *kube.Client, ns string, log io.Writer, crashed func([]kube.Container) []string) []string {
+	for i := 1; ; i++ {
+		containers, err := k.Containers(ctx, ns)
+		if err != nil {
+			fmt.Fprintf(log, "could not read containers after the timeout: %v\n", err)
+			return nil
+		}
+		if c := crashed(containers); len(c) > 0 || i == crashReads {
+			return c
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(crashReadGap):
+		}
 	}
-	return crashedSince(containers, beforeContainers, beforePods, beforeKnown)
 }

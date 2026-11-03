@@ -1,0 +1,24 @@
+# Holds the data and binds the claim. It does not read the password: only the CronJob does (#80).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-store
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-store}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-store}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65535}
+      containers:
+        - name: store
+          image: registry.k8s.io/pause:3.10
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}-data}

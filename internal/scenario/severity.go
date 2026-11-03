@@ -3,7 +3,7 @@ package scenario
 import (
 	"strings"
 
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // readers lists the workloads that read the key a change refers to, directly or through the whole

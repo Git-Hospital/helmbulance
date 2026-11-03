@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path"
 	"path/filepath"
@@ -17,15 +18,15 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/matrix"
-	"github.com/egezamb/helmbulance/internal/oracle"
-	"github.com/egezamb/helmbulance/internal/report"
-	"github.com/egezamb/helmbulance/internal/sandbox"
-	"github.com/egezamb/helmbulance/internal/scan"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/matrix"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/report"
+	"github.com/Git-Hospital/helmbulance/internal/sandbox"
+	"github.com/Git-Hospital/helmbulance/internal/scan"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // Exit codes.
@@ -48,6 +49,29 @@ type multiFlag []string
 
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// oneLine makes a summary safe to print as one terminal line. A summary can carry a chart's own
+// error text: after a newline in it, a line that starts with "::" is a workflow command in the
+// Action's log (#58), the runner's older "##[command]" form works anywhere in a line, and escape
+// sequences would act on the terminal. Line breaks and tabs become spaces; other control
+// characters, and the bidirectional overrides that reorder what is shown, are dropped; "##[" gets
+// a space. The Action also stops workflow commands while Helmbulance runs. report.md is escaped on
+// its own and goes to the job summary, not the log.
+func oneLine(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t' || r == '\v' || r == '\f' || r == 0x85 ||
+			r == '\u2028' || r == '\u2029':
+			return ' '
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0):
+			return -1
+		case (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069):
+			return -1
+		}
+		return r
+	}, s)
+	return strings.ReplaceAll(s, "##[", "## [")
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -106,7 +130,9 @@ func test(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) || refuseTraffic(*trafficTarget, *trafficPath) {
+	// Tools first: refuseFromVersion already runs helm.
+	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) ||
+		refuseFromVersion(chart, *from, *fromVersion, localVersion) || refuseChartUpgradeWithoutFromVersion(only, *fromVersion) || refuseTraffic(*trafficTarget, *trafficPath) {
 		return exitError
 	}
 	if err := checkRotations(rotations); err != nil {
@@ -192,7 +218,7 @@ func test(args []string) int {
 	for _, s := range selected {
 		fmt.Printf("▶ %s\n", s.Name())
 		res := s.Run(ctx, env)
-		fmt.Printf("  %s: %s\n", res.Verdict, res.Summary)
+		fmt.Printf("  %s: %s\n", res.Verdict, oneLine(res.Summary))
 		rep.Results = append(rep.Results, res)
 	}
 	rep.Duration = time.Since(started).Round(time.Second).String()
@@ -270,10 +296,10 @@ func refuseRemote(allow bool, refs ...string) bool {
 			continue
 		}
 		if !allow {
-			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote.\n", ref)
+			fmt.Fprintf(os.Stderr, "%s is not a chart on disk. Charts from a repository, OCI registry or URL run without the third-party protections, which arrive in v0.3.\nRead the chart first; if you trust it, pass --allow-remote.\n", execx.RedactURLs(ref))
 			return true
 		}
-		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", ref)
+		fmt.Fprintf(os.Stderr, "warning: running %s without the third-party protections (--allow-remote)\n", execx.RedactURLs(ref))
 	}
 	return false
 }
@@ -290,6 +316,26 @@ func refuseMissing(refs ...string) bool {
 	return false
 }
 
+// clusterTools are what test and matrix call: kind for the sandbox, helm and kubectl inside it.
+var clusterTools = []string{"kind", "helm", "kubectl"}
+
+// refuseMissingTools refuses a run when a tool it calls is not on PATH. Without the check, test and
+// matrix create a cluster first and only then fail on the missing tool, as INCONCLUSIVE with a
+// message about cleanup (#58). scan renders with helm only.
+func refuseMissingTools(tools ...string) bool {
+	var missing []string
+	for _, t := range tools {
+		if _, err := exec.LookPath(t); err != nil {
+			missing = append(missing, t)
+		}
+	}
+	if len(missing) == 0 {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "not found in PATH: %s. This command needs %s.\n", strings.Join(missing, ", "), strings.Join(tools, ", "))
+	return true
+}
+
 // refuseMissingValues stops a run on a -f values file that is not on disk. helm reads -f as a file,
 // a URL or "-" for standard input, never as a chart repository, so unlike a chart ref any other
 // value must exist. Without this, test and matrix started a cluster first, and scan reported that it
@@ -303,6 +349,18 @@ func refuseMissingValues(files []string) bool {
 		return true
 	}
 	return false
+}
+
+// refuseChartUpgradeWithoutFromVersion stops a run that names chart-upgrade but gives no
+// --from-version. chart-upgrade would have no earlier version to upgrade from and be SKIPPED, which
+// counts for nothing, so the run could exit 0 with the upgrade never tested. Without --scenario the
+// default set leaves chart-upgrade out instead.
+func refuseChartUpgradeWithoutFromVersion(only []string, fromVersion string) bool {
+	if fromVersion != "" || !slices.Contains(only, "chart-upgrade") {
+		return false
+	}
+	fmt.Fprintln(os.Stderr, "--scenario chart-upgrade needs --from-version: give the version users upgrade from, e.g. --from-version 1.2.3 (and --from with a local chart).")
+	return true
 }
 
 // refuseFromVersion stops a run whose --from-version cannot take effect. helm ignores --version for
@@ -398,7 +456,7 @@ func matrixCmd(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
+	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
@@ -427,13 +485,13 @@ func matrixCmd(args []string) int {
 		}
 		fmt.Printf("▶ Kubernetes %s\n", v)
 		res := matrix.Run(ctx, v, opts)
-		fmt.Printf("  %s: %s\n", res.Verdict, res.Summary)
+		fmt.Printf("  %s: %s\n", res.Verdict, oneLine(res.Summary))
 		rep.Results = append(rep.Results, res)
 	}
 	attributed := matrix.Attribute(rep.Results)
 	for i, res := range attributed {
 		if res.Verdict != rep.Results[i].Verdict {
-			fmt.Printf("%s is now %s: %s\n", res.Scenario, res.Verdict, res.Summary)
+			fmt.Printf("%s is now %s: %s\n", res.Scenario, res.Verdict, oneLine(res.Summary))
 		}
 	}
 	rep.Results = attributed
@@ -466,7 +524,8 @@ func scanCmd(args []string) int {
 		usage()
 		return exitError
 	}
-	if refuseMissing(chart, *from) || refuseMissingValues(files) || refuseFromVersion(chart, *from, *fromVersion, localVersion) {
+	if refuseMissingTools("helm") || refuseMissing(chart, *from) || refuseMissingValues(files) ||
+		refuseFromVersion(chart, *from, *fromVersion, localVersion) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
@@ -487,7 +546,7 @@ func scanCmd(args []string) int {
 	}
 	rep.Results = scan.Run(ctx, scan.Options{Runner: runner, Chart: chart, Values: helm.Values{Files: files, Sets: sets}, From: *from, FromVersion: *fromVersion})
 	for _, r := range rep.Results {
-		fmt.Printf("%-30s %s: %s\n", r.Scenario, r.Verdict, r.Summary)
+		fmt.Printf("%-30s %s: %s\n", r.Scenario, r.Verdict, oneLine(r.Summary))
 	}
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()

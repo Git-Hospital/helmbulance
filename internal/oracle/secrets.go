@@ -12,7 +12,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 // SecretSnapshot holds a keyed hash of every Secret value at one point in time. The hash key is

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
 
 const (
