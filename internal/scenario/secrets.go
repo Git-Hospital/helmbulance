@@ -35,22 +35,28 @@ type secretReader struct {
 	release, ns string
 	owned       map[string]bool
 	notCompared map[string]bool
+	// elsewhere holds, as namespace/name, the Secrets the release renders into another namespace.
+	elsewhere map[string]bool
 	// kept and keptErr are what readKept found right after `helm uninstall`.
 	kept    map[string]bool
 	keptErr error
 }
 
 func newSecretReader(ctx context.Context, env *Env, release, ns string) *secretReader {
-	return &secretReader{ctx: ctx, env: env, release: release, ns: ns, owned: map[string]bool{}, notCompared: map[string]bool{}}
+	return &secretReader{ctx: ctx, env: env, release: release, ns: ns, owned: map[string]bool{}, notCompared: map[string]bool{},
+		elsewhere: map[string]bool{}}
 }
 
 func (r *secretReader) snapshot() (oracle.SecretSnapshot, error) {
 	// What the release renders does not change while the namespace settles, so it is read once.
-	rendered, err := r.env.Helm.OwnedSecrets(r.ctx, r.release, r.ns)
+	rendered, elsewhere, err := r.env.Helm.OwnedSecrets(r.ctx, r.release, r.ns)
 	if err != nil {
 		return nil, err
 	}
 	maps.Copy(r.owned, rendered)
+	for _, n := range elsewhere {
+		r.elsewhere[n] = true
+	}
 	owned := r.owned
 	return oracle.Settle(r.ctx, func() (oracle.SecretSnapshot, error) {
 		secrets, err := r.env.Kube.Secrets(r.ctx, r.ns)
@@ -84,15 +90,21 @@ func (r *secretReader) readKept() {
 	}
 }
 
-// notComparedNote names the Secrets that were in the namespace but never rendered by the release.
+// notComparedNote names the Secrets that were in the namespace but never rendered by the release,
+// and those the release renders into another namespace (#59).
 func (r *secretReader) notComparedNote() string {
-	var names []string
+	var names, elsewhere []string
 	for _, n := range slices.Sorted(maps.Keys(r.notCompared)) {
 		if !r.owned[n] {
 			names = append(names, "`"+n+"`")
 		}
 	}
-	return note("not compared, since the release does not render them", names)
+	for _, n := range slices.Sorted(maps.Keys(r.elsewhere)) {
+		elsewhere = append(elsewhere, "`"+n+"`")
+	}
+	return strings.TrimPrefix(withNotes("",
+		note("not compared, since the release does not render them", names),
+		note("not compared, rendered into another namespace", elsewhere)), "; ")
 }
 
 // secretsInconclusive says whether reading the Secrets failed or they never stopped changing.
@@ -160,8 +172,10 @@ func unpairStillRead(moved []oracle.Change, consumers map[string][]string) (kept
 	return kept, back
 }
 
-// noSecretsTested is said instead of "Secrets stayed the same" when no key was compared.
-const noSecretsTested = "the release renders no Secrets; Secret drift was not tested"
+// noSecretsTested is said instead of "Secrets stayed the same" when no key was compared. Secrets
+// the release renders into another namespace are not compared either, so it does not say the
+// release renders none (#59).
+const noSecretsTested = "the release renders no Secrets in its namespace; Secret drift was not tested"
 
 // noKeys reports whether no snapshot holds a key, so no Secret was compared at all.
 func noKeys(snapshots ...oracle.SecretSnapshot) bool {

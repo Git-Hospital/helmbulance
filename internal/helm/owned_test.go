@@ -38,14 +38,18 @@ metadata:
   name: app-config
 ---
 `
-	got := secretNames([]byte(manifest), "hb")
+	got, elsewhere := secretNames([]byte(manifest), "hb")
 	if want := []string{"app-auth", "same-ns"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("secretNames = %v, want %v", got, want)
+	}
+	// Not compared, but named in the report (#59).
+	if want := []string{"kube-system/elsewhere"}; !reflect.DeepEqual(elsewhere, want) {
+		t.Errorf("secretNames elsewhere = %v, want %v", elsewhere, want)
 	}
 }
 
 func TestSecretNamesEmpty(t *testing.T) {
-	if got := secretNames(nil, "hb"); len(got) != 0 {
+	if got, elsewhere := secretNames(nil, "hb"); len(got)+len(elsewhere) != 0 {
 		t.Errorf("secretNames(nil) = %v; want nothing", got)
 	}
 }
@@ -72,7 +76,7 @@ kind: Secret
 metadata:
   name: after-the-bad-one
 `
-	got := secretNames([]byte(manifest), "hb")
+	got, _ := secretNames([]byte(manifest), "hb")
 	if want := []string{"in-a-list", "after-the-bad-one"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("secretNames = %v, want %v", got, want)
 	}
@@ -91,8 +95,8 @@ esac
 	if err := os.WriteFile(filepath.Join(bin, "helm"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.OwnedSecrets(t.Context(), "hb", "ns")
-	if err != nil || !got["app"] || !got["hook-secret"] || len(got) != 2 {
-		t.Errorf("OwnedSecrets = %v, %v; want app and hook-secret", got, err)
+	got, elsewhere, err := c.OwnedSecrets(t.Context(), "hb", "ns")
+	if err != nil || !got["app"] || !got["hook-secret"] || len(got) != 2 || len(elsewhere) != 0 {
+		t.Errorf("OwnedSecrets = %v, %v, %v; want app and hook-secret", got, elsewhere, err)
 	}
 }
