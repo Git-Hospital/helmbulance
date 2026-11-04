@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
@@ -59,7 +60,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	var repro []string
 	for _, c := range env.Runner.Transcript()[mark:] {
-		repro = append(repro, reproLine(c.Line))
+		repro = append(repro, execx.ReproLine(c.Line))
 	}
 
 	secrets := newSecretReader(ctx, env, release, ns)
@@ -509,7 +510,7 @@ func claimsIn(volumes []volume, state string) []string {
 func transcriptRepro(env *Env, mark int) []string {
 	var lines []string
 	for _, c := range env.Runner.Transcript()[mark:] {
-		lines = append(lines, reproLine(c.Line))
+		lines = append(lines, execx.ReproLine(c.Line))
 	}
 	return lines
 }
