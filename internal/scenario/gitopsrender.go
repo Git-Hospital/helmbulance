@@ -35,14 +35,12 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	defer func() {
 		ctx, cancel := cleanupContext(ctx)
 		defer cancel()
-		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
-		if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
+		cleanUp(ctx, env, release, ns)
 	}()
 
+	if err := startClean(ctx, env, release, ns); err != nil {
+		return inconclusive(res, "could not clear what an earlier run left", err)
+	}
 	mark := len(env.Runner.Transcript())
 	if err := env.Helm.Install(ctx, release, ns, env.Chart, env.Values); err != nil {
 		return inconclusive(res, "the chart did not install", err)

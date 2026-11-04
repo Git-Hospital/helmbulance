@@ -54,12 +54,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control-2")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic")
-		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
-		if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
+		cleanUp(ctx, env, release, ns)
 	}()
 
 	// Install: the earlier version when there is one, so the treatment is the real upgrade.
