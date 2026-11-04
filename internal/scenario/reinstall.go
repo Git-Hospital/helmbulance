@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
@@ -514,11 +515,15 @@ func transcriptRepro(env *Env, mark int) []string {
 	return lines
 }
 
-// sentinelRepro is the reproduction step for a sentinel: a one-off pod that mounts the claim. The
-// claim is named per volume in the evidence.
+// sentinelRepro is the reproduction step for a sentinel: the pod the scenario runs, mounting the
+// claim. The claim is named per volume in the evidence.
 func sentinelRepro(why, cmd string) []string {
+	overrides, err := kube.PVCPodOverrides("marker", sentinelImage, "CLAIM", cmd)
+	if err != nil {
+		return nil // a fixed map of strings always encodes
+	}
 	return []string{
 		"# " + why + " (replace CLAIM with each claim named above):",
-		`kubectl -n ` + reinstallNamespace + ` run marker --rm -i --restart Never --image busybox --overrides '{"spec":{"containers":[{"name":"marker","image":"busybox","command":["sh","-c","` + cmd + `"],"volumeMounts":[{"name":"v","mountPath":"/pvc"}]}],"volumes":[{"name":"v","persistentVolumeClaim":{"claimName":"CLAIM"}}]}}'`,
+		`kubectl -n ` + reinstallNamespace + ` run marker --rm -i --restart Never --image ` + sentinelImage + ` --overrides '` + overrides + `'`,
 	}
 }
