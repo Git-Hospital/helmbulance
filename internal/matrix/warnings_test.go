@@ -51,3 +51,21 @@ func TestWarningFindings(t *testing.T) {
 		t.Errorf("no warnings = %v, want no finding", got)
 	}
 }
+
+// A field or annotation deprecation is not a removed API: the object installs and only the field
+// stops working, so it is HB-K8S-004, not HB-K8S-003 with "installs and upgrades fail" (#56).
+func TestFieldDeprecationIsNotARemovedAPI(t *testing.T) {
+	for _, w := range []string{
+		"API warning: metadata.annotations[seccomp.security.alpha.kubernetes.io/pod]: deprecated since v1.19, non-functional in v1.25+; use the \"seccompProfile\" field instead",
+		"API warning: spec.template.spec.nodeSelector[beta.kubernetes.io/os]: deprecated since v1.14; use \"kubernetes.io/os\" instead",
+	} {
+		findings := warningFindings("1.36", []string{w}, nil)
+		if len(findings) != 1 || findings[0].ID != "HB-K8S-004" {
+			t.Errorf("%s: findings %+v, want one HB-K8S-004", w, findings)
+		}
+	}
+	core := "API warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice"
+	if f := warningFindings("1.36", []string{core}, nil); len(f) != 1 || f[0].ID != "HB-K8S-003" {
+		t.Errorf("a core API deprecation: findings %+v, want HB-K8S-003", f)
+	}
+}
