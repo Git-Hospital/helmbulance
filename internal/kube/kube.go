@@ -309,6 +309,67 @@ func (c *Client) DeleteNamespace(ctx context.Context, ns string) error {
 	return err
 }
 
+// HelmClusterObjects returns the cluster-scoped objects Helm made for a release whose namespace
+// mine accepts, as TYPE/NAME for kubectl delete. Helm labels what it installs
+// app.kubernetes.io/managed-by=Helm and annotates it with the release's name and namespace, and
+// `helm uninstall` leaves an object that carries helm.sh/resource-policy: keep. Deleting the
+// namespace takes the namespaced ones; a cluster-scoped one stays, and the next install under
+// another release name refuses it as "invalid ownership metadata" (#52).
+func (c *Client) HelmClusterObjects(ctx context.Context, mine func(ns string) bool) ([]string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-resources",
+		"--namespaced=false", "--verbs=list,delete", "-o", "name")
+	if err != nil {
+		return nil, err
+	}
+	types := strings.Fields(string(out))
+	if len(types) == 0 {
+		return nil, nil
+	}
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "get", strings.Join(types, ","),
+		"-l", "app.kubernetes.io/managed-by=Helm", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			APIVersion string `json:"apiVersion"`
+			Kind       string `json:"kind"`
+			Metadata   struct {
+				Name        string            `json:"name"`
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse cluster-scoped objects: %w", err)
+	}
+	var refs []string
+	for _, item := range list.Items {
+		if !mine(item.Metadata.Annotations["meta.helm.sh/release-namespace"]) {
+			continue
+		}
+		// kind.group/name, which kubectl resolves without knowing the plural; core kinds have no group.
+		typ := strings.ToLower(item.Kind)
+		if group, _, ok := strings.Cut(item.APIVersion, "/"); ok {
+			typ += "." + group
+		}
+		refs = append(refs, typ+"/"+item.Metadata.Name)
+	}
+	sort.Strings(refs)
+	return refs, nil
+}
+
+// DeleteObjects deletes refs (TYPE/NAME, as HelmClusterObjects returns them) and waits until they
+// are gone.
+func (c *Client) DeleteObjects(ctx context.Context, refs []string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	args := append([]string{"--kubeconfig", c.Kubeconfig, "delete"}, refs...)
+	_, err := c.Runner.Run(ctx, "kubectl", append(args, "--ignore-not-found", "--wait=true", "--timeout=5m")...)
+	return err
+}
+
 // Pod is the health of one pod.
 type Pod struct {
 	Name     string
