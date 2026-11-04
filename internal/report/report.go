@@ -20,10 +20,13 @@ const SchemaVersion = 1
 
 // Report is everything a run produced.
 type Report struct {
-	SchemaVersion int      `json:"schemaVersion"`
-	Chart         string   `json:"chart"`
-	ValuesFiles   []string `json:"valuesFiles"`
-	SetKeys       []string `json:"setKeys"` // keys only, never values
+	SchemaVersion int `json:"schemaVersion"`
+	// Verdict is Worst(), the verdict the exit code follows, so a reader of report.json does not
+	// have to work it out from the results. Write sets it.
+	Verdict     string   `json:"verdict"`
+	Chart       string   `json:"chart"`
+	ValuesFiles []string `json:"valuesFiles"`
+	SetKeys     []string `json:"setKeys"` // keys only, never values
 	// ExpectedRotation is what --expected-rotation allowed, so a reader sees what was not reported.
 	ExpectedRotation []string          `json:"expectedRotation,omitempty"`
 	HelmVersion      string            `json:"helmVersion"`
@@ -66,6 +69,19 @@ func (r *Report) Write(dir string) error {
 	// Report files are shared. Mask credentials, local paths and secret values in one place, so no
 	// field reaches any of the files around the runner's masking.
 	r.redact()
+	r.Verdict = r.Worst()
+	// An empty list is [], not null, so a reader can iterate every list without a check.
+	for _, list := range []*[]string{&r.ValuesFiles, &r.SetKeys} {
+		if *list == nil {
+			*list = []string{}
+		}
+	}
+	if r.Results == nil {
+		r.Results = []scenario.Result{}
+	}
+	if r.Commands == nil {
+		r.Commands = []execx.Command{}
+	}
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
