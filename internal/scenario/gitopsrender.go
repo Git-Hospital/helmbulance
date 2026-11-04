@@ -62,10 +62,18 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	// as Argo CD does. Argo CD never passes --is-upgrade, so its render is always an install, while
 	// Helm keeps what only an install renders: a `.Release.IsInstall` Secret with keep, or one an
 	// install-only hook made (#45).
+	// Argo CD gives its render the cluster's version and API versions; without them helm template
+	// uses its own defaults, and a Secret built from .Capabilities would differ for that reason
+	// alone (#59).
+	version, apis, err := env.Kube.Capabilities(ctx)
+	if err != nil {
+		return inconclusive(res, "could not read the cluster's version and API versions", err)
+	}
+	clientCaps := []string{"--kube-version", version, "--api-versions", strings.Join(apis, ",")}
 	var hooks map[string]string
 	render := func(server bool) (oracle.SecretSnapshot, error) {
 		if !server {
-			out, err := env.Helm.Template(ctx, release, ns, env.Chart, env.Values, false)
+			out, err := env.Helm.Template(ctx, release, ns, env.Chart, env.Values, false, clientCaps...)
 			if err != nil {
 				return nil, err
 			}
