@@ -1,0 +1,5 @@
+apiVersion: v2
+name: scan-first-upgrade-restart
+description: "Helmbulance fixture. keeps-secret, but the Deployment hashes the rendered secret.yaml. At install lookup finds nothing and the hash is over a second random draw, so the first upgrade changes it (HB-SCAN-002). Its twin is keeps-secret, which hashes the values."
+type: application
+version: 0.1.0
