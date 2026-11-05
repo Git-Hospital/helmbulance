@@ -93,7 +93,7 @@ The model records what the chart creates:
 - kind v0.24 or newer, with a pinned node image. Its default CNI, kindnet, enforces NetworkPolicy through kube-network-policies.
 - Enforcement is proven when the sandbox starts, with a canary: a deny-all policy and a test pod. If the canary fails, network scenarios report `INCONCLUSIVE`.
 - kind's default `standard` StorageClass (local-path, reclaim policy Delete). Reports say so, because data-survival results depend on the reclaim policy.
-- Pod Security admission in `warn` and `audit` mode. The reached level (restricted, baseline or privileged) is reported as information. Enforcing it would stop many charts from installing and would change what is measured.
+- The Pod Security level the release's pods reach (restricted, baseline or privileged) is reported as information, with the API server's lines for what keeps them from the next stricter level. It is read at the end of each scenario, while the release exists, with a server-side dry run of the `enforce` label (`kubectl label --dry-run=server`), so the namespace is never labelled and no warning reaches helm's stderr, which `matrix` reads. It is no finding and changes no verdict. Enforcing a level would stop many charts from installing and change what is measured; `warn` and `audit` labels are not set, and kind writes no audit log by default (#115).
 - No ingress controller and no metrics-server in v0.1, because no v0.1 scenario needs them. When an HTTP entry point is needed, it will be a Gateway API implementation (ingress-nginx was retired in March 2026).
 - `listenAddress` and `apiServerAddress` bound to `127.0.0.1`.
 - Memory and CPU limits on the node containers.

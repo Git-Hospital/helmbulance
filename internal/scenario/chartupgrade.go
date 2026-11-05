@@ -50,6 +50,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		}
 	}()
 
+	// Runs before the cleanup above, while the release still exists (#115).
+	defer recordPodSecurity(ctx, env, ns, &res)
+
 	if err := startClean(ctx, env, release, ns); err != nil {
 		return inconclusive(res, "could not clear what an earlier run left", err)
 	}

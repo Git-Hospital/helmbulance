@@ -3,6 +3,7 @@ package scenario
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -68,6 +69,16 @@ type Result struct {
 	// whose --wait timed out with no crash: its findings say nothing about whether the chart runs.
 	// matrix reads it across versions; it is not part of the report.
 	HealthUnchecked bool `json:"-"`
+	// PodSecurity is the Pod Security level the release's pods reached, as information: it is no
+	// finding and changes no verdict (#115). nil when it was not read.
+	PodSecurity *PodSecurity `json:"podSecurity,omitempty"`
+}
+
+// PodSecurity is the level a release's pods reach (restricted, baseline or privileged) and the API
+// server's lines for the pods that keep them from the next stricter level.
+type PodSecurity struct {
+	Level      string   `json:"level"`
+	Violations []string `json:"violations,omitempty"`
 }
 
 // Scenario is one day-two situation tested against a live release.
@@ -84,6 +95,23 @@ const cleanupTimeout = 10 * time.Minute
 // release and namespace do not outlive the run and block the next one on a reused cluster.
 func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+}
+
+// recordPodSecurity reads the Pod Security level the release's pods reach and puts it in res. A
+// scenario defers it after its cleanup, so it runs first, while the release still exists. It reads
+// nothing after an interrupt or a SKIPPED run, and a read that fails is logged, not reported.
+func recordPodSecurity(ctx context.Context, env *Env, ns string, res *Result) {
+	if ctx.Err() != nil || res.Verdict == Skipped {
+		return
+	}
+	level, violations, err := env.Kube.PodSecurityLevel(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not read the Pod Security level: %v\n", err)
+		return
+	}
+	if level != "" {
+		res.PodSecurity = &PodSecurity{Level: level, Violations: violations}
+	}
 }
 
 // startClean removes what an earlier run left under these fixed names, when it was killed before
