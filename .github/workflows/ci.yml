@@ -142,11 +142,17 @@ jobs:
       - run: scripts/mutation.sh "$RUNNER_TEMP/mutation" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The composite Action (action.yml) on one fixture pair. The fixed twin runs with variables that
-  # would point helm at another cluster; the Action must drop them, or helm fails to connect.
+  # would point helm at another cluster; the Action must drop them, or helm fails to connect. It runs
+  # on amd64 and arm64, since the Action downloads kind, kubectl and helm with a sha256 for each
+  # architecture, and a wrong arm64 one was never caught (#60).
   action:
-    name: action (fixture pair)
+    name: action (fixture pair, ${{ matrix.runner }})
     needs: test
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
