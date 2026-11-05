@@ -279,3 +279,41 @@ func TestUnrecordedWithNoClusters(t *testing.T) {
 		t.Errorf("Unrecorded = %v, %v; want none", got, err)
 	}
 }
+
+// Open checks the file once, but helm and kubectl read it again on every call. They get a pinned
+// copy with the sandbox's context, cluster and user only, so a use-context or a merge into the
+// kept file during the run cannot send them to another cluster (#47).
+func TestOpenGivesAPinnedOneContextCopy(t *testing.T) {
+	writeCluster(t, merged("kind-prod", sandbox))
+	c, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := filepath.Join(filepath.Dir(c.Kubeconfig), "kubeconfig")
+	if c.Kubeconfig == orig {
+		t.Fatalf("Open returned the shared kubeconfig %s, want a pinned copy", c.Kubeconfig)
+	}
+	b, err := os.ReadFile(c.Kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	for _, want := range []string{"current-context: " + sandbox, sandboxCA, "client-key-data: S0VZ"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("pinned copy lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "kind-prod") || strings.Contains(text, otherCA) {
+		t.Errorf("pinned copy keeps the other cluster:\n%s", text)
+	}
+	if fi, err := os.Stat(c.Kubeconfig); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("pinned copy mode %v, %v; want 0600", fi.Mode().Perm(), err)
+	}
+	// A use-context on the shared file after Open changes nothing for the run.
+	if err := os.WriteFile(orig, []byte(merged("kind-prod", "kind-prod")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fp, err := caFingerprint(c.Kubeconfig, name); err != nil || fp == "" {
+		t.Errorf("the pinned copy after a use-context on the shared file: %q, %v; want it to still name the sandbox", fp, err)
+	}
+}

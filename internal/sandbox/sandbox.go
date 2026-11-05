@@ -125,7 +125,78 @@ func Open(name string) (*Cluster, error) {
 	if got != string(want) {
 		return nil, errors.New("cluster CA does not match the one recorded at creation; refusing to use it")
 	}
+	// The check above holds for the file as it is now, but helm and kubectl read it again on every
+	// call, so a use-context or a merge during the run would send later calls elsewhere. They get a
+	// copy that holds the sandbox's context, cluster and user only (#47).
+	pinned, err := pin(c.Kubeconfig, "kind-"+name)
+	if err != nil {
+		return nil, err
+	}
+	if fp, err := caFingerprint(pinned, name); err != nil || fp != string(want) {
+		return nil, fmt.Errorf("the pinned copy of the kubeconfig does not match the recorded CA: %v", err)
+	}
+	c.Kubeconfig = pinned
 	return c, nil
+}
+
+// pin writes next to path a kubeconfig with only the context called ctxName, its cluster and its
+// user, and returns its path. It is written anew on every Open, mode 0600.
+func pin(path, ctxName string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var kc map[string]any
+	if err := yaml.Unmarshal(data, &kc); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	named := func(key, name string) (map[string]any, error) {
+		list, _ := kc[key].([]any)
+		var found map[string]any
+		n := 0
+		for _, e := range list {
+			if m, ok := e.(map[string]any); ok && m["name"] == name {
+				found, n = m, n+1
+			}
+		}
+		if n != 1 {
+			return nil, fmt.Errorf("%s: %s %q appears %d times, want once", path, key, name, n)
+		}
+		return found, nil
+	}
+	ctxEntry, err := named("contexts", ctxName)
+	if err != nil {
+		return "", err
+	}
+	inner, _ := ctxEntry["context"].(map[string]any)
+	clusterName, _ := inner["cluster"].(string)
+	userName, _ := inner["user"].(string)
+	clusterEntry, err := named("clusters", clusterName)
+	if err != nil {
+		return "", err
+	}
+	out := map[string]any{
+		"apiVersion": "v1", "kind": "Config", "current-context": ctxName,
+		"contexts": []any{ctxEntry}, "clusters": []any{clusterEntry}, "users": []any{},
+	}
+	if userName != "" {
+		userEntry, err := named("users", userName)
+		if err != nil {
+			return "", err
+		}
+		out["users"] = []any{userEntry}
+	}
+	b, err := yaml.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	pinned := filepath.Join(filepath.Dir(path), "kubeconfig.pinned")
+	// Remove first, so a file left with wider permissions does not keep them.
+	_ = os.Remove(pinned)
+	if err := os.WriteFile(pinned, b, 0o600); err != nil {
+		return "", err
+	}
+	return pinned, nil
 }
 
 // Delete removes the cluster and its files.
