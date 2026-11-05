@@ -840,8 +840,8 @@ func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
 }
 
 // Capabilities returns what helm would read from the cluster as .Capabilities: the server's
-// Kubernetes version, and its API versions, each as group/version and as group/version/Kind, the
-// two forms .Capabilities.APIVersions.Has accepts. A client-side render gets them through
+// Kubernetes version, and its API versions: every served group/version, and group/version/Kind for
+// each resource, the two forms .Capabilities.APIVersions.Has accepts. A client-side render gets them through
 // --kube-version and --api-versions, as Argo CD passes them (#59).
 func (c *Client) Capabilities(ctx context.Context) (version string, apiVersions []string, err error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "version", "-o", "json")
@@ -873,6 +873,15 @@ func (c *Client) Capabilities(ctx context.Context) (version string, apiVersions 
 		}
 		gv, kind := f[len(f)-3], f[len(f)-1]
 		seen[gv], seen[gv+"/"+kind] = true, true
+	}
+	// api-resources lists each group's preferred version only; api-versions lists every served one,
+	// such as autoscaling/v1 next to autoscaling/v2, and helm's server-side Capabilities has them all.
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-versions")
+	if err != nil {
+		return "", nil, err
+	}
+	for _, gv := range strings.Fields(string(out)) {
+		seen[gv] = true
 	}
 	return v.ServerVersion.GitVersion, slices.Sorted(maps.Keys(seen)), nil
 }

@@ -21,6 +21,7 @@ case "$*" in
     'deployments           deploy   apps/v1                   true    Deployment' \
     'statefulsets          sts      apps/v1                   true    StatefulSet' \
     'servicemonitors                monitoring.coreos.com/v1  true    ServiceMonitor' ;;
+  *" api-versions") printf '%s\n' apps/v1 autoscaling/v1 autoscaling/v2 monitoring.coreos.com/v1 v1 ;;
   *) exit 1 ;;
 esac
 `
@@ -36,7 +37,8 @@ esac
 	if version != "v1.34.11" {
 		t.Errorf("version = %q, want the server's v1.34.11, not the client's", version)
 	}
-	want := []string{"apps/v1", "apps/v1/Deployment", "apps/v1/StatefulSet", "monitoring.coreos.com/v1",
+	// autoscaling/v1 is served but not preferred, so only api-versions names it.
+	want := []string{"apps/v1", "apps/v1/Deployment", "apps/v1/StatefulSet", "autoscaling/v1", "autoscaling/v2", "monitoring.coreos.com/v1",
 		"monitoring.coreos.com/v1/ServiceMonitor", "v1", "v1/ConfigMap"}
 	if !reflect.DeepEqual(apis, want) {
 		t.Errorf("apiVersions =\n%q\nwant\n%q", apis, want)

@@ -75,6 +75,7 @@ case "$(basename "$0") $*" in
   "helm template"*) echo "fake helm: the client-side render needs the cluster's version and API versions" >&2; exit 1 ;;
   "kubectl"*" version -o json"*) echo '{"serverVersion":{"gitVersion":"v1.34.11"}}' ;;
   "kubectl"*" api-resources --no-headers"*) echo 'deployments   deploy   apps/v1   true   Deployment' ;;
+  "kubectl"*" api-versions"*) echo apps/v1 ;;
   "kubectl"*"get secrets"*) echo '{"items":[{"metadata":{"name":"db"},"type":"Opaque","data":{"password":"cHc="}}]}' ;;
   "kubectl"*"get"*) echo '{"items":[]}' ;;
 esac
