@@ -836,3 +836,49 @@ func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
 	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "delete", "pod", name, "--ignore-not-found", "--wait=false")
 	return err
 }
+
+// PodSecurityLevel returns the Pod Security level the pods in ns reach: restricted, baseline or
+// privileged, with the API server's own lines for the pods that keep them from the next stricter
+// level. It asks with a server-side dry run of the enforce label, so the namespace is never
+// labelled and no warning reaches helm's stderr, which matrix reads (#115). With no pod in ns the
+// level is "": there is nothing to judge. A kubectl error is an error, never a level.
+func (c *Client) PodSecurityLevel(ctx context.Context, ns string) (level string, violations []string, err error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", "60s",
+		"--namespace", ns, "get", "pods", "-o", "name")
+	if err != nil {
+		return "", nil, err
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return "", nil, nil
+	}
+	// The violations returned are those of the level just above the one reached: what keeps the
+	// pods from restricted when they reach baseline, and from baseline when they are privileged.
+	reached, violations := "privileged", []string(nil)
+	for _, l := range []string{"restricted", "baseline"} {
+		_, stderr, err := c.Runner.RunCapture(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "label", "--dry-run=server",
+			"--overwrite", "namespace", ns, "pod-security.kubernetes.io/enforce="+l)
+		if err != nil {
+			return "", nil, err
+		}
+		lines := podSecurityViolations(string(stderr))
+		if len(lines) == 0 {
+			return l, violations, nil
+		}
+		violations = lines
+	}
+	return reached, violations, nil
+}
+
+// podSecurityViolations returns the "Warning: <pod>: <checks>" lines of a dry-run label, without
+// the "existing pods in namespace … violate" header.
+func podSecurityViolations(stderr string) []string {
+	var lines []string
+	for _, l := range strings.Split(stderr, "\n") {
+		w, ok := strings.CutPrefix(strings.TrimSpace(l), "Warning: ")
+		if !ok || strings.HasPrefix(w, "existing pods in namespace") {
+			continue
+		}
+		lines = append(lines, w)
+	}
+	return lines
+}
