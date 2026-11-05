@@ -16,8 +16,8 @@ func TestFinishedJob(t *testing.T) {
 	}{
 		{Pod{Owner: "Job/migrate", Phase: "Failed"}, true},
 		{Pod{Owner: "Job/migrate", Phase: "Succeeded"}, true},
-		{Pod{Owner: "Job/migrate", Phase: "Pending"}, false},  // stuck in ErrImagePull
-		{Pod{Owner: "Job/migrate", Phase: "Running"}, false},  // crash-looping in place
+		{Pod{Owner: "Job/migrate", Phase: "Pending"}, false},   // stuck in ErrImagePull
+		{Pod{Owner: "Job/migrate", Phase: "Running"}, false},   // crash-looping in place
 		{Pod{Owner: "StatefulSet/db", Phase: "Failed"}, false}, // not a Job
 	} {
 		if got := c.pod.FinishedJob(); got != c.want {
