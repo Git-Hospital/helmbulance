@@ -14,6 +14,9 @@ func TestReproLine(t *testing.T) {
 			`helm install r ./chart --set auth.password="${HB_SET_AUTH_PASSWORD:?set HB_SET_AUTH_PASSWORD to the value given with --set}",image.tag="${HB_SET_IMAGE_TAG:?set HB_SET_IMAGE_TAG to the value given with --set}" --namespace ns`},
 		{"helm install r ./chart --set-json=***",
 			`helm install r ./chart --set-json="${HB_SET_1:?set HB_SET_1 to the value given with --set}"`},
+		// a.b and a_b make the same name; the second gets its own, so each can hold its value.
+		{"helm install r ./chart --set a.b=*** --set a_b=***",
+			`helm install r ./chart --set a.b="${HB_SET_A_B:?set HB_SET_A_B to the value given with --set}" --set a_b="${HB_SET_A_B_2:?set HB_SET_A_B_2 to the value given with --set}"`},
 		{"helm install r oci://***@registry.example/chart --set-string a=b",
 			"helm install r oci://***@registry.example/chart --set-string a=b"},
 	} {
