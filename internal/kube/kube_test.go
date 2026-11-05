@@ -29,7 +29,7 @@ func fakeKubectl(t *testing.T, out string) *Client {
 
 func TestServicesReadsTypeAndAddresses(t *testing.T) {
 	c := fakeKubectl(t, `{"items":[
-		{"metadata":{"name":"web"},"spec":{"type":"ClusterIP","clusterIP":"10.96.0.10","selector":{"app":"web"},"ports":[{"name":"http","port":80}]}},
+		{"metadata":{"name":"web"},"spec":{"type":"ClusterIP","clusterIP":"10.96.0.10","selector":{"app":"web"},"ports":[{"name":"http","port":80,"appProtocol":"http"}]}},
 		{"metadata":{"name":"ext"},"spec":{"type":"ExternalName","externalIPs":["203.0.113.5"],"selector":{"app":"web"}}},
 		{"metadata":{"name":"manual"},"spec":{"type":"ClusterIP","clusterIP":"10.96.0.11"}}
 	]}`)
@@ -38,7 +38,7 @@ func TestServicesReadsTypeAndAddresses(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Service{
-		{Name: "web", Selector: map[string]string{"app": "web"}, Ports: []ServicePort{{Name: "http", Port: 80}},
+		{Name: "web", Selector: map[string]string{"app": "web"}, Ports: []ServicePort{{Name: "http", Port: 80, AppProtocol: "http"}},
 			Type: "ClusterIP", ClusterIP: "10.96.0.10"},
 		{Name: "ext", Selector: map[string]string{"app": "web"}, Type: "ExternalName", ExternalIPs: []string{"203.0.113.5"}},
 	}

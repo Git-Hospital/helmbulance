@@ -375,6 +375,22 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 	return pickTarget(services, outside)
 }
 
+// notPlainHTTP reports whether a Service port says it speaks something other than plain HTTP/1:
+// an appProtocol that is not http, a name with the word https, tls, grpc or h2c ("grpc-api",
+// "https"), or port 443 or 8443.
+func notPlainHTTP(p kube.ServicePort) bool {
+	if ap := strings.ToLower(strings.TrimPrefix(p.AppProtocol, "kubernetes.io/")); ap != "" && ap != "http" {
+		return true
+	}
+	words := strings.FieldsFunc(strings.ToLower(p.Name), func(r rune) bool { return r == '-' || r == '_' || r == '.' })
+	for _, w := range words {
+		if w == "https" || w == "tls" || w == "grpc" || w == "grpcs" || w == "h2" || w == "h2c" {
+			return true
+		}
+	}
+	return p.Port == 443 || p.Port == 8443
+}
+
 // pickTarget returns "service:port" for a port named http or web, then a common HTTP port number,
 // then any port with http in its name. Services whose traffic would not stay on the release's pods
 // are skipped: ExternalName (an outside host), headless (no port translation, so a request can
@@ -384,6 +400,10 @@ func pickTarget(services []kube.Service, outside map[string][]string) (string, e
 	score := func(p kube.ServicePort) int {
 		switch {
 		case p.Protocol != "" && p.Protocol != "TCP":
+			return 0
+		// The requests are plain http://. A port that speaks TLS or gRPC would only fail them, and
+		// make the run INCONCLUSIVE where SKIPPED is right (#57).
+		case notPlainHTTP(p):
 			return 0
 		case p.Name == "http" || p.Name == "web":
 			return 3
