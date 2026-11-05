@@ -137,6 +137,20 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not read the workloads", err)
 	}
+	// A StatefulSet or DaemonSet with updateStrategy OnDelete keeps its pods through a rolling
+	// restart, and kubectl rollout status refuses it, which made every run INCONCLUSIVE (#57).
+	var onDelete []string
+	if env.FromVersion == "" {
+		var kept []kube.Workload
+		for _, w := range workloads {
+			if w.Strategy == "OnDelete" {
+				onDelete = append(onDelete, "`"+w.Kind+"/"+w.Name+"`")
+			} else {
+				kept = append(kept, w)
+			}
+		}
+		workloads = kept
+	}
 	services, err := env.Kube.Services(ctx, ns)
 	if err != nil {
 		return inconclusive(res, "could not read the Services", err)
@@ -162,6 +176,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		operation += fmt.Sprintf(" (%s, %s behind %s)", count(behind, "workload"), count(behindPods, "pod"), svc.Name)
 	}
 	operation += ", one at a time"
+	if len(onDelete) > 0 {
+		operation += fmt.Sprintf("; %s left out, since updateStrategy OnDelete replaces no pod on a restart", strings.Join(onDelete, ", "))
+	}
 	act := func() error {
 		for i, w := range workloads {
 			start := actStart
@@ -196,6 +213,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	} else if len(workloads) == 0 {
 		res.Verdict = Skipped
 		res.Summary = "no Deployment, StatefulSet or DaemonSet to restart, so nothing would be replaced"
+		if len(onDelete) > 0 {
+			res.Summary = "every workload uses updateStrategy OnDelete (" + strings.Join(onDelete, ", ") + "), so a rolling restart replaces no pod"
+		}
 		return res
 	} else if svcKnown && behind == 0 {
 		res.Verdict = Skipped

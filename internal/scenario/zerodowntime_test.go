@@ -520,3 +520,33 @@ func TestZeroDowntimeDaemonSetCauseIsMaxSurge(t *testing.T) {
 		t.Errorf("evidence does not name maxSurge as the cause:\n%s", ev)
 	}
 }
+
+// A StatefulSet with updateStrategy OnDelete keeps its pods through a rolling restart, and kubectl
+// rollout status refuses it, which made every run INCONCLUSIVE. It is left out, and the summary
+// names it (#57).
+func TestZeroDowntimeLeavesOutOnDelete(t *testing.T) {
+	const web = `{"kind":"Deployment","metadata":{"name":"web"},"spec":{"replicas":2,"template":{"metadata":{"labels":{"app":"web"}}}}}`
+	const db = `{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"replicas":1,"updateStrategy":{"type":"OnDelete"},"template":{"metadata":{"labels":{"app":"db"}}}}}`
+	logs := map[string]string{
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "300 ok\n",
+		"hb-traffic":         "300 ok\n301 ok\n302 ok\n",
+		"workloads":          `{"items":[` + web + `,` + db + `]}`,
+	}
+	var calls string
+	res := runZeroDowntime(t, logs, func(*Env) {
+		calls = filepath.Join(os.Getenv("FAKE_LOGS"), "calls")
+	})
+	b, _ := os.ReadFile(calls)
+	if strings.Contains(string(b), "statefulset/db") || !strings.Contains(string(b), "deployment/web") {
+		t.Errorf("rollout calls:\n%s\nwant web restarted and db left alone", b)
+	}
+	if res.Verdict != Pass || !strings.Contains(res.Summary, "`StatefulSet/db` left out, since updateStrategy OnDelete replaces no pod on a restart") {
+		t.Errorf("verdict %s, summary %q", res.Verdict, res.Summary)
+	}
+
+	logs["workloads"] = `{"items":[` + db + `]}`
+	if res := runZeroDowntime(t, logs); res.Verdict != Skipped || !strings.Contains(res.Summary, "every workload uses updateStrategy OnDelete") {
+		t.Errorf("only an OnDelete StatefulSet: %s %q, want SKIPPED", res.Verdict, res.Summary)
+	}
+}
