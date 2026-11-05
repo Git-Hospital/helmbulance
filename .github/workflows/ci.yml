@@ -39,6 +39,15 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go vet ./...
+      # gofmt ships with the Go toolchain setup-go installs, so this needs no download (#93).
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Not gofmt-formatted (run gofmt -w on them):"
+            echo "$unformatted"
+            exit 1
+          fi
       - run: go test ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
