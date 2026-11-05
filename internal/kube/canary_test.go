@@ -89,8 +89,9 @@ func TestEnforcesNetworkPolicy(t *testing.T) {
 func TestEnforcesNetworkPolicyError(t *testing.T) {
 	for _, failing := range []string{"exec", "apply", "wait", "serviceaccount"} {
 		client, calls := canaryClient(t, "fail."+failing)
-		if got, err := client.EnforcesNetworkPolicy(t.Context(), "busybox"); err == nil {
-			t.Errorf("%s fails: %v with no error; want an error", failing, got)
+		// The error is the failing call's own, not a guess that followed from it.
+		if got, err := client.EnforcesNetworkPolicy(t.Context(), "busybox"); err == nil || !strings.Contains(err.Error(), "fake kubectl: "+failing+" failed") {
+			t.Errorf("%s fails: %v, %v; want the failing call's error", failing, got, err)
 		}
 		deletedItsNamespace(t, calls)
 	}
