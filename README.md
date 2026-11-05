@@ -19,7 +19,7 @@ None of these produce an invalid manifest, so no linter flags them. Each one is 
 
 ## How it works
 
-1. **Install** the chart into an ephemeral [kind](https://kind.sigs.k8s.io/) cluster with each values file you give it.
+1. **Install** the chart into an ephemeral [kind](https://kind.sigs.k8s.io/) cluster with the values files you give it, layered in order as helm does.
 2. **Run scenarios** against the live release. Each scenario is a small script: act (upgrade, delete, rotate, connect, flood), then assert on the cluster's state.
 3. **Report** every failure with the command that reproduces it, the evidence (events, logs, rendered diff), the impact, and a suggested patch.
 
@@ -103,7 +103,7 @@ Helmbulance runs entirely on your machine or in your CI. There is no server and 
 
 ## Try it
 
-Requires Go, Docker, kind, helm and kubectl.
+Requires Go, Docker, kind, helm and kubectl. CI tests with kind v0.33.0, Helm v4.3.0 and v3.22.0 and kubectl v1.37.1, and `matrix` needs kind v0.33 for its node images. The [GitHub Action](docs/github-action.md) runs the same checks in CI; the [decisions](docs/decisions/) record what is in scope and why.
 
 ```sh
 go build -o bin/helmbulance ./cmd/helmbulance
