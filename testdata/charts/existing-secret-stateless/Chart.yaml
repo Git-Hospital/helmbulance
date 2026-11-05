@@ -1,0 +1,5 @@
+apiVersion: v2
+name: existing-secret-stateless
+description: "Helmbulance fixture. Fixed twin of existing-secret-stateful: the same switch, in a Deployment that keeps no data, so the new password breaks nothing it stored (#54)."
+type: application
+version: 0.1.0
