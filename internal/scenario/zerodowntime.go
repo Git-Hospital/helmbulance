@@ -156,7 +156,8 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "could not read the Services", err)
 	}
 	var actErr, recheckErr error
-	var actStart int64
+	var actStart, actEnd int64
+	var actEndKnown bool
 	// restarts holds the second, in the traffic pod's clock, at which each workload's restart began.
 	// One workload is restarted at a time, so a failure is blamed on the one being replaced then,
 	// not on whatever the Service selects (#10).
@@ -249,6 +250,11 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		}
 		actStart, _ = oracle.TrafficSecond(last)
 		actErr = act()
+		// Where the operation ended, in the pod's clock, so the traffic can be checked to have
+		// gone on through the tail (#57).
+		if last, err := env.Kube.LastLogLine(ctx, ns, "hb-traffic"); err == nil {
+			actEnd, actEndKnown = oracle.TrafficSecond(last)
+		}
 		recheck()
 		if err := sleep(ctx, trafficTail); err != nil {
 			return err
@@ -261,9 +267,22 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	treatment := oracle.ParseTrafficSince(log, actStart)
 	// A restart that failed part way still leaves the windows before it complete; anything else that
-	// failed leaves nothing proven.
+	// failed leaves nothing proven. What was measured until then is still said: a failed upgrade's
+	// outage is what a user would see (#57).
 	if actErr != nil && done == 0 {
+		if treatment.Failed > 0 {
+			return inconclusive(res, fmt.Sprintf("%s failed; until then %d of %d requests failed, longest outage %s",
+				operation, treatment.Failed, treatment.Total, outageText(treatment.LongestOutage)), actErr)
+		}
 		return inconclusive(res, operation+" failed", actErr)
+	}
+	// The traffic must go on after the operation, through the tail: a traffic pod that stopped
+	// sending part way would leave a PASS with nothing measured at the end (#57).
+	if tail := int64(trafficTail / time.Second); tail >= 2 && actEndKnown {
+		if lastSent, ok := lastSecond(log); !ok || lastSent-actEnd < tail/2 {
+			return inconclusive(res, "the traffic stopped before the end of "+operation,
+				fmt.Errorf("the last request was sent %ds after the operation ended, in a %ds tail", max(0, lastSent-actEnd), tail))
+		}
 	}
 	if recheckErr != nil {
 		return inconclusive(res, "could not read the endpoints of "+service+" again after "+operation, recheckErr)
@@ -393,6 +412,17 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 		return "", err
 	}
 	return pickTarget(services, outside)
+}
+
+// lastSecond is the second, in the traffic pod's clock, of the last request in log.
+func lastSecond(log string) (int64, bool) {
+	lines := strings.Split(strings.TrimSpace(log), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t, ok := oracle.TrafficSecond(lines[i]); ok {
+			return t, true
+		}
+	}
+	return 0, false
 }
 
 // notPlainHTTP reports whether a Service port says it speaks something other than plain HTTP/1:

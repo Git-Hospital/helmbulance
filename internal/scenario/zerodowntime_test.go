@@ -550,3 +550,47 @@ func TestZeroDowntimeLeavesOutOnDelete(t *testing.T) {
 		t.Errorf("only an OnDelete StatefulSet: %s %q, want SKIPPED", res.Verdict, res.Summary)
 	}
 }
+
+// A traffic pod that stopped sending before the end of the operation leaves the tail unmeasured:
+// INCONCLUSIVE, not a PASS on the requests before it stopped (#57).
+func TestZeroDowntimeTrafficMustGoOnThroughTheTail(t *testing.T) {
+	longTail := func(*Env) { trafficTail = 2 * time.Second }
+	for name, c := range map[string]struct {
+		log, verdict string
+	}{
+		"stopped when the operation ended": {"300 ok\n301 ok\n305 ok\n", Inconclusive},
+		"went on through the tail":         {"300 ok\n301 ok\n305 ok\n306 ok\n307 ok\n", Pass},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := runZeroDowntime(t, map[string]string{
+				"hb-traffic-control":  "100 ok\n",
+				"hb-traffic.before.0": "300 ok\n", // the operation starts at 300
+				"hb-traffic.before.1": "305 ok\n", // and ends at 305
+				"hb-traffic":          c.log,
+			}, longTail)
+			if res.Verdict != c.verdict {
+				t.Errorf("verdict %s (%s), want %s", res.Verdict, res.Summary, c.verdict)
+			}
+		})
+	}
+}
+
+// An upgrade that fails still says what the traffic saw until then (#57).
+func TestZeroDowntimeFailedUpgradeKeepsTheMeasuredOutage(t *testing.T) {
+	failingUpgrade := func(e *Env) {
+		e.FromVersion, e.From = "1.0.0", "repo/chart"
+		bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+		script := "#!/bin/sh\ncase \"$*\" in *\"get metadata\"*) echo '{\"version\":\"1.0.0\"}' ;; upgrade*--version*) exit 0 ;; upgrade*) echo 'Error: UPGRADE FAILED: timed out' >&2; exit 1 ;; esac\nexit 0\n"
+		if err := os.WriteFile(filepath.Join(bin, "helm"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "300 ok\n",
+		"hb-traffic":         "300 ok\n301 fail\n302 fail\n303 ok\n",
+	}, failingUpgrade)
+	if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "until then 2 of 4 requests failed, longest outage") {
+		t.Errorf("verdict %s, summary %q", res.Verdict, res.Summary)
+	}
+}
