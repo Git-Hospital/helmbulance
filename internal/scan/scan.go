@@ -276,12 +276,23 @@ func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 			upgraded[x.Kind+"/"+x.Name] = true
 		}
 	}
-	onUpgrade, onSync := regenerated(installs[0], installs[1], upgraded, func(source string) bool {
-		return sourceUsesLookup(o.Chart, source)
-	})
+	usesLookup, readable := lookupChecker(o.Chart)
+	onUpgrade, onSync, guarded := regenerated(installs[0], installs[1], upgraded, usesLookup)
+	// A Secret that calls lookup is left out as a whole: whether lookup keeps every key that differs
+	// only shows on a cluster, where upgrade-without-values compares them one by one (#51).
+	if len(guarded) > 0 {
+		note += fmt.Sprintf("; %d Secret(s) that use `lookup` differ between two renders and are left out (%s): only `helmbulance test` checks which keys lookup keeps",
+			len(guarded), strings.Join(guarded, ", "))
+	}
+	if !readable {
+		note += "; the chart's templates could not be read, so no Secret that uses `lookup` was left out"
+	}
 	if len(onUpgrade)+len(onSync) == 0 {
 		res.Verdict = scenario.Pass
 		res.Summary = "no Secret value is generated anew on every render" + note
+		if len(guarded) > 0 {
+			res.Summary = "no Secret without `lookup` has values generated anew on every render" + note
+		}
 		return res
 	}
 	res.Verdict = scenario.Fail
@@ -317,7 +328,7 @@ func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 // chart did not render as an upgrade, and then only hooks can be told apart, by their annotation.
 // A Secret whose template uses lookup is left out, and so is a hook that runs neither at install
 // nor at upgrade (test, delete, rollback).
-func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source string) bool) (onUpgrade, onSync []string) {
+func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source string) bool) (onUpgrade, onSync, guarded []string) {
 	second := map[string]object{}
 	for _, x := range b {
 		second[x.Kind+"/"+x.Name] = x
@@ -327,7 +338,7 @@ func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source
 			continue
 		}
 		y, ok := second["Secret/"+x.Name]
-		if !ok || usesLookup(x.Source) {
+		if !ok {
 			continue
 		}
 		var changed []string
@@ -341,6 +352,10 @@ func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source
 			}
 		}
 		if len(changed) == 0 {
+			continue
+		}
+		if usesLookup(x.Source) {
+			guarded = append(guarded, "`Secret/"+x.Name+"`")
 			continue
 		}
 		sort.Strings(changed)
@@ -359,7 +374,8 @@ func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source
 	}
 	sort.Strings(onUpgrade)
 	sort.Strings(onSync)
-	return onUpgrade, onSync
+	sort.Strings(guarded)
+	return onUpgrade, onSync, guarded
 }
 
 // maxUnquoted caps how many default values unquotedValues tries, one render each.
@@ -560,47 +576,51 @@ func sourceContains(chart, source, text string) bool {
 	return err == nil && strings.Contains(string(b), text)
 }
 
-// sourceUsesLookup reports whether the template a manifest came from (or a helper it includes)
-// uses lookup. "# Source:" paths start with the chart name.
-func sourceUsesLookup(chart, source string) bool {
-	if source == "" {
-		return false
-	}
-	parts := strings.SplitN(source, "/", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	b, err := os.ReadFile(filepath.Join(chart, parts[1]))
-	if err != nil {
-		return false
-	}
-	text := string(b)
-	if strings.Contains(text, "lookup") {
-		return true
-	}
-	includes := includeOf.FindAllStringSubmatch(text, -1)
-	if len(includes) == 0 {
-		return false
-	}
-	found := false
-	_ = filepath.WalkDir(filepath.Join(chart, "templates"), func(path string, d os.DirEntry, err error) error {
-		if found || err != nil || d.IsDir() {
-			return nil
-		}
-		hb, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		for _, m := range defineOf.FindAllStringSubmatch(string(hb), -1) {
-			for _, inc := range includes {
-				if m[1] == inc[1] && strings.Contains(m[2], "lookup") {
-					found = true
-				}
+// lookupChecker reports whether the template a manifest came from, or a helper it includes at
+// any depth, calls lookup. It reads the chart's files once, subcharts and their archives included,
+// so a lookup in a library or subchart helper counts, and a helper's body runs to its own end
+// (#51). "# Source:" paths start with the chart name. readable is false when the chart's files
+// could not be read, a repository or OCI reference: then no Secret is left out.
+func lookupChecker(chart string) (uses func(source string) bool, readable bool) {
+	files := chartFiles(chart)
+	helpers := map[string]string{}
+	for name, text := range files {
+		if strings.HasSuffix(name, ".tpl") || strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".txt") {
+			for n, body := range defines(text) {
+				helpers[n] = body
 			}
 		}
-		return nil
-	})
-	return found
+	}
+	return func(source string) bool {
+		_, rel, ok := strings.Cut(source, "/")
+		if !ok {
+			return false
+		}
+		text, ok := files[rel]
+		if !ok {
+			return false
+		}
+		return lookupCall.MatchString(withHelpers(withoutComments(text), helpers))
+	}, files != nil
+}
+
+// withHelpers is text followed by the bodies of the helpers it includes, and of the helpers those
+// include, each once.
+func withHelpers(text string, helpers map[string]string) string {
+	seen := map[string]bool{}
+	out := text
+	for todo := text; todo != ""; {
+		var next string
+		for _, inc := range includeOf.FindAllStringSubmatch(todo, -1) {
+			if body, ok := helpers[inc[1]]; ok && !seen[inc[1]] {
+				seen[inc[1]] = true
+				out += "\n" + body
+				next += "\n" + body
+			}
+		}
+		todo = next
+	}
+	return out
 }
 
 func dig(doc map[string]any, path []string) any {
