@@ -21,8 +21,9 @@ const SchemaVersion = 1
 // Report is everything a run produced.
 type Report struct {
 	SchemaVersion int `json:"schemaVersion"`
-	// Verdict is Worst(), the verdict the exit code follows, so a reader of report.json does not
-	// have to work it out from the results. Write sets it.
+	// Verdict is Worst(), the worst result of the run, so a reader of report.json does not have to
+	// work it out. test and matrix exit by it. scan exits by it only with --strict: without it,
+	// a FAIL is a candidate to confirm and the exit code is 0. Write sets it.
 	Verdict     string   `json:"verdict"`
 	Chart       string   `json:"chart"`
 	ValuesFiles []string `json:"valuesFiles"`
