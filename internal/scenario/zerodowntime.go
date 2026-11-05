@@ -62,6 +62,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		}
 	}()
 
+	// Runs before the cleanup above, while the release still exists (#115).
+	defer recordPodSecurity(ctx, env, ns, &res)
+
 	// Install: the earlier version when there is one, so the treatment is the real upgrade.
 	installChart, installExtra := env.Chart, []string(nil)
 	if env.FromVersion != "" {
