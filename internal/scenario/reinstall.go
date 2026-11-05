@@ -106,7 +106,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 		// INCONCLUSIVE. Other failures (a render refusal, the chart's webhook, a pull or tool error)
 		// are not this case and go to installFailed.
 		if timedOutWaiting(ctx, secondInstall) {
-			res = s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, repro)
+			res = s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, true, repro)
 			switch {
 			case len(res.Findings) > 0:
 				res.Findings[0].Evidence = append([]string{
@@ -121,7 +121,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 		}
 		return unreadyFirstInstall(s.installFailed(ctx, res, secondInstall, repro), firstInstall)
 	}
-	return unreadyFirstInstall(s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, repro), firstInstall)
+	return unreadyFirstInstall(s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, false, repro), firstInstall)
 }
 
 // unreadyFirstInstall qualifies a result whose first install was applied but never became ready.
@@ -167,7 +167,7 @@ func unobservedCredentials(findings []Finding, changes, unrelated, certs []oracl
 // `--wait` timeout, since the release is applied in both. ran is false when the first install never
 // became ready.
 func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, ns string,
-	secrets *secretReader, before oracle.SecretSnapshot, volumes []volume, ran bool, repro []string) Result {
+	secrets *secretReader, before oracle.SecretSnapshot, volumes []volume, ran, timedOut bool, repro []string) Result {
 	after, err := secrets.snapshot()
 	if err != nil {
 		return secretsInconclusive(res, "after the reinstall", err)
@@ -214,6 +214,15 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 	res.Findings, unrelated, certs = reinstallFindings(volumes, changes, consumers, stateful, statefulKnown, claimUsers, repro)
 	if !ran {
 		res.Findings, unobserved = unobservedCredentials(res.Findings, changes, unrelated, certs)
+	} else if !timedOut {
+		// A reinstall whose --wait timed out already showed the release failing. After a clean
+		// one, the workloads are watched: a lockout shows as pods that stop being ready or restart
+		// (#53).
+		for i := range res.Findings {
+			if res.Findings[i].ID == "HB-RI-001" {
+				observeLockout(ctx, env, ns, &res.Findings[i])
+			}
+		}
 	}
 	kept := secrets.kept
 	if f, ok := keptSecretReplaced(append(slices.Clone(unrelated), unobserved...), kept, consumers, stateful, statefulKnown, repro); ok {
@@ -468,6 +477,32 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 		})
 	}
 	return findings, unrelated, certs
+}
+
+// observeLockout watches the release after a clean reinstall and adds what it saw to an HB-RI-001.
+// The finding comes from key names and readers alone, so when nothing failed it stays, but as a
+// low risk that was not observed: a store that sets its password again at every start, such as
+// Redis or Valkey with requirepass, works with the new one (#53).
+func observeLockout(ctx context.Context, env *Env, ns string, f *Finding) {
+	pods, err := env.Kube.Pods(ctx, ns)
+	var problems []string
+	if err == nil {
+		problems, err = unhealthyAfter(ctx, env, ns, nil, pods, nil)
+	}
+	switch {
+	case err != nil:
+		f.Evidence = append(f.Evidence, "The workloads could not be watched after the reinstall, so whether they failed is unknown: "+err.Error())
+	case len(problems) > 0:
+		f.Evidence = append(f.Evidence, append([]string{"After the reinstall:"}, problems...)...)
+	default:
+		f.Severity = "low"
+		f.Title = "Data survives a reinstall with new credentials, but no workload failed in the sandbox"
+		f.Evidence = append(f.Evidence, "Not observed: after the reinstall every pod was ready and none restarted while Helmbulance watched.")
+		f.Impact = "The volumes still hold the old data and the chart generated new credentials. Nothing " +
+			"failed here, so the app may set the credential again at every start (Redis or Valkey with " +
+			"requirepass), or the sandbox did not exercise it. A store that keeps the password it was " +
+			"initialised with, such as PostgreSQL or MySQL, refuses the new one."
+	}
 }
 
 // reinstallPassSummary says what was checked, including volumes deleted with the release, which

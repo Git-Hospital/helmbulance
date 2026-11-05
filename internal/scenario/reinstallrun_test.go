@@ -12,7 +12,8 @@ import (
 // reinstall. A helm call fails with $FAKE_DIR/fail.<stage> as its message when that file exists.
 // "kubectl get secrets" prints $FAKE_DIR/secrets.<stage>, or fails when $FAKE_DIR/fail.secrets.<stage>
 // exists. The release renders what $FAKE_DIR/manifest and $FAKE_DIR/hooks hold. The claims are
-// $FAKE_DIR/pvc (none without it), and every volume keeps the sentinel written to it.
+// $FAKE_DIR/pvc (none without it), and every volume keeps the sentinel written to it. "kubectl get
+// pods" prints $FAKE_DIR/pods, or no pods.
 const fakeReinstall = `#!/bin/sh
 stage=$(cat "$FAKE_DIR/stage" 2>/dev/null || echo 0)
 case "$(basename "$0") $*" in
@@ -30,7 +31,8 @@ case "$(basename "$0") $*" in
   "kubectl"*"get pod hb-sentinel"*) printf Succeeded ;;
   "kubectl"*"logs hb-sentinel-w"*) echo written ;;
   "kubectl"*"logs hb-sentinel-r"*) cat "$FAKE_DIR/sentinel" ;;
-  "kubectl"*"get pods"*|"kubectl"*"get jobs"*) echo '{"items":[]}' ;;
+  "kubectl"*"get pods"*) cat "$FAKE_DIR/pods" 2>/dev/null || echo '{"items":[]}' ;;
+  "kubectl"*"get jobs"*) echo '{"items":[]}' ;;
 esac
 exit 0
 `
@@ -183,5 +185,43 @@ func TestReinstallUnreadyFirstInstallWithKeptData(t *testing.T) {
 	}
 	if res := run(true, false); res.Verdict != Fail || strings.Join(ids(res), ",") != "HB-RI-004" {
 		t.Errorf("never ready, kept Secret: %s %q %v; want FAIL HB-RI-004", res.Verdict, res.Summary, ids(res))
+	}
+}
+
+// HB-RI-001 comes from key names and readers. After a clean reinstall the workloads are watched:
+// a pod that is not ready is the lockout, seen; when every pod is fine the finding stays, as a low
+// risk that was not observed (#53).
+func TestReinstallWatchesForTheLockout(t *testing.T) {
+	db := `{"items":[{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"volumeClaimTemplates":[{"metadata":{"name":"data"}}],` +
+		`"template":{"spec":{"containers":[{"name":"c","env":[{"name":"P","valueFrom":{"secretKeyRef":{"name":"app","key":"password"}}}]}]}}}}]}`
+	run := func(pods string) Result {
+		files := map[string]string{
+			"hooks": "", "manifest": "---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n", "workloads": db,
+			"pvc":       `{"items":[{"metadata":{"name":"data-db-0","uid":"u1"},"status":{"phase":"Bound"}}]}`,
+			"secrets.2": appSecret(false, "b2xk"), "secrets.3": appSecret(false, "b2xk"), "secrets.4": appSecret(false, "bmV3"),
+		}
+		if pods != "" {
+			files["pods"] = pods
+		}
+		return Reinstall{}.Run(t.Context(), reinstallEnv(t, files))
+	}
+
+	res := run("")
+	if len(res.Findings) != 1 || res.Findings[0].ID != "HB-RI-001" {
+		t.Fatalf("healthy: %s %+v, want HB-RI-001", res.Verdict, res.Findings)
+	}
+	if f := res.Findings[0]; f.Severity != "low" || !strings.Contains(f.Title, "no workload failed") ||
+		!strings.Contains(strings.Join(f.Evidence, "\n"), "Not observed") {
+		t.Errorf("healthy: severity %s, title %q, evidence %q; want a low risk, not observed", f.Severity, f.Title, f.Evidence)
+	}
+
+	notReady := `{"items":[{"metadata":{"name":"db-0","uid":"p1","ownerReferences":[{"kind":"StatefulSet","name":"db","controller":true}]},` +
+		`"status":{"phase":"Running","conditions":[{"type":"Ready","status":"False"}],"containerStatuses":[{"name":"c","ready":false,"restartCount":0}]}}]}`
+	res = run(notReady)
+	if len(res.Findings) != 1 || res.Findings[0].ID != "HB-RI-001" {
+		t.Fatalf("not ready: %s %+v, want HB-RI-001", res.Verdict, res.Findings)
+	}
+	if f := res.Findings[0]; f.Severity == "low" || !strings.Contains(strings.Join(f.Evidence, "\n"), "pod `db-0`") {
+		t.Errorf("not ready: severity %s, evidence %q; want the pod in the evidence and the severity kept", f.Severity, f.Evidence)
 	}
 }
