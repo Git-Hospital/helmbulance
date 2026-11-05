@@ -139,12 +139,12 @@ func TestUpgradeValuesPassWithNoSecretsSaysSo(t *testing.T) {
 	env := newFakeReader(t, `{"items":[]}`, secretManifest()).env
 	cmd := []execx.Command{{Line: "helm upgrade hb ./chart"}}
 	empty := oracle.SecretSnapshot{}
-	res, _ := UpgradeValues{}.verdict(t.Context(), Result{}, empty, empty, empty, cmd, cmd, cmd, env)
+	res, _ := UpgradeValues{}.verdict(t.Context(), Result{}, empty, empty, empty, cmd, cmd, cmd, env, nil)
 	if res.Verdict != Pass || res.Summary != "the release renders no Secrets; Secret drift was not tested" {
 		t.Errorf("verdict %s, summary %q", res.Verdict, res.Summary)
 	}
 	some := oracle.SecretSnapshot{"app/k": {1}}
-	if res, _ := (UpgradeValues{}).verdict(t.Context(), Result{}, some, some, some, cmd, cmd, cmd, env); res.Summary != "Secrets stayed the same through both upgrades" {
+	if res, _ := (UpgradeValues{}).verdict(t.Context(), Result{}, some, some, some, cmd, cmd, cmd, env, nil); res.Summary != "Secrets stayed the same through both upgrades" {
 		t.Errorf("summary with Secrets compared = %q", res.Summary)
 	}
 }
