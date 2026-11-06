@@ -67,6 +67,11 @@ func NewCluster() (*Cluster, error) {
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
 		return nil, err
 	}
+	// MkdirAll leaves a directory that already exists as it is, so kind must not write the new
+	// kubeconfig into one that someone else made (#155).
+	if err := c.private(); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 
@@ -114,6 +119,12 @@ func Open(name string) (*Cluster, error) {
 	}
 	c, err := clusterFiles(name)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.private(); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("no record of cluster %q in %s: %w", name, c.dir, err)
+		}
 		return nil, err
 	}
 	want, err := os.ReadFile(filepath.Join(c.dir, "ca.sha256"))
@@ -286,6 +297,13 @@ func Unrecorded(ctx context.Context, r *execx.Runner) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// private checks that nobody else can change the cluster's files: its directory, clusters/ above
+// it and the state directory (#155).
+func (c *Cluster) private() error {
+	clusters := filepath.Dir(c.dir)
+	return checkPrivate(filepath.Dir(clusters), clusters, c.dir)
 }
 
 func clusterFiles(name string) (*Cluster, error) {
