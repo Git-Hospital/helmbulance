@@ -396,3 +396,22 @@ func TestOpenRefusesUserEntriesKindNeverWrites(t *testing.T) {
 	}
 	refused(t, strings.Replace(kindConfig, "  user:\n    client-certificate-data: Q0VSVA==\n"+key, "  user: oops\n", 1), "is not a mapping")
 }
+
+// The context and cluster entries are copied as they are too, so they hold only what kind writes:
+// a proxy-url would send the run through another host (security review of #156). The user must
+// have both of kind's keys, or kubectl asks for a password.
+func TestOpenRefusesClusterAndContextEntriesKindNeverWrites(t *testing.T) {
+	for _, tc := range []struct{ old, new, why string }{
+		{"    server: https://127.0.0.1:41111\n", "    server: https://127.0.0.1:41111\n    proxy-url: http://127.0.0.1:47999\n", `cluster "kind-helmbulance-1a2b3c4d" has proxy-url`},
+		{"    server: https://127.0.0.1:41111\n", "    server: https://127.0.0.1:41111\n    tls-server-name: other\n", "has tls-server-name"},
+		{"    user: " + sandbox + "\n", "    user: " + sandbox + "\n    namespace: kube-system\n", `context "kind-helmbulance-1a2b3c4d" has namespace`},
+		{"    client-key-data: S0VZ\n", "", "has no client-key-data, which kind always writes"},
+		{"  user:\n    client-certificate-data: Q0VSVA==\n    client-key-data: S0VZ\n", "  user: null\n", "is not a mapping"},
+	} {
+		kc := strings.Replace(kindConfig, tc.old, tc.new, 1)
+		if kc == kindConfig {
+			t.Fatalf("the fixture has no %q", tc.old)
+		}
+		refused(t, kc, tc.why)
+	}
+}
