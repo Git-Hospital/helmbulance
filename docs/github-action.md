@@ -69,7 +69,7 @@ There is no input for `--set` on purpose. Values given on the command line end u
 
 ## Security notes
 
-- **Runners:** the Action needs a Linux runner with Docker, on x64 or arm64. It stops with an error before installing anything when the OS is not Linux or `docker info` fails.
+- **Runners:** the Action needs a Linux runner with Docker, on x64 or arm64. This repository's CI runs it on both (`ubuntu-24.04` and `ubuntu-24.04-arm`). It stops with an error before installing anything when the OS is not Linux or `docker info` fails.
   - On a self-hosted runner it prints a warning. kind runs privileged containers on that machine, so use an ephemeral runner.
 - **Go toolchain:** the Action installs Go, at the version in this repository's `go.mod`, with `actions/setup-go`. That Go stays on `PATH`, with `GOROOT` set, for the rest of your job. kind, kubectl and helm go into a private directory and do not change your `PATH`.
 - **Other clusters:** before Helmbulance starts, the Action drops the variables that could point helm or kubectl at another cluster: `HELM_KUBE*`, `HELM_DRIVER*`, `KUBECONFIG` and `HELM_NAMESPACE`. The log names the variables it dropped, never their values. The CLI passes helm, kind and kubectl only an allowlist of variables as well, so this is a second layer.
