@@ -70,6 +70,7 @@ func NewCluster() (*Cluster, error) {
 	// MkdirAll leaves a directory that already exists as it is, so kind must not write the new
 	// kubeconfig into one that someone else made (#155).
 	if err := c.private(); err != nil {
+		os.Remove(c.dir) // only if it is empty, so nobody else's files go
 		return nil, err
 	}
 	return c, nil
@@ -181,30 +182,35 @@ func pin(path, ctxName string) (string, error) {
 		}
 		return found, nil
 	}
-	ctxEntry, err := named("contexts", ctxName)
+	// Each entry is copied as it is, so each must hold exactly what kind writes (#155).
+	entry := func(key, name, inner string, keys []string) (map[string]any, error) {
+		e, err := named(key, name)
+		if err != nil {
+			return nil, err
+		}
+		if err := kindEntry(e, inner, keys); err != nil {
+			return nil, fmt.Errorf("%s: %s %q %w; refusing to use it", path, inner, name, err)
+		}
+		return e, nil
+	}
+	ctxEntry, err := entry("contexts", ctxName, "context", kindContextKeys)
 	if err != nil {
 		return "", err
 	}
-	inner, _ := ctxEntry["context"].(map[string]any)
+	inner := ctxEntry["context"].(map[string]any)
 	clusterName, _ := inner["cluster"].(string)
 	userName, _ := inner["user"].(string)
-	clusterEntry, err := named("clusters", clusterName)
+	clusterEntry, err := entry("clusters", clusterName, "cluster", kindClusterKeys)
+	if err != nil {
+		return "", err
+	}
+	userEntry, err := entry("users", userName, "user", kindUserKeys)
 	if err != nil {
 		return "", err
 	}
 	out := map[string]any{
 		"apiVersion": "v1", "kind": "Config", "current-context": ctxName,
-		"contexts": []any{ctxEntry}, "clusters": []any{clusterEntry}, "users": []any{},
-	}
-	if userName != "" {
-		userEntry, err := named("users", userName)
-		if err != nil {
-			return "", err
-		}
-		if err := kindUser(userEntry); err != nil {
-			return "", fmt.Errorf("%s: user %q %w; refusing to use it", path, userName, err)
-		}
-		out["users"] = []any{userEntry}
+		"contexts": []any{ctxEntry}, "clusters": []any{clusterEntry}, "users": []any{userEntry},
 	}
 	b, err := yaml.Marshal(out)
 	if err != nil {
@@ -234,32 +240,46 @@ func pin(path, ctxName string) (string, error) {
 	return pinned, nil
 }
 
-// kindUserKeys are the only credentials kind writes for a cluster's user.
-var kindUserKeys = []string{"client-certificate-data", "client-key-data"}
+// The keys kind writes in each entry of a kubeconfig, and nothing else.
+var (
+	kindContextKeys = []string{"cluster", "user"}
+	kindClusterKeys = []string{"certificate-authority-data", "server"}
+	kindUserKeys    = []string{"client-certificate-data", "client-key-data"}
+)
 
-// kindUser refuses a user entry with anything but the client certificate and key kind writes. The
-// pinned copy hands the entry to helm and kubectl as it is, so an exec or auth-provider block
-// added to the kept file by hand would run a command on every call, and a token or another
-// identity would make the run act as someone else (#155).
-func kindUser(entry map[string]any) error {
+// kindEntry refuses an entry that holds anything but its name and an inner mapping with exactly
+// keys. The pinned copy hands the entries to helm and kubectl as they are, so an exec or
+// auth-provider block added to the kept file by hand would run a command on every call, a token
+// or another identity would act as someone else, and a proxy-url would route the run through
+// another host (#155).
+func kindEntry(e map[string]any, inner string, keys []string) error {
 	var extra []string
-	for k := range entry {
-		if k != "name" && k != "user" {
+	for k := range e {
+		if k != "name" && k != inner {
 			extra = append(extra, k)
 		}
 	}
-	user, ok := entry["user"].(map[string]any)
-	if !ok && entry["user"] != nil {
+	m, ok := e[inner].(map[string]any)
+	if !ok {
 		return errors.New("is not a mapping")
 	}
-	for k := range user {
-		if !slices.Contains(kindUserKeys, k) {
+	var missing []string
+	for _, k := range keys {
+		if _, ok := m[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	for k := range m {
+		if !slices.Contains(keys, k) {
 			extra = append(extra, k)
 		}
 	}
-	if len(extra) > 0 {
-		slices.Sort(extra)
-		return fmt.Errorf("has %s, which kind never writes (only %s)", strings.Join(extra, ", "), strings.Join(kindUserKeys, " and "))
+	slices.Sort(extra)
+	switch {
+	case len(extra) > 0:
+		return fmt.Errorf("has %s, which kind never writes (only %s)", strings.Join(extra, ", "), strings.Join(keys, " and "))
+	case len(missing) > 0:
+		return fmt.Errorf("has no %s, which kind always writes", strings.Join(missing, " or "))
 	}
 	return nil
 }
@@ -299,11 +319,25 @@ func Unrecorded(ctx context.Context, r *execx.Runner) ([]string, error) {
 	return names, nil
 }
 
-// private checks that nobody else can change the cluster's files: its directory, clusters/ above
-// it and the state directory (#155).
+// private checks that nobody else can change the cluster's files (#155), and from then on names
+// them by the state directory's real path. helm and kubectl open the kubeconfig by path on every
+// call, so a symlink in that path, or a directory above it that someone else can write, could
+// point later calls at another file once the check has passed. checkPrivate refuses the second;
+// resolving the state directory once removes the first.
 func (c *Cluster) private() error {
-	clusters := filepath.Dir(c.dir)
-	return checkPrivate(filepath.Dir(clusters), clusters, c.dir)
+	state, err := filepath.EvalSymlinks(filepath.Dir(filepath.Dir(c.dir)))
+	if err != nil {
+		return err
+	}
+	if state, err = filepath.Abs(state); err != nil {
+		return err
+	}
+	dir := filepath.Join(state, "clusters", c.Name)
+	if err := checkPrivate(state, filepath.Dir(dir), dir); err != nil {
+		return err
+	}
+	c.dir, c.Kubeconfig = dir, filepath.Join(dir, "kubeconfig")
+	return nil
 }
 
 func clusterFiles(name string) (*Cluster, error) {

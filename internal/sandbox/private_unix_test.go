@@ -20,7 +20,7 @@ func TestOpenRefusesAStateDirectoryOthersCanChange(t *testing.T) {
 	}{
 		{"clusters/ open to others", func(_, clusters, _ string) error { return os.Chmod(clusters, 0o755) }, "has mode 0755, want 0700"},
 		{"the cluster's directory open to its group", func(_, _, dir string) error { return os.Chmod(dir, 0o750) }, "has mode 0750, want 0700"},
-		{"a state directory anyone can write", func(state, _, _ string) error { return os.Chmod(state, 0o777) }, "so others can replace what is in it"},
+		{"a state directory anyone can write", func(state, _, _ string) error { return os.Chmod(state, 0o777) }, "so others could replace the state directory"},
 		{"the cluster's directory a symlink", func(_, clusters, dir string) error {
 			moved := filepath.Join(clusters, "elsewhere")
 			if err := os.Rename(dir, moved); err != nil {
@@ -78,8 +78,65 @@ func TestCheckPrivateRefusesAnotherUsersDirectory(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("running as root, who owns /")
 	}
-	err := checkPrivate(t.TempDir(), "/", "/")
+	state, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = checkPrivate(state, "/", "/")
 	if err == nil || !strings.Contains(err.Error(), "belongs to user 0") {
 		t.Errorf("checkPrivate = %v, want an error with %q", err, "belongs to user 0")
+	}
+}
+
+// helm and kubectl open the kubeconfig by path on every call. With the state directory behind a
+// symlink, retargeting the symlink after Open would hand them another file, one with an exec user
+// (security review of #156). Open names the files by the real path, so later calls keep reading
+// the file it checked.
+func TestOpenNamesTheFilesByTheStateDirectorysRealPath(t *testing.T) {
+	writeCluster(t, kindConfig)
+	real := os.Getenv("HELMBULANCE_STATE_DIR")
+	link := filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HELMBULANCE_STATE_DIR", link)
+	c, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(resolved, "clusters", name, "kubeconfig.pinned"); c.Kubeconfig != want {
+		t.Fatalf("Kubeconfig = %s, want %s", c.Kubeconfig, want)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := caFingerprint(c.Kubeconfig, name); err != nil {
+		t.Errorf("the pinned copy after the symlink moved: %v", err)
+	}
+}
+
+// A state directory of this user inside a directory anyone can write is not safe: they can rename
+// it and put their own in its place (security review of #156).
+func TestOpenRefusesADirectoryAboveTheStateDirectoryOthersCanWrite(t *testing.T) {
+	shared := t.TempDir()
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HELMBULANCE_STATE_DIR", filepath.Join(shared, "hb"))
+	if c, err := NewCluster(); err == nil || !strings.Contains(err.Error(), "has mode 0777, so others could replace") {
+		t.Errorf("NewCluster = %v, %v; want the shared directory above the state directory refused", c, err)
+	}
+	if _, err := os.Stat(filepath.Join(shared, "hb", "clusters")); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := os.ReadDir(filepath.Join(shared, "hb", "clusters")); len(left) != 0 {
+		t.Errorf("NewCluster left %d directories behind after refusing", len(left))
 	}
 }
