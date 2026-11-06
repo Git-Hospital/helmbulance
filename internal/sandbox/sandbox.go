@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -279,6 +280,7 @@ type namedContext struct {
 type namedCluster struct {
 	Name    string `yaml:"name"`
 	Cluster struct {
+		Server   string `yaml:"server"`
 		CAData   string `yaml:"certificate-authority-data"`
 		Insecure bool   `yaml:"insecure-skip-tls-verify"`
 	} `yaml:"cluster"`
@@ -318,6 +320,11 @@ func caFingerprint(path, name string) (string, error) {
 	// skips that check, so a file that does could reach any server whatever its CA says.
 	if clusterEntry.Cluster.Insecure {
 		return "", fmt.Errorf("%s: cluster %q sets insecure-skip-tls-verify, so its CA proves nothing; refusing to use it", path, cluster)
+	}
+	// Over plain http, or with no server (which means http://localhost:8080), there is no TLS,
+	// and the CA proves nothing. kind always writes https://127.0.0.1:<port>.
+	if u, err := url.Parse(clusterEntry.Cluster.Server); err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("%s: cluster %q has no https server, so its CA proves nothing; refusing to use it", path, cluster)
 	}
 	sum := sha256.Sum256([]byte(ca))
 	return hex.EncodeToString(sum[:]), nil

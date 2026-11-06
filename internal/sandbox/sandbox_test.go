@@ -360,3 +360,15 @@ func TestPinnedCopyIsNeverEmptyWhileItIsRewritten(t *testing.T) {
 		t.Errorf("read the pinned copy empty %d and missing %d times while it was rewritten", empty, missing)
 	}
 }
+
+// Over plain http, or with no server, TLS never runs and the CA proves nothing (security review of
+// #142).
+func TestOpenRefusesAServerWithoutTLS(t *testing.T) {
+	for _, server := range []string{"server: http://127.0.0.1:18089", ""} {
+		kc := strings.Replace(kindConfig, "server: https://127.0.0.1:41111", server, 1)
+		if kc == kindConfig {
+			t.Fatal("the fixture's server line changed")
+		}
+		refused(t, kc, "has no https server")
+	}
+}
