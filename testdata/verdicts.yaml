@@ -9,7 +9,6 @@
 # Finding IDs the source can emit that no pair covers yet. The check fails for any other uncovered
 # ID, and for an ID that is still listed here once a pair covers it.
 uncovered:
-  HB-CU-002: no fixture yet for an upgrade to a new chart version that changes a Secret
   HB-CU-003: no fixture yet for a new chart version whose workloads do not become healthy
   HB-K8S-004: no fixture yet for an API server warning, other than a deprecation, about an object the chart creates
   HB-RI-002: no fixture yet for a volume that survives a reinstall and comes back without its data
@@ -29,6 +28,25 @@ cases:
     findings:
       HB-UV-001: [hb-upgrade-secret/password]
       HB-UV-003: [Deployment/hb-upgrade-app]
+  # Installed with --set existingSecret, upgraded without it: the chart generates a password and the
+  # StatefulSet, which keeps data, moves to it. The new key is "added", which was only a note (#54).
+  # The twin does the same in a Deployment that keeps no data.
+  - name: existing-secret-stateful
+    pair: existing-secret-switch
+    role: defect
+    command: test
+    args: [testdata/charts/existing-secret-stateful, --set, existingSecret=pre-made, --scenario, upgrade-without-values]
+    exit: 1
+    verdicts: {upgrade-without-values: FAIL}
+    findings:
+      HB-UV-002: [hb-upgrade-db/password]
+  - name: existing-secret-stateless
+    pair: existing-secret-switch
+    role: fixed
+    command: test
+    args: [testdata/charts/existing-secret-stateless, --set, existingSecret=pre-made, --scenario, upgrade-without-values]
+    exit: 0
+    verdicts: {upgrade-without-values: PASS}
   - name: keeps-secret
     pair: secret-regeneration
     role: fixed
@@ -131,6 +149,26 @@ cases:
     role: fixed
     command: test
     args: [testdata/charts/upgrade-v2-ok, --scenario, chart-upgrade, --from, testdata/charts/upgrade-v1, --from-version, 1.0.0]
+    exit: 0
+    verdicts: {chart-upgrade: PASS}
+
+  # v2 points the StatefulSet at a new key with another value while the old key stays: an "added"
+  # key, which was only a note, so the PASS read like a correct carry-over (#54). Its twin adds the
+  # key without moving the StatefulSet to it.
+  - name: cu-key-v2-switch
+    pair: cu-key-switch
+    role: defect
+    command: test
+    args: [testdata/charts/cu-key-v2-switch, --scenario, chart-upgrade, --from, testdata/charts/cu-key-v1, --from-version, 1.0.0]
+    exit: 1
+    verdicts: {chart-upgrade: FAIL}
+    findings:
+      HB-CU-002: [hb-chart-db/password-v2]
+  - name: cu-key-v2-adds
+    pair: cu-key-switch
+    role: fixed
+    command: test
+    args: [testdata/charts/cu-key-v2-adds, --scenario, chart-upgrade, --from, testdata/charts/cu-key-v1, --from-version, 1.0.0]
     exit: 0
     verdicts: {chart-upgrade: PASS}
 

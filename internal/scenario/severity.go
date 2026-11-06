@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
@@ -79,4 +80,31 @@ func onlyTLS(changes []oracle.Change) bool {
 		}
 	}
 	return len(changes) > 0
+}
+
+// switchedTo separates the added credential keys that a workload with persistent data reads after
+// an upgrade but did not read before it. Such a workload moved to a new value, while its data was
+// set up with the old one: a dropped --set existingSecret that makes the chart generate a password,
+// or a new chart version that points the workload at a new key. A new key alone breaks nothing,
+// so the others stay notes. Without the readers from before the upgrade (before is nil) no key is
+// taken for a switch (#54).
+func switchedTo(added []oracle.Change, before, after map[string][]string, stateful map[string]bool) (switched, rest []oracle.Change) {
+	for _, c := range added {
+		if before != nil && keyClass(c) == oracle.ClassCredential && newStatefulReader(c, before, after, stateful) {
+			switched = append(switched, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	return switched, rest
+}
+
+func newStatefulReader(c oracle.Change, before, after map[string][]string, stateful map[string]bool) bool {
+	old := readers(c, before)
+	for _, w := range readers(c, after) {
+		if stateful[w] && !slices.Contains(old, w) {
+			return true
+		}
+	}
+	return false
 }

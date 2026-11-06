@@ -83,3 +83,25 @@ func TestDescribeNamesTheClass(t *testing.T) {
 		}
 	}
 }
+
+// An added credential key counts as a switch only when a workload with persistent data reads it
+// after the upgrade and did not before (#54).
+func TestSwitchedTo(t *testing.T) {
+	added := []oracle.Change{
+		{Ref: "app-db/password", Kind: oracle.Added},  // StatefulSet/db moves to it
+		{Ref: "app-db/api-token", Kind: oracle.Added}, // read by db before too
+		{Ref: "app-web/password", Kind: oracle.Added}, // read by a Deployment without data
+		{Ref: "app-db/config", Kind: oracle.Added},    // not a credential
+	}
+	before := map[string][]string{"app-db/api-token": {"StatefulSet/db"}, "pre-made/password": {"StatefulSet/db"}}
+	after := map[string][]string{"app-db/password": {"StatefulSet/db"}, "app-db/api-token": {"StatefulSet/db"},
+		"app-web/password": {"Deployment/web"}, "app-db/config": {"StatefulSet/db"}}
+	stateful := map[string]bool{"StatefulSet/db": true}
+	switched, rest := switchedTo(added, before, after, stateful)
+	if len(switched) != 1 || switched[0].Ref != "app-db/password" || len(rest) != 3 {
+		t.Errorf("switched %v, rest %v; want only app-db/password switched", switched, rest)
+	}
+	if switched, rest := switchedTo(added, nil, after, stateful); len(switched) != 0 || len(rest) != 4 {
+		t.Errorf("without the readers from before: switched %v, rest %v; want none switched", switched, rest)
+	}
+}
