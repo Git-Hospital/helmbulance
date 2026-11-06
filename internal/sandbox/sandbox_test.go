@@ -372,3 +372,27 @@ func TestOpenRefusesAServerWithoutTLS(t *testing.T) {
 		refused(t, kc, "has no https server")
 	}
 }
+
+// The pinned copy hands the user entry to helm and kubectl as it is, so anything but the client
+// certificate and key kind writes is refused: an exec or auth-provider block would run a command
+// on every call, and a token or another identity would act as someone else (#155).
+func TestOpenRefusesUserEntriesKindNeverWrites(t *testing.T) {
+	const key = "    client-key-data: S0VZ\n"
+	for _, tc := range []struct{ add, why string }{
+		{"    exec:\n      apiVersion: client.authentication.k8s.io/v1\n      command: /bin/sh\n      args: [-c, 'touch /tmp/pwned']\n", "has exec, which kind never writes"},
+		{"    auth-provider:\n      name: oidc\n", "has auth-provider"},
+		{"    token: abc\n", "has token"},
+		{"    tokenFile: /var/run/token\n", "has tokenFile"},
+		{"    username: admin\n    password: admin\n", "has password, username"},
+		{"    as: system:admin\n", "has as"},
+		{"    client-certificate: /etc/cert.pem\n", "has client-certificate,"},
+		{"  extra: 1\n", "has extra"},
+	} {
+		kc := strings.Replace(kindConfig, key, key+tc.add, 1)
+		if kc == kindConfig {
+			t.Fatal("the fixture's client-key-data line changed")
+		}
+		refused(t, kc, tc.why)
+	}
+	refused(t, strings.Replace(kindConfig, "  user:\n    client-certificate-data: Q0VSVA==\n"+key, "  user: oops\n", 1), "is not a mapping")
+}
