@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -599,6 +600,13 @@ func localPaths() map[string]string {
 	if dir, err := sandbox.StateDir(); err == nil {
 		if dir = filepath.Clean(dir); home == "" || !strings.HasPrefix(dir+"/", home+"/") {
 			paths[dir] = "$HELMBULANCE_STATE_DIR"
+		}
+	}
+	// The sandbox names its files by the state dir's real path (#155), so a symlink in it, such as
+	// /tmp or /var on macOS, would leave the real one in reports. It is hidden too.
+	for p, as := range maps.Clone(paths) {
+		if real, err := filepath.EvalSymlinks(p); err == nil && real != p {
+			paths[real] = as
 		}
 	}
 	return paths
