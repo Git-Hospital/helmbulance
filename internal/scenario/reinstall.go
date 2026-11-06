@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
@@ -36,8 +37,10 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	res.Scenario = s.Name()
 	const release, ns = "hb-reinstall", reinstallNamespace
 	defer func() {
-		// Clean up even after a cancel, so a reused cluster does not keep the release (#11).
-		cleanup := context.WithoutCancel(ctx)
+		// Clean up even after a cancel, so a reused cluster does not keep the release (#11), within
+		// the same limit as every other scenario's cleanup (#58).
+		cleanup, cancel := cleanupContext(ctx)
+		defer cancel()
 		if err := env.Helm.Uninstall(cleanup, release, ns); err != nil {
 			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
 		}
@@ -59,7 +62,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	var repro []string
 	for _, c := range env.Runner.Transcript()[mark:] {
-		repro = append(repro, reproLine(c.Line))
+		repro = append(repro, execx.ReproLine(c.Line))
 	}
 
 	secrets := newSecretReader(ctx, env, release, ns)
@@ -509,7 +512,7 @@ func claimsIn(volumes []volume, state string) []string {
 func transcriptRepro(env *Env, mark int) []string {
 	var lines []string
 	for _, c := range env.Runner.Transcript()[mark:] {
-		lines = append(lines, reproLine(c.Line))
+		lines = append(lines, execx.ReproLine(c.Line))
 	}
 	return lines
 }

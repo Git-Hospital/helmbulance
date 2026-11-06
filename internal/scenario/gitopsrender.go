@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 	"github.com/Git-Hospital/helmbulance/internal/helm"
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
@@ -93,7 +94,7 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	var repro []string
 	for _, c := range env.Runner.Transcript()[mark:] {
 		if strings.Contains(c.Line, " install ") || (strings.Contains(c.Line, " template ") && !strings.Contains(c.Line, "--dry-run=server")) {
-			repro = append(repro, reproLine(c.Line))
+			repro = append(repro, execx.ReproLine(c.Line))
 		}
 	}
 
