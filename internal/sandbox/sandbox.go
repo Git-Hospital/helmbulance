@@ -132,8 +132,12 @@ func Open(name string) (*Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-	if fp, err := caFingerprint(pinned, name); err != nil || fp != string(want) {
-		return nil, fmt.Errorf("the pinned copy of the kubeconfig does not match the recorded CA: %v", err)
+	fp, err := caFingerprint(pinned, name)
+	if err != nil {
+		return nil, fmt.Errorf("the pinned copy of the kubeconfig: %w", err)
+	}
+	if fp != string(want) {
+		return nil, errors.New("the pinned copy of the kubeconfig does not match the recorded CA; refusing to use it")
 	}
 	c.Kubeconfig = pinned
 	return c, nil
@@ -190,10 +194,25 @@ func pin(path, ctxName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	pinned := filepath.Join(filepath.Dir(path), "kubeconfig.pinned")
-	// Remove first, so a file left with wider permissions does not keep them.
-	_ = os.Remove(pinned)
-	if err := os.WriteFile(pinned, b, 0o600); err != nil {
+	// Written to a temporary file and renamed into place, so a run that reads it at the same time
+	// sees the old copy or the new one, never an empty file: an empty kubeconfig sends helm and
+	// kubectl to http://localhost:8080. CreateTemp opens with O_EXCL and mode 0600, and the copy
+	// stays next to the kept file, since client-go resolves relative paths in it from there.
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".kubeconfig.pinned-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name()) // a no-op once the rename succeeded
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	pinned := filepath.Join(dir, "kubeconfig.pinned")
+	if err := os.Rename(f.Name(), pinned); err != nil {
 		return "", err
 	}
 	return pinned, nil

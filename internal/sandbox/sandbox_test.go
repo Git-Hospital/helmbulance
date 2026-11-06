@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
@@ -315,5 +316,47 @@ func TestOpenGivesAPinnedOneContextCopy(t *testing.T) {
 	}
 	if fp, err := caFingerprint(c.Kubeconfig, name); err != nil || fp == "" {
 		t.Errorf("the pinned copy after a use-context on the shared file: %q, %v; want it to still name the sandbox", fp, err)
+	}
+}
+
+// While one run opens the cluster, another that reads the pinned copy sees a whole file, never an
+// empty one: an empty kubeconfig sends helm and kubectl to http://localhost:8080 (security review
+// of #142).
+func TestPinnedCopyIsNeverEmptyWhileItIsRewritten(t *testing.T) {
+	writeCluster(t, kindConfig)
+	c, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if _, err := Open(name); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}
+	}()
+	empty, missing := 0, 0
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
+		b, err := os.ReadFile(c.Kubeconfig)
+		switch {
+		case err != nil:
+			missing++
+		case len(b) == 0:
+			empty++
+		}
+	}
+	close(stop)
+	<-done
+	if empty > 0 || missing > 0 {
+		t.Errorf("read the pinned copy empty %d and missing %d times while it was rewritten", empty, missing)
 	}
 }
