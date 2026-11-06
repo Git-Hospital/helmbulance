@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -189,6 +190,9 @@ func pin(path, ctxName string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if err := kindUser(userEntry); err != nil {
+			return "", fmt.Errorf("%s: user %q %w; refusing to use it", path, userName, err)
+		}
 		out["users"] = []any{userEntry}
 	}
 	b, err := yaml.Marshal(out)
@@ -217,6 +221,36 @@ func pin(path, ctxName string) (string, error) {
 		return "", err
 	}
 	return pinned, nil
+}
+
+// kindUserKeys are the only credentials kind writes for a cluster's user.
+var kindUserKeys = []string{"client-certificate-data", "client-key-data"}
+
+// kindUser refuses a user entry with anything but the client certificate and key kind writes. The
+// pinned copy hands the entry to helm and kubectl as it is, so an exec or auth-provider block
+// added to the kept file by hand would run a command on every call, and a token or another
+// identity would make the run act as someone else (#155).
+func kindUser(entry map[string]any) error {
+	var extra []string
+	for k := range entry {
+		if k != "name" && k != "user" {
+			extra = append(extra, k)
+		}
+	}
+	user, ok := entry["user"].(map[string]any)
+	if !ok && entry["user"] != nil {
+		return errors.New("is not a mapping")
+	}
+	for k := range user {
+		if !slices.Contains(kindUserKeys, k) {
+			extra = append(extra, k)
+		}
+	}
+	if len(extra) > 0 {
+		slices.Sort(extra)
+		return fmt.Errorf("has %s, which kind never writes (only %s)", strings.Join(extra, ", "), strings.Join(kindUserKeys, " and "))
+	}
+	return nil
 }
 
 // Delete removes the cluster and its files.
