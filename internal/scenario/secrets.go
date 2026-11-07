@@ -35,22 +35,28 @@ type secretReader struct {
 	release, ns string
 	owned       map[string]bool
 	notCompared map[string]bool
+	// elsewhere holds the Secrets the release renders into other namespaces, as namespace/name.
+	elsewhere map[string]bool
 	// kept and keptErr are what readKept found right after `helm uninstall`.
 	kept    map[string]bool
 	keptErr error
 }
 
 func newSecretReader(ctx context.Context, env *Env, release, ns string) *secretReader {
-	return &secretReader{ctx: ctx, env: env, release: release, ns: ns, owned: map[string]bool{}, notCompared: map[string]bool{}}
+	return &secretReader{ctx: ctx, env: env, release: release, ns: ns, owned: map[string]bool{}, notCompared: map[string]bool{},
+		elsewhere: map[string]bool{}}
 }
 
 func (r *secretReader) snapshot() (oracle.SecretSnapshot, error) {
 	// What the release renders does not change while the namespace settles, so it is read once.
-	rendered, err := r.env.Helm.OwnedSecrets(r.ctx, r.release, r.ns)
+	rendered, elsewhere, err := r.env.Helm.ReleaseSecrets(r.ctx, r.release, r.ns)
 	if err != nil {
 		return nil, err
 	}
 	maps.Copy(r.owned, rendered)
+	for _, ref := range elsewhere {
+		r.elsewhere[ref] = true
+	}
 	owned := r.owned
 	return oracle.Settle(r.ctx, func() (oracle.SecretSnapshot, error) {
 		secrets, err := r.env.Kube.Secrets(r.ctx, r.ns)
@@ -92,7 +98,13 @@ func (r *secretReader) notComparedNote() string {
 			names = append(names, "`"+n+"`")
 		}
 	}
-	return note("not compared, since the release does not render them", names)
+	var other []string
+	for _, ref := range slices.Sorted(maps.Keys(r.elsewhere)) {
+		other = append(other, "`"+ref+"`")
+	}
+	notes := []string{note("not compared, since the release does not render them", names),
+		note("not compared, since the release renders them into another namespace", other)}
+	return strings.Join(slices.DeleteFunc(notes, func(n string) bool { return n == "" }), "; ")
 }
 
 // secretsInconclusive says whether reading the Secrets failed or they never stopped changing.
@@ -161,7 +173,7 @@ func unpairStillRead(moved []oracle.Change, consumers map[string][]string) (kept
 }
 
 // noSecretsTested is said instead of "Secrets stayed the same" when no key was compared.
-const noSecretsTested = "the release renders no Secrets; Secret drift was not tested"
+const noSecretsTested = "the release renders no Secrets into its namespace; Secret drift was not tested"
 
 // noKeys reports whether no snapshot holds a key, so no Secret was compared at all.
 func noKeys(snapshots ...oracle.SecretSnapshot) bool {
