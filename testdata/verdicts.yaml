@@ -48,6 +48,16 @@ cases:
     verdicts: {upgrade-without-values: FAIL}
     findings:
       HB-UV-001: [hb-upgrade-db/password]
+  # Two scenarios on one cluster, and the chart keeps a cluster-scoped object: the first
+  # scenario's cleanup must delete it, or the second scenario's install refuses it as another
+  # release's (#52). Not a pair of its own: no finding, the second verdict is what changes.
+  - name: keeps-cluster-role
+    pair: secret-regeneration
+    role: fixed
+    command: test
+    args: [testdata/charts/keeps-cluster-role, --scenario, upgrade-without-values, --scenario, reinstall]
+    exit: 0
+    verdicts: {upgrade-without-values: PASS, reinstall: PASS}
   - name: keeps-secret-for-db-password
     pair: db-password-regeneration
     role: fixed
