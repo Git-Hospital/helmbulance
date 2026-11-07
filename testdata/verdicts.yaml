@@ -314,6 +314,14 @@ cases:
     args: [testdata/charts/zd-rolling, --scenario, zero-downtime]
     exit: 0
     verdicts: {zero-downtime: PASS}
+  # A ResourceQuota on requests and limits rejects a traffic pod without them: INCONCLUSIVE before #97.
+  - name: zd-rolling-quota
+    pair: zero-downtime
+    role: fixed
+    command: test
+    args: [testdata/charts/zd-rolling-quota, --scenario, zero-downtime]
+    exit: 0
+    verdicts: {zero-downtime: PASS}
 
   # A run that cannot finish is INCONCLUSIVE, never a finding and never a PASS.
   - name: unpullable-image
@@ -343,6 +351,118 @@ cases:
     role: fixed
     command: scan
     args: [testdata/charts/keeps-secret, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+
+  # A password Helm renders only at install, in a pre-install hook or under .Release.IsInstall: Helm
+  # keeps it, Argo CD renders a new one on every sync, so scan names gitops-render (HB-SCAN-006,
+  # #107). A hook that runs on upgrade too is regenerated under Helm as well (HB-SCAN-003). Each
+  # twin is the same chart taking the password from values.
+  - name: scan-gitops-install-hook
+    pair: scan-gitops-install-hook
+    role: defect
+    command: scan
+    args: [testdata/charts/gitops-install-hook, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: FAIL
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+    findings:
+      HB-SCAN-006: [Secret/hb-db, "`pre-install` hook"]
+  - name: scan-gitops-values-secret
+    pair: scan-gitops-install-hook
+    role: fixed
+    command: scan
+    args: [testdata/charts/gitops-values-secret, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+  - name: scan-gitops-install-only
+    pair: scan-gitops-install-only
+    role: defect
+    command: scan
+    args: [testdata/charts/gitops-install-only, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: FAIL
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+    findings:
+      HB-SCAN-006: [Secret/hb-db, "`.Release.IsInstall`"]
+  - name: scan-gitops-values-secret-for-install-only
+    pair: scan-gitops-install-only
+    role: fixed
+    command: scan
+    args: [testdata/charts/gitops-values-secret, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+  - name: scan-gitops-upgrade-hook
+    pair: scan-gitops-upgrade-hook
+    role: defect
+    command: scan
+    args: [testdata/charts/gitops-upgrade-hook, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: FAIL
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+    findings:
+      HB-SCAN-003: [Secret/hb-db, run again on every upgrade]
+  - name: scan-gitops-values-secret-for-upgrade-hook
+    pair: scan-gitops-upgrade-hook
+    role: fixed
+    command: scan
+    args: [testdata/charts/gitops-values-secret, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+  # A chart that refuses to render as an upgrade (Bitnami's "PASSWORDS ERROR"): the check still
+  # runs, sorting the hook by its annotation and the plain Secret to HB-SCAN-003 (#107).
+  - name: scan-refuses-upgrade
+    pair: scan-refuses-upgrade
+    role: defect
+    command: scan
+    args: [testdata/charts/scan-refuses-upgrade, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: FAIL
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+    findings:
+      HB-SCAN-003: [Secret/hb-db]
+      HB-SCAN-006: [Secret/hb-init, "`pre-install` hook"]
+  - name: scan-gitops-values-secret-for-refuses-upgrade
+    pair: scan-refuses-upgrade
+    role: fixed
+    command: scan
+    args: [testdata/charts/gitops-values-secret, --strict]
     exit: 0
     verdicts:
       scan:immutable-fields: SKIPPED
@@ -462,6 +582,13 @@ cases:
     args: [testdata/charts/regenerates-secret, -f, testdata/charts/regenerates-secret/does-not-exist.yaml, --strict]
     exit: 2
     log: [not found]
+  # Named with no --from-version, chart-upgrade would be SKIPPED and the run could pass untested: refused.
+  - name: upgrade-no-from-version
+    role: setup-error
+    command: test
+    args: [testdata/charts/upgrade-v2-ok, --scenario, upgrade-without-values, --scenario, chart-upgrade]
+    exit: 2
+    log: [needs --from-version]
 
   # Kubernetes matrix, on one version unless k8s names more.
   - name: matrix-deprecated-api

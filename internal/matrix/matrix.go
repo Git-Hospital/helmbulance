@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/sandbox"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/sandbox"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // NodeImages are the kind node images for kind v0.33, pinned by digest.
@@ -98,11 +98,7 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 	if err != nil {
 		var crashes []string
 		if scenario.TimedOutWaiting(ctx, err) {
-			containers, readErr := k.Containers(ctx, ns)
-			if readErr != nil {
-				fmt.Fprintf(o.Log, "could not read containers after the timeout: %v\n", readErr)
-			}
-			crashes = scenario.StartFailures(containers)
+			crashes = scenario.ReadCrashes(ctx, k, ns, o.Log, scenario.StartFailures)
 		}
 		return installFailed(ctx, res, version, err, crashes, warnings, repro)
 	}

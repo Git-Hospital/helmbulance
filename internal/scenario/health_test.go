@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 func TestPodProblems(t *testing.T) {

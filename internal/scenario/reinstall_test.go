@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 func TestReinstallFindings(t *testing.T) {

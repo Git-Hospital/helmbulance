@@ -3,7 +3,7 @@ package scenario
 import (
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 func TestChangeSeverity(t *testing.T) {

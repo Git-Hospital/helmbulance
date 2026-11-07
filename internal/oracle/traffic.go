@@ -47,6 +47,12 @@ func TrafficSecond(line string) (int64, bool) {
 
 // ParseTrafficSince is ParseTraffic counting only requests sent at or after since (unix seconds).
 func ParseTrafficSince(log string, since int64) TrafficStats {
+	return ParseTrafficBetween(log, since, 0)
+}
+
+// ParseTrafficBetween is ParseTrafficSince counting only requests sent before until as well; an
+// until of 0 has no end. A request in the second until belongs to the next window.
+func ParseTrafficBetween(log string, since, until int64) TrafficStats {
 	var s TrafficStats
 	var first int64 = -1
 	var outageStart int64 = -1
@@ -66,7 +72,7 @@ func ParseTrafficSince(log string, since int64) TrafficStats {
 			continue
 		}
 		t, err := strconv.ParseInt(fields[0], 10, 64)
-		if err != nil || t < since {
+		if err != nil || t < since || (until > 0 && t >= until) {
 			continue
 		}
 		if first < 0 {

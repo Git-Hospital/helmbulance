@@ -29,7 +29,7 @@ inputs:
     description: Timeout for each install or upgrade.
     default: 10m
   report-dir:
-    description: Where report.md and report.json are written, relative to the workspace.
+    description: Where report.md, report.json and report.sarif are written, relative to the workspace.
     default: helmbulance-report
   fail-on:
     description: >-
@@ -46,7 +46,7 @@ outputs:
     description: PASS, FAIL, ERROR or INCONCLUSIVE, from the exit code.
     value: ${{ steps.run.outputs.verdict }}
   report-dir:
-    description: Directory that holds report.md and report.json.
+    description: Directory that holds report.md, report.json and report.sarif.
     value: ${{ steps.run.outputs.report-dir }}
 
 runs:
@@ -157,10 +157,16 @@ runs:
         fi
 
         # A report left by an earlier run must not be published as this run's.
-        rm -f "$REPORT_DIR/report.md" "$REPORT_DIR/report.json"
+        rm -f "$REPORT_DIR/report.md" "$REPORT_DIR/report.json" "$REPORT_DIR/report.sarif"
 
+        # Helmbulance prints text a chart controls (its fail messages, helm's and kubectl's errors), on
+        # stdout and stderr alike. While it runs the runner reads no workflow command from the log
+        # (::… or ##[…]); a random token, which the runner masks, resumes them afterwards (#58).
+        resume=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+        echo "::stop-commands::$resume"
         code=0
         PATH="$RUNNER_TEMP/helmbulance-bin:$PATH" helmbulance "${args[@]}" || code=$?
+        echo "::$resume::"
         case "$code" in
           0) verdict=PASS ;;
           1) verdict=FAIL ;;
