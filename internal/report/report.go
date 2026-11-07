@@ -150,10 +150,12 @@ func (r *Report) Markdown() string {
 // markdownText makes text inert in a Markdown table cell or list item: it cannot end the cell, start
 // a line, or open HTML, and "](" and "][" become "]&#40;" and "]&#91;", so no inline or reference
 // link or image ([text](url), ![](url), [text][ref]) can form, which the job summary would render
-// and fetch. Brackets alone stay as they are: a field path such as containers[app].env[FOO] in a
+// and fetch. "]:" becomes "]&#58;": a link reference definition ([x]: url) is valid at the start of
+// a list item, which every evidence line is, and would turn a shortcut ![x] anywhere in the report
+// into an image. Brackets alone stay as they are: a field path such as containers[app].env[FOO] in a
 // code span must read the same. A bare URL is still autolinked by GitHub; its text is the URL.
 var markdownText = strings.NewReplacer("|", "\\|", "\n", " ", "\r", " ", "\t", " ", "<", "&lt;", ">", "&gt;",
-	"](", "]&#40;", "][", "]&#91;")
+	"](", "]&#40;", "][", "]&#91;", "]:", "]&#58;")
 
 // inline keeps text from the cluster from breaking a Markdown table or injecting markup. A lone
 // carriage return is a line ending in CommonMark too, so it is turned into a space like a newline;

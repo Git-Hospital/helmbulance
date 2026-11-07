@@ -141,6 +141,29 @@ func TestMarkdownNeutralisesLinksAndControls(t *testing.T) {
 	}
 }
 
+// A link reference definition needs "]:" right after its label, and is valid at the start of a list
+// item, as every evidence line is. With it, a shortcut ![x] in a summary becomes an image the job
+// summary fetches (review of #121).
+func TestMarkdownNeutralisesLinkReferenceDefinitions(t *testing.T) {
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "matrix",
+		Verdict:  scenario.Fail,
+		Summary:  "see ![x]",
+		Findings: []scenario.Finding{{
+			ID:       "HB-MX-002",
+			Title:    "x",
+			Evidence: []string{"[x]: https://example.invalid/p.png"},
+		}},
+	}}}
+	md := r.Markdown()
+	if strings.Contains(md, "[x]:") {
+		t.Errorf("report.md keeps a link reference definition:\n%s", md)
+	}
+	if !strings.Contains(md, "[x]&#58; https://example.invalid/p.png") {
+		t.Errorf("the evidence is not kept as text:\n%s", md)
+	}
+}
+
 // A reproduce line can carry a values key from the chart. A line break and a fence in it must not
 // close the code block and let the rest render as Markdown.
 func TestMarkdownKeepsReproduceInItsBlock(t *testing.T) {
