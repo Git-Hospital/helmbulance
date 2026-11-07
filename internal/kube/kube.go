@@ -748,13 +748,11 @@ func (c *Client) PVCs(ctx context.Context, ns string) ([]PVC, error) {
 	return pvcs, nil
 }
 
-// RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
-// returns what it printed. The pod runs as root with only the capabilities it needs to write into a
-// volume whatever owner the app gave its files (CHOWN, DAC_OVERRIDE, FOWNER), no service account
-// token, small resource limits, and is deleted afterwards, even when ctx is cancelled. It returns
-// as soon as the pod fails, and gives up after timeout.
-func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script string, timeout time.Duration) (string, error) {
-	overrides, err := json.Marshal(map[string]any{"spec": map[string]any{
+// PVCPodOverrides is the pod RunWithPVC runs, as kubectl run --overrides: one container that mounts
+// claim at /pvc and runs script, with smallPod's requests and limits. A reproduce line uses it too,
+// so it runs the same pod.
+func PVCPodOverrides(name, image, claim, script string) (string, error) {
+	pod := map[string]any{"spec": map[string]any{
 		"restartPolicy":                "Never",
 		"automountServiceAccountToken": false,
 		"securityContext":              map[string]any{"seccompProfile": map[string]any{"type": "RuntimeDefault"}},
@@ -768,7 +766,24 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 			"resources": smallPod(),
 		}},
 		"volumes": []any{map[string]any{"name": "pvc", "persistentVolumeClaim": map[string]any{"claimName": claim}}},
-	}})
+	}}
+	// Without HTML escaping, a script's > stays > in a line a person reads and runs.
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(pod); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(b.String(), "\n"), nil
+}
+
+// RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
+// returns what it printed. The pod runs as root with only the capabilities it needs to write into a
+// volume whatever owner the app gave its files (CHOWN, DAC_OVERRIDE, FOWNER), no service account
+// token, small resource limits, and is deleted afterwards, even when ctx is cancelled. It returns
+// as soon as the pod fails, and gives up after timeout.
+func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script string, timeout time.Duration) (string, error) {
+	overrides, err := PVCPodOverrides(name, image, claim, script)
 	if err != nil {
 		return "", err
 	}
@@ -777,7 +792,7 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 		_, _ = c.Runner.Run(context.WithoutCancel(ctx), "kubectl", append(base, "delete", "pod", name, "--ignore-not-found", "--wait=true")...)
 	}()
 	if _, err := c.Runner.Run(ctx, "kubectl", append(base, "run", name, "--image", image, "--restart", "Never",
-		"--overrides", string(overrides))...); err != nil {
+		"--overrides", overrides)...); err != nil {
 		return "", err
 	}
 	deadline := time.Now().Add(timeout)

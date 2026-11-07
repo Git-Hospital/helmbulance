@@ -116,9 +116,12 @@ func TestReinstallInstallFailed(t *testing.T) {
 	}
 }
 
+// The reproduce line runs the pod the scenario ran, requests and limits included: a namespace with
+// a ResourceQuota on them rejects a pod without (#124).
 func TestSentinelRepro(t *testing.T) {
 	got := strings.Join(sentinelRepro("write", "echo marker > /pvc/marker"), "\n")
-	for _, want := range []string{"# write", "kubectl -n hb-reinstall run marker", `"claimName":"CLAIM"`, "echo marker > /pvc/marker"} {
+	for _, want := range []string{"# write", "kubectl -n hb-reinstall run marker", `"claimName":"CLAIM"`, "echo marker > /pvc/marker",
+		`"requests":{"cpu":"10m","memory":"16Mi"}`, `"limits":{"cpu":"100m","memory":"32Mi"}`, "--image " + sentinelImage + " "} {
 		if !strings.Contains(got, want) {
 			t.Errorf("sentinelRepro does not contain %q:\n%s", want, got)
 		}
