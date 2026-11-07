@@ -54,7 +54,10 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	if len(live) == 0 {
 		res.Verdict = Skipped
-		res.Summary = "the release has no Secrets, so there is nothing a client-side render could change"
+		// Secrets it renders into another namespace are not compared, so they are named, not
+		// hidden behind "no Secrets" (#59).
+		res.Summary = withNotes("the release has no Secrets in its namespace, so there is nothing a client-side render could change",
+			secrets.notComparedNote())
 		return res
 	}
 
