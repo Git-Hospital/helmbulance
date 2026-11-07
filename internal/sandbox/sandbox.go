@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -125,7 +126,97 @@ func Open(name string) (*Cluster, error) {
 	if got != string(want) {
 		return nil, errors.New("cluster CA does not match the one recorded at creation; refusing to use it")
 	}
+	// The check above holds for the file as it is now, but helm and kubectl read it again on every
+	// call, so a use-context or a merge during the run would send later calls elsewhere. They get a
+	// copy that holds the sandbox's context, cluster and user only (#47).
+	pinned, err := pin(c.Kubeconfig, "kind-"+name)
+	if err != nil {
+		return nil, err
+	}
+	fp, err := caFingerprint(pinned, name)
+	if err != nil {
+		return nil, fmt.Errorf("the pinned copy of the kubeconfig: %w", err)
+	}
+	if fp != string(want) {
+		return nil, errors.New("the pinned copy of the kubeconfig does not match the recorded CA; refusing to use it")
+	}
+	c.Kubeconfig = pinned
 	return c, nil
+}
+
+// pin writes next to path a kubeconfig with only the context called ctxName, its cluster and its
+// user, and returns its path. It is written anew on every Open, mode 0600.
+func pin(path, ctxName string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var kc map[string]any
+	if err := yaml.Unmarshal(data, &kc); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	named := func(key, name string) (map[string]any, error) {
+		list, _ := kc[key].([]any)
+		var found map[string]any
+		n := 0
+		for _, e := range list {
+			if m, ok := e.(map[string]any); ok && m["name"] == name {
+				found, n = m, n+1
+			}
+		}
+		if n != 1 {
+			return nil, fmt.Errorf("%s: %s %q appears %d times, want once", path, key, name, n)
+		}
+		return found, nil
+	}
+	ctxEntry, err := named("contexts", ctxName)
+	if err != nil {
+		return "", err
+	}
+	inner, _ := ctxEntry["context"].(map[string]any)
+	clusterName, _ := inner["cluster"].(string)
+	userName, _ := inner["user"].(string)
+	clusterEntry, err := named("clusters", clusterName)
+	if err != nil {
+		return "", err
+	}
+	out := map[string]any{
+		"apiVersion": "v1", "kind": "Config", "current-context": ctxName,
+		"contexts": []any{ctxEntry}, "clusters": []any{clusterEntry}, "users": []any{},
+	}
+	if userName != "" {
+		userEntry, err := named("users", userName)
+		if err != nil {
+			return "", err
+		}
+		out["users"] = []any{userEntry}
+	}
+	b, err := yaml.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	// Written to a temporary file and renamed into place, so a run that reads it at the same time
+	// sees the old copy or the new one, never an empty file: an empty kubeconfig sends helm and
+	// kubectl to http://localhost:8080. CreateTemp opens with O_EXCL and mode 0600, and the copy
+	// stays next to the kept file, since client-go resolves relative paths in it from there.
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".kubeconfig.pinned-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name()) // a no-op once the rename succeeded
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	pinned := filepath.Join(dir, "kubeconfig.pinned")
+	if err := os.Rename(f.Name(), pinned); err != nil {
+		return "", err
+	}
+	return pinned, nil
 }
 
 // Delete removes the cluster and its files.
@@ -189,6 +280,7 @@ type namedContext struct {
 type namedCluster struct {
 	Name    string `yaml:"name"`
 	Cluster struct {
+		Server   string `yaml:"server"`
 		CAData   string `yaml:"certificate-authority-data"`
 		Insecure bool   `yaml:"insecure-skip-tls-verify"`
 	} `yaml:"cluster"`
@@ -228,6 +320,11 @@ func caFingerprint(path, name string) (string, error) {
 	// skips that check, so a file that does could reach any server whatever its CA says.
 	if clusterEntry.Cluster.Insecure {
 		return "", fmt.Errorf("%s: cluster %q sets insecure-skip-tls-verify, so its CA proves nothing; refusing to use it", path, cluster)
+	}
+	// Over plain http, or with no server (which means http://localhost:8080), there is no TLS,
+	// and the CA proves nothing. kind always writes https://127.0.0.1:<port>.
+	if u, err := url.Parse(clusterEntry.Cluster.Server); err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("%s: cluster %q has no https server, so its CA proves nothing; refusing to use it", path, cluster)
 	}
 	sum := sha256.Sum256([]byte(ca))
 	return hex.EncodeToString(sum[:]), nil

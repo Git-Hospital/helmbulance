@@ -21,6 +21,7 @@ func TestSandboxEnv(t *testing.T) {
 		"HELM_DRIVER_SQL_CONNECTION_STRING=postgres://prod",
 		"KUBECONFIG=/home/u/.kube/prod",
 		"AWS_SECRET_ACCESS_KEY=secret",
+		"KUBERC=/home/u/.kube/kuberc-prod",
 	})
 	want := []string{
 		"PATH=/usr/bin",
@@ -28,6 +29,9 @@ func TestSandboxEnv(t *testing.T) {
 		"LC_ALL=C",
 		"DOCKER_HOST=unix:///run/podman.sock",
 		"HELM_DRIVER=secret",
+		// ~/.kube/kuberc can set --server on kubectl's commands, whatever --kubeconfig says.
+		"KUBERC=off",
+		"KUBECTL_KUBERC=false",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("SandboxEnv = %q, want %q", got, want)
