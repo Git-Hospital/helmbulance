@@ -105,3 +105,42 @@ func TestSwitchedTo(t *testing.T) {
 		t.Errorf("without the readers from before: switched %v, rest %v; want none switched", switched, rest)
 	}
 }
+
+// A new key that a workload reads for the first time is a switch only when that workload existed
+// before and stopped reading a key, or a whole Secret, it read then (review of #143).
+func TestSwitchedToNeedsAKeyTheWorkloadStoppedReading(t *testing.T) {
+	stateful := map[string]bool{"StatefulSet/db": true, "StatefulSet/cache": true}
+	for name, c := range map[string]struct {
+		before, after map[string][]string
+		switched      bool
+	}{
+		// v2 adds a StatefulSet with its own volume: its data is created with the new value.
+		"a new workload": {
+			before: map[string][]string{"app/password": {"StatefulSet/db"}},
+			after:  map[string][]string{"app/password": {"StatefulSet/db"}, "app/password-v2": {"StatefulSet/cache"}},
+		},
+		// db keeps the key it read and reads the new one as well: nothing moved.
+		"reads both": {
+			before: map[string][]string{"app/password": {"StatefulSet/db"}},
+			after:  map[string][]string{"app/password": {"StatefulSet/db"}, "app/password-v2": {"StatefulSet/db"}},
+		},
+		"moved from one key to the other": {
+			before:   map[string][]string{"app/password": {"StatefulSet/db"}},
+			after:    map[string][]string{"app/password-v2": {"StatefulSet/db"}},
+			switched: true,
+		},
+		// envFrom: secretRef {{ existingSecret | default generated }} with existingSecret dropped.
+		"moved from a whole pre-made Secret": {
+			before:   map[string][]string{"pre-made/*": {"StatefulSet/db"}},
+			after:    map[string][]string{"app/password-v2": {"StatefulSet/db"}},
+			switched: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			switched, _ := switchedTo([]oracle.Change{{Ref: "app/password-v2", Kind: oracle.Added}}, c.before, c.after, stateful)
+			if got := len(switched) == 1; got != c.switched {
+				t.Errorf("switched = %v, want %v", switched, c.switched)
+			}
+		})
+	}
+}
