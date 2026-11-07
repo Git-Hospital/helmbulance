@@ -27,6 +27,8 @@ import (
 	"github.com/Git-Hospital/helmbulance/internal/sandbox"
 	"github.com/Git-Hospital/helmbulance/internal/scan"
 	"github.com/Git-Hospital/helmbulance/internal/scenario"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Exit codes.
@@ -153,7 +155,7 @@ func test(args []string) int {
 	}
 
 	runner := execx.NewSandboxRunner()
-	runner.Secrets = execx.SetValues(sets)
+	runner.Secrets = append(execx.SetValues(sets), execx.SecretValues(fileSecrets(files))...)
 	runner.Paths = localPaths()
 	started := time.Now()
 	warnUnrecorded(ctx, runner)
@@ -336,6 +338,127 @@ func refuseMissingTools(tools ...string) bool {
 	return true
 }
 
+// fileSecrets returns the values in local -f files that a key names as a credential or TLS
+// material, so they are redacted like --set values: helm quotes values back in schema errors, a
+// chart's fail message and Kubernetes "Invalid value" errors. Only the leaf's own key counts
+// (db.password, users[].token, tls.key, apiKey), and an env item {name: DB_PASSWORD, value: …}; a
+// parent such as auth or passwordUpdateJob does not, and keys that name a Secret or a key in one
+// (existingSecret, secretName, secretKeys.*, userPasswordKey) are not secrets. Other values stay
+// readable in error text (image names, hosts, user names). The file is read as YAML nodes, so a
+// repeated key or a non-string key does not hide the rest of it, as it would with yaml.Unmarshal
+// into a map; a file that cannot be read or parsed is skipped, and helm reports it. -f takes a
+// comma list too.
+func fileSecrets(files []string) []string {
+	var out []string
+	for _, arg := range files {
+		for _, f := range strings.Split(arg, ",") {
+			if f == "" || f == "-" || strings.Contains(f, "://") {
+				continue
+			}
+			b, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			var doc yaml.Node
+			if yaml.Unmarshal(b, &doc) != nil {
+				continue
+			}
+			out = secretScalars(&doc, "", out)
+		}
+	}
+	return out
+}
+
+// secretScalars walks a YAML node and appends the scalars that fileSecrets keeps. parent is the
+// key the node is under, so tls.key and ca.key count while a toleration's key does not.
+func secretScalars(n *yaml.Node, parent string, out []string) []string {
+	switch n.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, c := range n.Content {
+			out = secretScalars(c, parent, out)
+		}
+	case yaml.AliasNode:
+		if n.Alias != nil {
+			out = secretScalars(n.Alias, parent, out)
+		}
+	case yaml.MappingNode:
+		envSecret := false
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if k, v := n.Content[i], n.Content[i+1]; k.Value == "name" && v.Kind == yaml.ScalarNode && oracle.ValuesKeyClass(v.Value) != oracle.ClassOther {
+				envSecret = true
+			}
+		}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], n.Content[i+1]
+			secret := secretKey(k.Value) || oracle.KeyClass(parent+"."+k.Value) == oracle.ClassTLS
+			switch {
+			case v.Kind == yaml.ScalarNode && (secret || (envSecret && k.Value == "value")):
+				out = append(out, scalarForms(v)...)
+				continue
+			case v.Kind == yaml.SequenceNode && secret:
+				// A list under a credential key holds credentials too, as bitnami/mongodb's
+				// auth.passwords does (review of #122).
+				for _, item := range v.Content {
+					if item.Kind == yaml.ScalarNode {
+						out = append(out, scalarForms(item)...)
+					}
+				}
+			}
+			if !strings.EqualFold(k.Value, "secretKeys") {
+				out = secretScalars(v, k.Value, out)
+			}
+		}
+	}
+	return out
+}
+
+// secretKey reports whether a values key holds a secret: ValuesKeyClass calls it a credential or TLS,
+// and it is not a reference to one (existingSecret, secretName, userPasswordKey, a …Ref, Path or
+// File). A key ending in Key whose other words already name a credential (userPasswordKey,
+// adminPasswordKey) names a key inside a Secret; apiKey, secretKey and privateKey are keys
+// themselves.
+func secretKey(key string) bool {
+	if oracle.ValuesKeyClass(key) == oracle.ClassOther {
+		return false
+	}
+	k := strings.ToLower(key)
+	// secretKeys maps keys to the names of keys in a Secret; apiKeys is a list of keys.
+	if strings.HasPrefix(k, "existing") || k == "secretkeys" {
+		return false
+	}
+	for _, suffix := range []string{"name", "ref", "path", "file", "filename"} {
+		if strings.HasSuffix(k, suffix) {
+			return false
+		}
+	}
+	switch k {
+	case "apikey", "secretkey", "privatekey", "accesskey", "encryptionkey", "signingkey", "masterkey":
+		return true
+	}
+	if strings.HasSuffix(k, "key") && oracle.ValuesKeyClass(strings.TrimSuffix(k, "key")) != oracle.ClassOther {
+		return false
+	}
+	return true
+}
+
+// scalarForms is a scalar as written, and a number also as helm prints it once it has read the
+// value into a float64 (12345678 becomes 1.2345678e+07 in a template).
+func scalarForms(v *yaml.Node) []string {
+	forms := []string{v.Value}
+	if v.Tag == "!!int" || v.Tag == "!!float" {
+		f, err := strconv.ParseFloat(v.Value, 64)
+		if err != nil {
+			if i, ierr := strconv.ParseInt(v.Value, 0, 64); ierr == nil {
+				f, err = float64(i), nil
+			}
+		}
+		if err == nil {
+			forms = append(forms, fmt.Sprint(f), strconv.FormatFloat(f, 'f', -1, 64))
+		}
+	}
+	return forms
+}
+
 // refuseMissingValues stops a run on a -f values file that is not on disk. helm reads -f as a file,
 // a URL or "-" for standard input, never as a chart repository, so unlike a chart ref any other
 // value must exist. Without this, test and matrix started a cluster first, and scan reported that it
@@ -463,7 +586,7 @@ func matrixCmd(args []string) int {
 	defer stop()
 
 	runner := execx.NewSandboxRunner()
-	runner.Secrets = execx.SetValues(sets)
+	runner.Secrets = append(execx.SetValues(sets), execx.SecretValues(fileSecrets(files))...)
 	runner.Paths = localPaths()
 	started := time.Now()
 	warnUnrecorded(ctx, runner)
@@ -531,7 +654,7 @@ func scanCmd(args []string) int {
 	ctx, stop := interruptContext()
 	defer stop()
 	runner := execx.NewSandboxRunner()
-	runner.Secrets = execx.SetValues(sets)
+	runner.Secrets = append(execx.SetValues(sets), execx.SecretValues(fileSecrets(files))...)
 	runner.Paths = localPaths()
 	started := time.Now()
 	rep := &report.Report{

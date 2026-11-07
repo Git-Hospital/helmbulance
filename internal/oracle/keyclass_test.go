@@ -35,3 +35,25 @@ func TestKeyClass(t *testing.T) {
 		}
 	}
 }
+
+// In chart values, key, url, uri, auth and connection alone are common keys, not credentials,
+// while names that run key into another word still are (review of #122).
+func TestValuesKeyClass(t *testing.T) {
+	for key, want := range map[string]string{
+		"key": ClassOther, "topologyKey": ClassOther, "externalUrl": ClassOther, "authType": ClassOther,
+		"connectionTimeout": ClassOther, "redirectUri": ClassOther,
+		"apiKey": ClassCredential, "api_key": ClassCredential, "apiKeys": ClassCredential, "privateKey": ClassCredential,
+		"accessKey": ClassCredential, "password": ClassCredential, "oauthToken": ClassCredential, "dsn": ClassCredential,
+		"tls.key": ClassTLS, "tls.crt": ClassTLS,
+	} {
+		if got := ValuesKeyClass(key); got != want {
+			t.Errorf("ValuesKeyClass(%q) = %s, want %s", key, got, want)
+		}
+	}
+	// KeyClass for Secret data keys is unchanged.
+	for _, key := range []string{"key", "url", "auth", "connection"} {
+		if got := KeyClass(key); got != ClassCredential {
+			t.Errorf("KeyClass(%q) = %s, want credential", key, got)
+		}
+	}
+}
