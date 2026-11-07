@@ -42,8 +42,35 @@ var credentialParts = []string{"password", "passwd", "secret", "token"}
 // keystoreExt are bundle formats that carry a private key, so a Secret key with one is a credential.
 var keystoreExt = map[string]bool{".jks": true, ".p12": true, ".pfx": true}
 
+// notInValues are credential words in a Secret's data keys that are common keys in chart values
+// with nothing secret under them: a toleration's key, topologyKey, externalUrl, authType,
+// connectionTimeout. ValuesKeyClass does not count them as whole words.
+var notInValues = map[string]bool{"key": true, "url": true, "uri": true, "auth": true, "connection": true}
+
 // KeyClass guesses what a Secret key holds from its name alone; values are never read.
 func KeyClass(key string) string {
+	return keyClass(key, nil)
+}
+
+// ValuesKeyClass is KeyClass for a key in chart values, which decides what is redacted from error
+// text. key, url, uri, auth and connection alone do not make a credential there, or a Kubernetes
+// "Invalid value" about a toleration would lose the value it is about. A name that runs them into
+// another word still counts: apiKey, privateKey and accessKey are the explicit names in
+// credentialWords. A URL's own user and password are redacted by RedactURLs.
+func ValuesKeyClass(key string) string {
+	if c := keyClass(key, notInValues); c != ClassOther {
+		return c
+	}
+	ws := words(key)
+	for i := 0; i+1 < len(ws); i++ {
+		if pair := ws[i] + ws[i+1]; !notInValues[pair] && isCredentialWord(pair) {
+			return ClassCredential
+		}
+	}
+	return ClassOther
+}
+
+func keyClass(key string, skip map[string]bool) string {
 	k := strings.ToLower(key)
 	if tlsNames[k] {
 		return ClassTLS
@@ -63,7 +90,7 @@ func KeyClass(key string) string {
 	}
 	// Match whole words from the original name, so camelCase (jwtSecret) splits too.
 	for _, w := range words(key) {
-		if isCredentialWord(w) {
+		if !skip[w] && !skip[strings.TrimSuffix(w, "s")] && isCredentialWord(w) {
 			return ClassCredential
 		}
 	}
