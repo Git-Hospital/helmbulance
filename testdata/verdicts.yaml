@@ -142,8 +142,9 @@ cases:
     args: [testdata/charts/reinstall-loses-creds, --scenario, reinstall]
     exit: 1
     verdicts: {reinstall: FAIL}
+    # The database stand-in refuses the new password, so the lockout is seen, not inferred (#53).
     findings:
-      HB-RI-001: []
+      HB-RI-001: ["After the reinstall:"]
   - name: reinstall-keeps-creds
     pair: reinstall-creds
     role: fixed

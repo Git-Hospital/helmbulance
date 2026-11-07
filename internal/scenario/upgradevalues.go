@@ -373,6 +373,18 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 				"would make existing data unreadable.",
 			Reproduce: steps,
 		})
+		// Keys that are neither credentials nor TLS material, such as config a user set with --set
+		// that the chart renders into a Secret, are not lost encryption keys: they go back to the
+		// chart's default, and keeping them with lookup would make them impossible to change (#53).
+		if allOther(changes) {
+			f := &res.Findings[len(res.Findings)-1]
+			f.Impact = "Upgrading from the values files, without repeating every --set used at install, " +
+				"sets these values back to the chart's defaults, or drops them. They are not credentials, " +
+				"so nothing is locked out, but the release now runs with settings nobody chose."
+			f.Fix = "Put the value in the values file the release is upgraded from, or say in the chart's " +
+				"documentation that it must be given on every upgrade. List a key that changes on " +
+				"purpose with --expected-rotation."
+		}
 	}
 
 	if len(res.Findings) > 0 {
@@ -390,6 +402,16 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
 		unknownStatefulNote(statefulKnown, regenerated, changes),
 	}
+}
+
+// allOther reports whether every change is to a key that is neither a credential nor TLS material.
+func allOther(changes []oracle.Change) bool {
+	for _, c := range changes {
+		if keyClass(c) != oracle.ClassOther {
+			return false
+		}
+	}
+	return len(changes) > 0
 }
 
 func describe(changes []oracle.Change, consumers map[string][]string) []string {
