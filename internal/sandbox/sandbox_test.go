@@ -469,3 +469,68 @@ func TestCreateDeletesAClusterWhoseKubeconfigHasAnExecUser(t *testing.T) {
 		t.Errorf("kind calls:\n%s\nwant a delete of %s", b, name)
 	}
 }
+
+// pin takes the sandbox's context by its name, not the file's current-context: a use-context
+// between Open's check and pin must not decide what the copy holds (review of #142).
+func TestPinSelectsTheContextByName(t *testing.T) {
+	dir := t.TempDir()
+	kept := filepath.Join(dir, "kubeconfig")
+	if err := os.WriteFile(kept, []byte(merged("kind-prod", "kind-prod")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := pin(kept, sandbox, func(string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(b); !strings.Contains(text, "current-context: "+sandbox) || !strings.Contains(text, sandboxCA) ||
+		strings.Contains(text, "kind-prod") || strings.Contains(text, otherCA) {
+		t.Errorf("pinned copy of a file on kind-prod:\n%s\nwant the sandbox's context, cluster and user only", text)
+	}
+}
+
+// A copy that fails its check is never renamed into place: the copy a run already uses stays as it
+// was, and no temporary file is left (review of #142).
+func TestPinKeepsTheOldCopyWhenTheNewOneFailsItsCheck(t *testing.T) {
+	dir := t.TempDir()
+	kept := filepath.Join(dir, "kubeconfig")
+	if err := os.WriteFile(kept, []byte(kindConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := pin(kept, sandbox, func(string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	good, _ := os.ReadFile(pinned)
+	// The kept file changes between Open's check and pin: another CA.
+	if err := os.WriteFile(kept, []byte(strings.ReplaceAll(kindConfig, sandboxCA, otherCA)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = pin(kept, sandbox, func(p string) error {
+		if !strings.Contains(string(mustRead(t, p)), sandboxCA) {
+			return fmt.Errorf("does not match the recorded CA")
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("pin accepted a copy that failed its check")
+	}
+	if now, _ := os.ReadFile(pinned); string(now) != string(good) {
+		t.Errorf("the pinned copy was replaced by one that failed its check:\n%s", now)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".kubeconfig.pinned-*")); len(left) > 0 {
+		t.Errorf("temporary files left: %v", left)
+	}
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}

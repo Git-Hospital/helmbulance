@@ -155,25 +155,32 @@ func Open(name string) (*Cluster, error) {
 // use-context or a merge during the run would send later calls elsewhere. They get a copy that
 // holds the sandbox's context, cluster and user only (#47), for a reused cluster and a new one
 // alike (security review of #156).
+//
+// The copy is checked before it replaces the one a run may be using: the kept file can change
+// between the check on it and pin reading it again, and a copy that fails would otherwise stay
+// where another run reads it (review of #142).
 func (c *Cluster) usePinned(want string) error {
-	pinned, err := pin(c.Kubeconfig, "kind-"+c.Name)
+	pinned, err := pin(c.Kubeconfig, "kind-"+c.Name, func(copy string) error {
+		fp, err := caFingerprint(copy, c.Name)
+		if err != nil {
+			return fmt.Errorf("the pinned copy of the kubeconfig: %w", err)
+		}
+		if fp != want {
+			return errors.New("the pinned copy of the kubeconfig does not match the recorded CA; refusing to use it")
+		}
+		return nil
+	})
 	if err != nil {
 		return err
-	}
-	fp, err := caFingerprint(pinned, c.Name)
-	if err != nil {
-		return fmt.Errorf("the pinned copy of the kubeconfig: %w", err)
-	}
-	if fp != want {
-		return errors.New("the pinned copy of the kubeconfig does not match the recorded CA; refusing to use it")
 	}
 	c.Kubeconfig = pinned
 	return nil
 }
 
 // pin writes next to path a kubeconfig with only the context called ctxName, its cluster and its
-// user, and returns its path. It is written anew on every Open, mode 0600.
-func pin(path, ctxName string) (string, error) {
+// user, and returns its path. It is written anew on every Open, mode 0600. verify gets the new copy
+// before it replaces the old one; when it fails, the old copy stays in place.
+func pin(path, ctxName string, verify func(copy string) error) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -245,6 +252,9 @@ func pin(path, ctxName string) (string, error) {
 		return "", err
 	}
 	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := verify(f.Name()); err != nil {
 		return "", err
 	}
 	pinned := filepath.Join(dir, "kubeconfig.pinned")
