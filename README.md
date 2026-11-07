@@ -31,6 +31,7 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 |---|---|---|
 | `upgrade-without-values` | Does an upgrade from the values files, without the install-time `--set` flags, change or drop Secret values? | **works** |
 | `chart-upgrade` | Does upgrading from an earlier chart version, with the same values, succeed, keep the Secrets, and leave the workloads healthy? | **works** |
+| `rollback` | After an upgrade to the new chart version, does `helm rollback` bring the earlier version back deployed, healthy and with the same Secrets? | **works** (on `main`, after v0.1) |
 | `zero-downtime` | Do requests fail while the pods are replaced, during a rolling restart or a version upgrade? How long is the outage? | **works** |
 | `helmbulance scan` | Static pre-screen, no cluster, seconds: immutable fields changed since `--from-version`, checksums that change on the first upgrade, Secrets generated anew on every render. Lists **candidates** and the `test` run that confirms each. | **works** |
 | `helmbulance matrix` | Does the chart install and run on every supported Kubernetes version (1.34–1.37), and does the API server warn about what it creates? | **works** |

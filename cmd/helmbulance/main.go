@@ -40,6 +40,7 @@ const (
 var scenarios = []scenario.Scenario{
 	scenario.UpgradeValues{},
 	scenario.ChartUpgrade{},
+	scenario.Rollback{},
 	scenario.ZeroDowntime{},
 	scenario.Reinstall{},
 	scenario.GitopsRender{},
@@ -149,7 +150,7 @@ func test(args []string) int {
 		return exitError
 	}
 	if *fromVersion == "" && len(only) == 0 {
-		selected = without(selected, "chart-upgrade")
+		selected = without(without(selected, "chart-upgrade"), "rollback")
 	}
 
 	runner := execx.NewSandboxRunner()
@@ -355,12 +356,18 @@ func refuseMissingValues(files []string) bool {
 // --from-version. chart-upgrade would have no earlier version to upgrade from and be SKIPPED, which
 // counts for nothing, so the run could exit 0 with the upgrade never tested. Without --scenario the
 // default set leaves chart-upgrade out instead.
+// rollback is refused the same way: it rolls back to the earlier version.
 func refuseChartUpgradeWithoutFromVersion(only []string, fromVersion string) bool {
-	if fromVersion != "" || !slices.Contains(only, "chart-upgrade") {
+	if fromVersion != "" {
 		return false
 	}
-	fmt.Fprintln(os.Stderr, "--scenario chart-upgrade needs --from-version: give the version users upgrade from, e.g. --from-version 1.2.3 (and --from with a local chart).")
-	return true
+	for _, name := range []string{"chart-upgrade", "rollback"} {
+		if slices.Contains(only, name) {
+			fmt.Fprintf(os.Stderr, "--scenario %s needs --from-version: give the version users upgrade from, e.g. --from-version 1.2.3 (and --from with a local chart).\n", name)
+			return true
+		}
+	}
+	return false
 }
 
 // refuseFromVersion stops a run whose --from-version cannot take effect. helm ignores --version for

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: rollback-fixture
+description: "Helmbulance fixture: the version rolled back to. It refuses data in a format newer than 1, so after rollback-v2 ran it crash-loops (HB-RB-002). Its twin is rollback-v1-tolerant."
+type: application
+version: 1.0.0

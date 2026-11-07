@@ -52,7 +52,7 @@ Nothing is released yet, so pin the Action to a full commit SHA.
 | `scenarios` | | Scenarios to run, one per line. Empty runs the default set. |
 | `from` | | Chart that `chart-upgrade` and `zero-downtime` upgrade from: a path, or with `allow-remote` a `repo/chart`, `oci://…` or URL reference. |
 | `allow-remote` | `false` | `true` lets `chart` and `from` name a chart from a repository, OCI registry or URL. Without it such a reference ends the run with exit 2. |
-| `from-version` | | Version to upgrade from. Setting it enables `chart-upgrade`. For a local `chart`, also set `from` to the earlier chart; without it the run stops with exit 2, because helm ignores the version of a path. |
+| `from-version` | | Version to upgrade from. Setting it enables `chart-upgrade` and `rollback`. For a local `chart`, also set `from` to the earlier chart; without it the run stops with exit 2, because helm ignores the version of a path. |
 | `timeout` | `10m` | Timeout for each install or upgrade. |
 | `report-dir` | `helmbulance-report` | Where `report.md`, `report.json` and `report.sarif` are written. |
 | `fail-on` | `findings` | `findings` fails the step on exit 1, 2 or 3. `error` fails only on 2 or 3. `never` always passes; read the `exit-code` output. |

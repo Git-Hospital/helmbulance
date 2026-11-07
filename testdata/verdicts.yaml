@@ -134,6 +134,44 @@ cases:
     exit: 0
     verdicts: {chart-upgrade: PASS}
 
+  # rollback: rollback-v2 writes data format 2; the earlier version is what users roll back to (#130)
+  # v1's pre-rollback hook refuses format 2, so helm rollback fails. In the control the data is
+  # still format 1 and the same hook passes.
+  - name: rollback-hook-refuses
+    pair: rollback-hook
+    role: defect
+    command: test
+    args: [testdata/charts/rollback-v2, --scenario, rollback, --from, testdata/charts/rollback-v1-hook-refuses, --from-version, 1.0.0]
+    exit: 1
+    verdicts: {rollback: FAIL}
+    findings:
+      HB-RB-001: [pre-rollback]
+  - name: rollback-hook-migrates
+    pair: rollback-hook
+    role: fixed
+    command: test
+    args: [testdata/charts/rollback-v2, --scenario, rollback, --from, testdata/charts/rollback-v1-hook-migrates, --from-version, 1.0.0]
+    exit: 0
+    verdicts: {rollback: PASS}
+  # v1 cannot read format 2, so after the rollback it crash-loops and --wait times out: the
+  # timeout is the finding, with the containers as evidence (#28), not INCONCLUSIVE.
+  - name: rollback-forward-data-strict
+    pair: rollback-forward-data
+    role: defect
+    command: test
+    args: [testdata/charts/rollback-v2, --scenario, rollback, --from, testdata/charts/rollback-v1-strict, --from-version, 1.0.0]
+    exit: 1
+    verdicts: {rollback: FAIL}
+    findings:
+      HB-RB-002: [hb-rollback-db]
+  - name: rollback-forward-data-tolerant
+    pair: rollback-forward-data
+    role: fixed
+    command: test
+    args: [testdata/charts/rollback-v2, --scenario, rollback, --from, testdata/charts/rollback-v1-tolerant, --from-version, 1.0.0]
+    exit: 0
+    verdicts: {rollback: PASS}
+
   # reinstall: the credentials must still match the data that was kept
   - name: reinstall-loses-creds
     pair: reinstall-creds
