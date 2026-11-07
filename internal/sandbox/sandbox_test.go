@@ -64,7 +64,7 @@ func writeCluster(t *testing.T, kc string) {
 	if err := os.WriteFile(c.Kubeconfig, []byte(kindConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.record(); err != nil {
+	if _, err := c.record(); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(c.Kubeconfig, []byte(kc), 0o600); err != nil {
@@ -413,5 +413,59 @@ func TestOpenRefusesClusterAndContextEntriesKindNeverWrites(t *testing.T) {
 			t.Fatalf("the fixture has no %q", tc.old)
 		}
 		refused(t, kc, tc.why)
+	}
+}
+
+// reserved is the cluster NewCluster would reserve, under the fixed name the fixtures use.
+func reserved(t *testing.T) *Cluster {
+	t.Helper()
+	c, err := clusterFiles(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(c.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// A new cluster gets the pinned copy too, not the file kind wrote: helm and kubectl read it on
+// every call, so a use-context or a merge into that file during the run would reach them
+// (security review of #156; Open has done this since #47).
+func TestCreateGivesAPinnedCopy(t *testing.T) {
+	fakeKind(t, merged("kind-prod", sandbox), 0)
+	c := reserved(t)
+	if err := c.Create(t.Context(), &execx.Runner{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(c.Kubeconfig) != "kubeconfig.pinned" {
+		t.Fatalf("Kubeconfig = %s, want the pinned copy", c.Kubeconfig)
+	}
+	b, err := os.ReadFile(c.Kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "kind-prod") {
+		t.Errorf("the pinned copy keeps the other cluster:\n%s", b)
+	}
+	kept := filepath.Join(filepath.Dir(c.Kubeconfig), "kubeconfig")
+	if err := os.WriteFile(kept, []byte(merged("kind-prod", "kind-prod")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := caFingerprint(c.Kubeconfig, name); err != nil {
+		t.Errorf("the pinned copy after a use-context on the kept file: %v", err)
+	}
+}
+
+// The file kind wrote goes through the same entry checks, and a cluster that fails them is deleted.
+func TestCreateDeletesAClusterWhoseKubeconfigHasAnExecUser(t *testing.T) {
+	const key = "    client-key-data: S0VZ\n"
+	calls := fakeKind(t, strings.Replace(kindConfig, key, key+"    exec:\n      command: /bin/sh\n", 1), 0)
+	c := reserved(t)
+	if err := c.Create(t.Context(), &execx.Runner{}, ""); err == nil || !strings.Contains(err.Error(), "has exec") {
+		t.Fatalf("Create = %v, want an error with %q", err, "has exec")
+	}
+	if b, _ := os.ReadFile(calls); !strings.Contains(string(b), "delete cluster --name "+name) {
+		t.Errorf("kind calls:\n%s\nwant a delete of %s", b, name)
 	}
 }

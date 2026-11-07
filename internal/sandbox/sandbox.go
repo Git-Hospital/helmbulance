@@ -76,17 +76,22 @@ func NewCluster() (*Cluster, error) {
 	return c, nil
 }
 
-// Create brings up the reserved cluster with kind and records its CA fingerprint. On failure it
-// deletes the cluster and its state directory: the caller only deletes a cluster that Create
-// returned without error.
+// Create brings up the reserved cluster with kind, records its CA fingerprint and, as Open does,
+// gives helm and kubectl a pinned copy of the kubeconfig kind wrote. On failure it deletes the
+// cluster and its state directory: the caller only deletes a cluster that Create returned without
+// error.
 func (c *Cluster) Create(ctx context.Context, r *execx.Runner, nodeImage string) error {
 	args := []string{"create", "cluster", "--name", c.Name, "--kubeconfig", c.Kubeconfig, "--wait", "180s"}
 	if nodeImage != "" {
 		args = append(args, "--image", nodeImage)
 	}
 	_, err := r.Run(ctx, "kind", args...)
+	var fp string
 	if err == nil {
-		err = c.record()
+		fp, err = c.record()
+	}
+	if err == nil {
+		err = c.usePinned(fp)
 	}
 	if err != nil {
 		// kind can fail after its node container started, most often because a Ctrl-C reached it:
@@ -101,16 +106,16 @@ func (c *Cluster) Create(ctx context.Context, r *execx.Runner, nodeImage string)
 	return nil
 }
 
-// record makes the new kubeconfig private and saves its CA fingerprint.
-func (c *Cluster) record() error {
+// record makes the new kubeconfig private, saves its CA fingerprint and returns it.
+func (c *Cluster) record() (string, error) {
 	if err := os.Chmod(c.Kubeconfig, 0o600); err != nil {
-		return err
+		return "", err
 	}
 	fp, err := caFingerprint(c.Kubeconfig, c.Name)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return os.WriteFile(filepath.Join(c.dir, "ca.sha256"), []byte(fp), 0o600)
+	return fp, os.WriteFile(filepath.Join(c.dir, "ca.sha256"), []byte(fp), 0o600)
 }
 
 // Open returns an existing cluster that Helmbulance created, after checking its CA fingerprint.
@@ -139,22 +144,31 @@ func Open(name string) (*Cluster, error) {
 	if got != string(want) {
 		return nil, errors.New("cluster CA does not match the one recorded at creation; refusing to use it")
 	}
-	// The check above holds for the file as it is now, but helm and kubectl read it again on every
-	// call, so a use-context or a merge during the run would send later calls elsewhere. They get a
-	// copy that holds the sandbox's context, cluster and user only (#47).
-	pinned, err := pin(c.Kubeconfig, "kind-"+name)
-	if err != nil {
+	if err := c.usePinned(string(want)); err != nil {
 		return nil, err
 	}
-	fp, err := caFingerprint(pinned, name)
+	return c, nil
+}
+
+// usePinned points the cluster at a pinned copy of its kubeconfig whose CA is want. A check on the
+// kept file holds for the file as it is now, but helm and kubectl read it again on every call, so a
+// use-context or a merge during the run would send later calls elsewhere. They get a copy that
+// holds the sandbox's context, cluster and user only (#47), for a reused cluster and a new one
+// alike (security review of #156).
+func (c *Cluster) usePinned(want string) error {
+	pinned, err := pin(c.Kubeconfig, "kind-"+c.Name)
 	if err != nil {
-		return nil, fmt.Errorf("the pinned copy of the kubeconfig: %w", err)
+		return err
 	}
-	if fp != string(want) {
-		return nil, errors.New("the pinned copy of the kubeconfig does not match the recorded CA; refusing to use it")
+	fp, err := caFingerprint(pinned, c.Name)
+	if err != nil {
+		return fmt.Errorf("the pinned copy of the kubeconfig: %w", err)
+	}
+	if fp != want {
+		return errors.New("the pinned copy of the kubeconfig does not match the recorded CA; refusing to use it")
 	}
 	c.Kubeconfig = pinned
-	return c, nil
+	return nil
 }
 
 // pin writes next to path a kubeconfig with only the context called ctxName, its cluster and its
