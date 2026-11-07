@@ -59,10 +59,12 @@ type Options struct {
 var warningLine = regexp.MustCompile(`warnings\.go:\d+\] (.*)|^Warning: (.*)`)
 
 // deprecation matches the API server's warning about an API version that is deprecated or removed,
-// "<group/version> <Kind> is deprecated in v1.N+[, unavailable in v1.M+][; use …]". A warning about
-// a field or an annotation, "metadata.annotations[…]: deprecated since v1.19, non-functional in
-// v1.25+", is not one: the object still installs, so it is HB-K8S-004 (#56).
-var deprecation = regexp.MustCompile(`^(API warning: )?\S+ \S+ is (deprecated|removed|unavailable) in v\d`)
+// "<group/version> <Kind> is deprecated in v1.N+[, unavailable in v1.M+][; use …]". For a CRD version
+// marked deprecated the default warning has no Kubernetes version, "<group/version> <Kind> is
+// deprecated[; use …]", and the version goes away when the operator stops serving it, so it counts
+// too. A warning about a field or an annotation, "metadata.annotations[…]: deprecated since v1.19,
+// non-functional in v1.25+", is not one: the object still installs, so it is HB-K8S-004 (#56).
+var deprecation = regexp.MustCompile(`^(API warning: )?\S+ \S+ is (deprecated|removed|unavailable)( in v\d|;|$)`)
 
 // kubeVersionRefused matches helm refusing a chart whose Chart.yaml kubeVersion excludes the
 // cluster: "chart requires kubeVersion: >=1.36.0-0 which is incompatible with Kubernetes v1.34.11".

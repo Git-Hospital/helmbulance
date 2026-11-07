@@ -69,3 +69,17 @@ func TestFieldDeprecationIsNotARemovedAPI(t *testing.T) {
 		t.Errorf("a core API deprecation: findings %+v, want HB-K8S-003", f)
 	}
 }
+
+// The API server's default warning for a CRD version marked deprecated has no "in v1.N": the
+// version goes away when the operator stops serving it, the same kind of problem as a core API, so
+// it is HB-K8S-003 too (review of #137).
+func TestCRDVersionDeprecationIsARemovedAPI(t *testing.T) {
+	for _, w := range []string{
+		"API warning: stable.example.com/v1alpha1 CronTab is deprecated; use stable.example.com/v1 CronTab",
+		"API warning: stable.example.com/v1alpha1 CronTab is deprecated",
+	} {
+		if f := warningFindings("1.37", []string{w}, nil); len(f) != 1 || f[0].ID != "HB-K8S-003" {
+			t.Errorf("%s: findings %+v, want one HB-K8S-003", w, f)
+		}
+	}
+}
