@@ -363,58 +363,70 @@ func fileSecrets(files []string) []string {
 			if yaml.Unmarshal(b, &doc) != nil {
 				continue
 			}
-			out = secretScalars(&doc, out)
+			out = secretScalars(&doc, "", out)
 		}
 	}
 	return out
 }
 
-// secretScalars walks a YAML node and appends the scalars that fileSecrets keeps.
-func secretScalars(n *yaml.Node, out []string) []string {
+// secretScalars walks a YAML node and appends the scalars that fileSecrets keeps. parent is the
+// key the node is under, so tls.key and ca.key count while a toleration's key does not.
+func secretScalars(n *yaml.Node, parent string, out []string) []string {
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, c := range n.Content {
-			out = secretScalars(c, out)
+			out = secretScalars(c, parent, out)
 		}
 	case yaml.AliasNode:
 		if n.Alias != nil {
-			out = secretScalars(n.Alias, out)
+			out = secretScalars(n.Alias, parent, out)
 		}
 	case yaml.MappingNode:
 		envSecret := false
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			if k, v := n.Content[i], n.Content[i+1]; k.Value == "name" && v.Kind == yaml.ScalarNode && oracle.KeyClass(v.Value) != oracle.ClassOther {
+			if k, v := n.Content[i], n.Content[i+1]; k.Value == "name" && v.Kind == yaml.ScalarNode && oracle.ValuesKeyClass(v.Value) != oracle.ClassOther {
 				envSecret = true
 			}
 		}
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
-			if v.Kind == yaml.ScalarNode && (secretKey(k.Value) || (envSecret && k.Value == "value")) {
+			secret := secretKey(k.Value) || oracle.KeyClass(parent+"."+k.Value) == oracle.ClassTLS
+			switch {
+			case v.Kind == yaml.ScalarNode && (secret || (envSecret && k.Value == "value")):
 				out = append(out, scalarForms(v)...)
 				continue
+			case v.Kind == yaml.SequenceNode && secret:
+				// A list under a credential key holds credentials too, as bitnami/mongodb's
+				// auth.passwords does (review of #122).
+				for _, item := range v.Content {
+					if item.Kind == yaml.ScalarNode {
+						out = append(out, scalarForms(item)...)
+					}
+				}
 			}
 			if !strings.EqualFold(k.Value, "secretKeys") {
-				out = secretScalars(v, out)
+				out = secretScalars(v, k.Value, out)
 			}
 		}
 	}
 	return out
 }
 
-// secretKey reports whether a values key holds a secret: KeyClass calls it a credential or TLS,
+// secretKey reports whether a values key holds a secret: ValuesKeyClass calls it a credential or TLS,
 // and it is not a reference to one (existingSecret, secretName, userPasswordKey, a …Ref, Path or
 // File). A key ending in Key whose other words already name a credential (userPasswordKey,
 // adminPasswordKey) names a key inside a Secret; apiKey, secretKey and privateKey are keys
 // themselves.
 func secretKey(key string) bool {
-	if oracle.KeyClass(key) == oracle.ClassOther {
+	if oracle.ValuesKeyClass(key) == oracle.ClassOther {
 		return false
 	}
 	k := strings.ToLower(key)
-	if strings.HasPrefix(k, "existing") {
+	// secretKeys maps keys to the names of keys in a Secret; apiKeys is a list of keys.
+	if strings.HasPrefix(k, "existing") || k == "secretkeys" {
 		return false
 	}
-	for _, suffix := range []string{"name", "ref", "path", "file", "filename", "keys"} {
+	for _, suffix := range []string{"name", "ref", "path", "file", "filename"} {
 		if strings.HasSuffix(k, suffix) {
 			return false
 		}
@@ -423,7 +435,7 @@ func secretKey(key string) bool {
 	case "apikey", "secretkey", "privatekey", "accesskey", "encryptionkey", "signingkey", "masterkey":
 		return true
 	}
-	if strings.HasSuffix(k, "key") && oracle.KeyClass(strings.TrimSuffix(k, "key")) != oracle.ClassOther {
+	if strings.HasSuffix(k, "key") && oracle.ValuesKeyClass(strings.TrimSuffix(k, "key")) != oracle.ClassOther {
 		return false
 	}
 	return true

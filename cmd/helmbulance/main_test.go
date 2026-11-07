@@ -471,3 +471,39 @@ func TestOneLine(t *testing.T) {
 		}
 	}
 }
+
+// Review of #122: a list under a credential key is a list of credentials (bitnami/mongodb's
+// auth.passwords), and values keys such as a toleration's key, topologyKey, externalUrl and
+// authType are not credentials, so a Kubernetes "Invalid value" about them keeps the value.
+func TestFileSecretsListsAndCommonValuesKeys(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte(`
+auth:
+  passwords: [MongoPw-in-a-list]
+  authType: basic-auth
+apiKeys:
+  - ApiKey-in-a-list
+privateKey: PrivKey-77aa
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+topologySpreadConstraints:
+  - topologyKey: kubernetes.io/hostname
+externalUrl: https://grafana.example.com
+connectionTimeout: 30s-timeout
+ca:
+  key: CaKey-0c0c
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := fileSecrets([]string{values})
+	for _, want := range []string{"MongoPw-in-a-list", "ApiKey-in-a-list", "PrivKey-77aa", "CaKey-0c0c"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("fileSecrets is missing %q: %q", want, got)
+		}
+	}
+	for _, not := range []string{"node-role.kubernetes.io/control-plane", "kubernetes.io/hostname", "https://grafana.example.com", "basic-auth", "30s-timeout"} {
+		if slices.Contains(got, not) {
+			t.Errorf("fileSecrets hides %q, which is not a secret: %q", not, got)
+		}
+	}
+}
