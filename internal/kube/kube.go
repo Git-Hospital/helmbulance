@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -309,6 +311,67 @@ func (c *Client) DeleteNamespace(ctx context.Context, ns string) error {
 	return err
 }
 
+// HelmClusterObjects returns the cluster-scoped objects Helm made for a release whose namespace
+// mine accepts, as TYPE/NAME for kubectl delete. Helm labels what it installs
+// app.kubernetes.io/managed-by=Helm and annotates it with the release's name and namespace, and
+// `helm uninstall` leaves an object that carries helm.sh/resource-policy: keep. Deleting the
+// namespace takes the namespaced ones; a cluster-scoped one stays, and the next install under
+// another release name refuses it as "invalid ownership metadata" (#52).
+func (c *Client) HelmClusterObjects(ctx context.Context, mine func(ns string) bool) ([]string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-resources",
+		"--namespaced=false", "--verbs=list,delete", "-o", "name")
+	if err != nil {
+		return nil, err
+	}
+	types := strings.Fields(string(out))
+	if len(types) == 0 {
+		return nil, nil
+	}
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "get", strings.Join(types, ","),
+		"-l", "app.kubernetes.io/managed-by=Helm", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			APIVersion string `json:"apiVersion"`
+			Kind       string `json:"kind"`
+			Metadata   struct {
+				Name        string            `json:"name"`
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse cluster-scoped objects: %w", err)
+	}
+	var refs []string
+	for _, item := range list.Items {
+		if !mine(item.Metadata.Annotations["meta.helm.sh/release-namespace"]) {
+			continue
+		}
+		// kind.group/name, which kubectl resolves without knowing the plural; core kinds have no group.
+		typ := strings.ToLower(item.Kind)
+		if group, _, ok := strings.Cut(item.APIVersion, "/"); ok {
+			typ += "." + group
+		}
+		refs = append(refs, typ+"/"+item.Metadata.Name)
+	}
+	sort.Strings(refs)
+	return refs, nil
+}
+
+// DeleteObjects deletes refs (TYPE/NAME, as HelmClusterObjects returns them) and waits until they
+// are gone.
+func (c *Client) DeleteObjects(ctx context.Context, refs []string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	args := append([]string{"--kubeconfig", c.Kubeconfig, "delete"}, refs...)
+	_, err := c.Runner.Run(ctx, "kubectl", append(args, "--ignore-not-found", "--wait=true", "--timeout=5m")...)
+	return err
+}
+
 // Pod is the health of one pod.
 type Pod struct {
 	Name     string
@@ -468,6 +531,8 @@ type ServicePort struct {
 	Name     string
 	Port     int
 	Protocol string
+	// AppProtocol is spec.ports[].appProtocol, such as http, https, h2c or kubernetes.io/h2c.
+	AppProtocol string
 }
 
 // Services returns the Services in ns that select pods (headless Services included).
@@ -487,9 +552,10 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 				ExternalIPs []string          `json:"externalIPs"`
 				Selector    map[string]string `json:"selector"`
 				Ports       []struct {
-					Name     string `json:"name"`
-					Port     int    `json:"port"`
-					Protocol string `json:"protocol"`
+					Name        string `json:"name"`
+					Port        int    `json:"port"`
+					Protocol    string `json:"protocol"`
+					AppProtocol string `json:"appProtocol"`
 				} `json:"ports"`
 			} `json:"spec"`
 		} `json:"items"`
@@ -510,7 +576,7 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 			ExternalIPs: item.Spec.ExternalIPs,
 		}
 		for _, p := range item.Spec.Ports {
-			s.Ports = append(s.Ports, ServicePort{Name: p.Name, Port: p.Port, Protocol: p.Protocol})
+			s.Ports = append(s.Ports, ServicePort{Name: p.Name, Port: p.Port, Protocol: p.Protocol, AppProtocol: p.AppProtocol})
 		}
 		services = append(services, s)
 	}
@@ -748,13 +814,11 @@ func (c *Client) PVCs(ctx context.Context, ns string) ([]PVC, error) {
 	return pvcs, nil
 }
 
-// RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
-// returns what it printed. The pod runs as root with only the capabilities it needs to write into a
-// volume whatever owner the app gave its files (CHOWN, DAC_OVERRIDE, FOWNER), no service account
-// token, small resource limits, and is deleted afterwards, even when ctx is cancelled. It returns
-// as soon as the pod fails, and gives up after timeout.
-func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script string, timeout time.Duration) (string, error) {
-	overrides, err := json.Marshal(map[string]any{"spec": map[string]any{
+// PVCPodOverrides is the pod RunWithPVC runs, as kubectl run --overrides: one container that mounts
+// claim at /pvc and runs script, with smallPod's requests and limits. A reproduce line uses it too,
+// so it runs the same pod.
+func PVCPodOverrides(name, image, claim, script string) (string, error) {
+	pod := map[string]any{"spec": map[string]any{
 		"restartPolicy":                "Never",
 		"automountServiceAccountToken": false,
 		"securityContext":              map[string]any{"seccompProfile": map[string]any{"type": "RuntimeDefault"}},
@@ -768,7 +832,24 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 			"resources": smallPod(),
 		}},
 		"volumes": []any{map[string]any{"name": "pvc", "persistentVolumeClaim": map[string]any{"claimName": claim}}},
-	}})
+	}}
+	// Without HTML escaping, a script's > stays > in a line a person reads and runs.
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(pod); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(b.String(), "\n"), nil
+}
+
+// RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
+// returns what it printed. The pod runs as root with only the capabilities it needs to write into a
+// volume whatever owner the app gave its files (CHOWN, DAC_OVERRIDE, FOWNER), no service account
+// token, small resource limits, and is deleted afterwards, even when ctx is cancelled. It returns
+// as soon as the pod fails, and gives up after timeout.
+func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script string, timeout time.Duration) (string, error) {
+	overrides, err := PVCPodOverrides(name, image, claim, script)
 	if err != nil {
 		return "", err
 	}
@@ -777,7 +858,7 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 		_, _ = c.Runner.Run(context.WithoutCancel(ctx), "kubectl", append(base, "delete", "pod", name, "--ignore-not-found", "--wait=true")...)
 	}()
 	if _, err := c.Runner.Run(ctx, "kubectl", append(base, "run", name, "--image", image, "--restart", "Never",
-		"--overrides", string(overrides))...); err != nil {
+		"--overrides", overrides)...); err != nil {
 		return "", err
 	}
 	deadline := time.Now().Add(timeout)
@@ -835,4 +916,51 @@ func (c *Client) ClaimUsers(ctx context.Context, ns string, claims []string) (ma
 func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
 	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "delete", "pod", name, "--ignore-not-found", "--wait=false")
 	return err
+}
+
+// Capabilities returns what helm would read from the cluster as .Capabilities: the server's
+// Kubernetes version, and its API versions: every served group/version, and group/version/Kind for
+// each resource, the two forms .Capabilities.APIVersions.Has accepts. A client-side render gets them through
+// --kube-version and --api-versions, as Argo CD passes them (#59).
+func (c *Client) Capabilities(ctx context.Context) (version string, apiVersions []string, err error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "version", "-o", "json")
+	if err != nil {
+		return "", nil, err
+	}
+	var v struct {
+		ServerVersion struct {
+			GitVersion string `json:"gitVersion"`
+		} `json:"serverVersion"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		return "", nil, fmt.Errorf("parse kubectl version: %w", err)
+	}
+	if v.ServerVersion.GitVersion == "" {
+		return "", nil, fmt.Errorf("kubectl version printed no server version")
+	}
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-resources", "--no-headers")
+	if err != nil {
+		return "", nil, err
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		// NAME [SHORTNAMES] APIVERSION NAMESPACED KIND: read from the right, since SHORTNAMES is
+		// often empty.
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		gv, kind := f[len(f)-3], f[len(f)-1]
+		seen[gv], seen[gv+"/"+kind] = true, true
+	}
+	// api-resources lists each group's preferred version only; api-versions lists every served one,
+	// such as autoscaling/v1 next to autoscaling/v2, and helm's server-side Capabilities has them all.
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-versions")
+	if err != nil {
+		return "", nil, err
+	}
+	for _, gv := range strings.Fields(string(out)) {
+		seen[gv] = true
+	}
+	return v.ServerVersion.GitVersion, slices.Sorted(maps.Keys(seen)), nil
 }

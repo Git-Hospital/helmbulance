@@ -140,11 +140,28 @@ func TestUpgradeValuesPassWithNoSecretsSaysSo(t *testing.T) {
 	cmd := []execx.Command{{Line: "helm upgrade hb ./chart"}}
 	empty := oracle.SecretSnapshot{}
 	res, _ := UpgradeValues{}.verdict(t.Context(), Result{}, empty, empty, empty, cmd, cmd, cmd, env)
-	if res.Verdict != Pass || res.Summary != "the release renders no Secrets; Secret drift was not tested" {
+	if res.Verdict != Pass || res.Summary != noSecretsTested {
 		t.Errorf("verdict %s, summary %q", res.Verdict, res.Summary)
 	}
 	some := oracle.SecretSnapshot{"app/k": {1}}
 	if res, _ := (UpgradeValues{}).verdict(t.Context(), Result{}, some, some, some, cmd, cmd, cmd, env); res.Summary != "Secrets stayed the same through both upgrades" {
 		t.Errorf("summary with Secrets compared = %q", res.Summary)
+	}
+}
+
+// A Secret the release renders into another namespace is not compared, and the note names it, so
+// a PASS does not read as if the release had no Secrets (#59).
+func TestSecretReaderNamesSecretsInAnotherNamespace(t *testing.T) {
+	r := newFakeReader(t, `{"items":[]}`,
+		"---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: shared-creds\n  namespace: monitoring\n")
+	snap, err := r.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap) != 0 {
+		t.Errorf("snapshot = %v, want nothing compared", snap)
+	}
+	if n, want := r.notComparedNote(), "not compared, since the release renders them into another namespace: `monitoring/shared-creds`"; n != want {
+		t.Errorf("notComparedNote = %q, want %q", n, want)
 	}
 }

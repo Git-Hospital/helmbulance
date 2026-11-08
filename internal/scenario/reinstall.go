@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
@@ -38,12 +39,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	defer func() {
 		// Clean up even after a cancel, so a reused cluster does not keep the release (#11).
 		cleanup := context.WithoutCancel(ctx)
-		if err := env.Helm.Uninstall(cleanup, release, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
-		if err := env.Kube.DeleteNamespace(cleanup, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
+		cleanUp(cleanup, env, release, ns)
 	}()
 
 	if err := startClean(ctx, env, release, ns); err != nil {
@@ -243,7 +239,7 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 		res.Summary = fmt.Sprintf("%d problem(s) after uninstall and install", len(res.Findings))
 	} else {
 		res.Verdict = Pass
-		res.Summary = reinstallPassSummary(volumes, changes)
+		res.Summary = reinstallPassSummary(volumes, changes, !noKeys(before, after))
 	}
 	res.Summary = withNotes(res.Summary,
 		note("keys added by the reinstall, not a finding", describe(added, consumers)),
@@ -472,8 +468,12 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 
 // reinstallPassSummary says what was checked, including volumes deleted with the release, which
 // depend on the StorageClass and the chart and are not a finding on their own.
-func reinstallPassSummary(volumes []volume, changes []oracle.Change) string {
+func reinstallPassSummary(volumes []volume, changes []oracle.Change, compared bool) string {
 	summary := "Secrets came back unchanged after uninstall and install"
+	if !compared {
+		// No key was read before or after, so nothing came back unchanged (#59).
+		summary = noSecretsTested
+	}
 	switch {
 	case len(volumes) == 0 && len(changes) > 0:
 		return "the release has no volumes, so new Secrets after a reinstall lose nothing"
@@ -514,11 +514,15 @@ func transcriptRepro(env *Env, mark int) []string {
 	return lines
 }
 
-// sentinelRepro is the reproduction step for a sentinel: a one-off pod that mounts the claim. The
-// claim is named per volume in the evidence.
+// sentinelRepro is the reproduction step for a sentinel: the pod the scenario runs, mounting the
+// claim. The claim is named per volume in the evidence.
 func sentinelRepro(why, cmd string) []string {
+	overrides, err := kube.PVCPodOverrides("marker", sentinelImage, "CLAIM", cmd)
+	if err != nil {
+		return nil // a fixed map of strings always encodes
+	}
 	return []string{
 		"# " + why + " (replace CLAIM with each claim named above):",
-		`kubectl -n ` + reinstallNamespace + ` run marker --rm -i --restart Never --image busybox --overrides '{"spec":{"containers":[{"name":"marker","image":"busybox","command":["sh","-c","` + cmd + `"],"volumeMounts":[{"name":"v","mountPath":"/pvc"}]}],"volumes":[{"name":"v","persistentVolumeClaim":{"claimName":"CLAIM"}}]}}'`,
+		`kubectl -n ` + reinstallNamespace + ` run marker --rm -i --restart Never --image ` + sentinelImage + ` --overrides '` + overrides + `'`,
 	}
 }
