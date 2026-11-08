@@ -387,3 +387,23 @@ func TestOneLine(t *testing.T) {
 		}
 	}
 }
+
+// An unsupported or empty --k8s is a usage error before any cluster starts (#56).
+func TestCheckVersions(t *testing.T) {
+	for _, good := range []string{"1.34, 1.37", "1.36,"} {
+		if err := checkVersions(good); err != nil {
+			t.Errorf("checkVersions(%q): %v", good, err)
+		}
+	}
+	for _, bad := range []string{"1.34,1.30", "", " , "} {
+		if err := checkVersions(bad); err == nil {
+			t.Errorf("checkVersions(%q) = nil, want an error", bad)
+		}
+	}
+}
+
+func TestMatrixRefusesAnUnsupportedVersionBeforeAnyCluster(t *testing.T) {
+	if code := matrixCmd([]string{"--k8s", "1.29", t.TempDir()}); code != exitError {
+		t.Errorf("exit %d, want %d", code, exitError)
+	}
+}

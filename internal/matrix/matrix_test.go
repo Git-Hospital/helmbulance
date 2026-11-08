@@ -252,3 +252,19 @@ func TestHealthNotRead(t *testing.T) {
 		t.Errorf("with a warning: verdict = %s with %d finding(s) (%s), want FAIL with the warning and the health check named", res.Verdict, len(res.Findings), res.Summary)
 	}
 }
+
+// A chart whose kubeVersion excludes the version is refused by helm before anything is created.
+// The chart says it does not run there: SKIPPED, not "does not install" (#56).
+func TestKubeVersionRefusalIsSkipped(t *testing.T) {
+	err := errors.New("helm install hb-matrix ./chart: exit status 1: Error: INSTALLATION FAILED: chart requires kubeVersion: >=1.36.0-0 which is incompatible with Kubernetes v1.34.11")
+	res := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.34"}, "1.34", err, nil, nil, nil)
+	if res.Verdict != scenario.Skipped || len(res.Findings) != 0 || !strings.Contains(res.Summary, ">=1.36.0-0") {
+		t.Errorf("result %+v, want SKIPPED naming the constraint", res)
+	}
+	// With the other versions it does not count as "installed nowhere": a version it did install on
+	// keeps its own result.
+	ok := scenario.Result{Scenario: "k8s-1.36", Verdict: scenario.Pass}
+	if got := Attribute([]scenario.Result{res, ok}); got[0].Verdict != scenario.Skipped || got[1].Verdict != scenario.Pass {
+		t.Errorf("Attribute = %+v", got)
+	}
+}
