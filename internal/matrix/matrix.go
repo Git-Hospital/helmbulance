@@ -58,8 +58,17 @@ type Options struct {
 // Helm's own "WARNING:" notices (a group-readable kubeconfig) are not API warnings.
 var warningLine = regexp.MustCompile(`warnings\.go:\d+\] (.*)|^Warning: (.*)`)
 
-// deprecation matches a warning about an API version that is deprecated or removed.
-var deprecation = regexp.MustCompile(`(?i)\bdeprecated\b|\bunavailable in\b|\bremoved in\b`)
+// deprecation matches the API server's warning about an API version that is deprecated or removed,
+// "<group/version> <Kind> is deprecated in v1.N+[, unavailable in v1.M+][; use …]". For a CRD version
+// marked deprecated the default warning has no Kubernetes version, "<group/version> <Kind> is
+// deprecated[; use …]", and the version goes away when the operator stops serving it, so it counts
+// too. A warning about a field or an annotation, "metadata.annotations[…]: deprecated since v1.19,
+// non-functional in v1.25+", is not one: the object still installs, so it is HB-K8S-004 (#56).
+var deprecation = regexp.MustCompile(`^(API warning: )?\S+ \S+ is (deprecated|removed|unavailable)( in v\d|;|$)`)
+
+// kubeVersionRefused matches helm refusing a chart whose Chart.yaml kubeVersion excludes the
+// cluster: "chart requires kubeVersion: >=1.36.0-0 which is incompatible with Kubernetes v1.34.11".
+var kubeVersionRefused = regexp.MustCompile(`chart requires kubeVersion: (.*?) which is incompatible with Kubernetes`)
 
 // Run checks the chart on one Kubernetes version and removes the cluster afterwards.
 func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
@@ -277,6 +286,13 @@ func installFailed(ctx context.Context, res scenario.Result, version string, err
 	if scenario.IsEnvironmentError(ctx, err) {
 		res.Verdict = scenario.Inconclusive
 		res.Summary = "the install did not finish on Kubernetes " + version + ": " + helmMessage(err)
+		return res
+	}
+	// The chart says it does not support this version, and helm keeps to that: not a defect of the
+	// chart on this version, and nothing was tested (#56).
+	if m := kubeVersionRefused.FindStringSubmatch(err.Error()); m != nil {
+		res.Verdict = scenario.Skipped
+		res.Summary = "the chart's kubeVersion (" + m[1] + ") excludes Kubernetes " + version + ", so helm does not install it there"
 		return res
 	}
 	res.Verdict = scenario.Fail

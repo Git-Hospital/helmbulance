@@ -43,12 +43,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	defer func() {
 		ctx, cancel := cleanupContext(ctx)
 		defer cancel()
-		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
-		if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
+		cleanUp(ctx, env, release, ns)
 	}()
 
 	if err := startClean(ctx, env, release, ns); err != nil {
@@ -195,6 +190,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		note("keys added by the new version, not a finding", describe(added, consumers)),
 		note("values moved to another key, not a finding", describe(moved, consumers)),
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
+		note("not compared, since they change on every upgrade of "+fromV+" too (upgrade-without-values)", describe(regenerated, consumers)),
 		unknownStatefulNote(statefulKnown, changes),
 		secrets.notComparedNote())
 	if healthErr != nil {

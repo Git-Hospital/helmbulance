@@ -1,0 +1,12 @@
+# Cluster-scoped and kept: helm uninstall leaves it, and deleting the namespace does not take it.
+# The name does not depend on the release, so every scenario's release renders the same object.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: helmbulance-fixture-keeps-cluster-role
+  annotations:
+    helm.sh/resource-policy: keep
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get]

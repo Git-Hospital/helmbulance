@@ -37,6 +37,7 @@ func TestScenariosStartFromACleanNamespace(t *testing.T) {
 		{ChartUpgrade{}, chartUpgradeNamespace, func(e *Env) { e.From, e.FromVersion = "repo/chart", "1.0.0" }},
 		{ZeroDowntime{}, zeroDowntimeNamespace, func(*Env) {}},
 		{Reinstall{}, reinstallNamespace, func(*Env) {}},
+		{GitopsRender{}, gitopsRenderNamespace, func(*Env) {}},
 	} {
 		t.Run(c.s.Name(), func(t *testing.T) {
 			bin, dir := t.TempDir(), t.TempDir()
