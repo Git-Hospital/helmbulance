@@ -72,7 +72,7 @@ func setPlaceholders(value string, p *placeholders) string {
 		key, masked, ok := strings.Cut(part, "=")
 		switch {
 		case ok && masked == "***":
-			parts[i] = key + "=" + shellVar(p.forKey(key))
+			parts[i] = "'" + strings.ReplaceAll(key, "'", "'\"'\"'") + "'=" + shellVar(p.forKey(key))
 		case part == "***":
 			parts[i] = shellVar(p.unkeyed())
 		}

@@ -216,7 +216,7 @@ Every finding ID has a fixture pair, a small chart with the defect and a fixed t
 
 - **Formats:**
   - Markdown for people.
-  - JSON with a `schemaVersion` and the overall `verdict`, the worst result of the run (FAIL, then INCONCLUSIVE, then PASS). `test` and `matrix` exit by it; `scan` only with `--strict`, since without it a FAIL is a candidate and the exit code is 0. Lists are `[]` when empty, never `null`.
+  - JSON with a `schemaVersion` and the overall `verdict`, the worst result of the run (FAIL, then INCONCLUSIVE, then PASS). `test` and `matrix` exit by it, except an interrupted run without a FAIL exits 3 even if its completed results are PASS; `scan` only with `--strict`, since without it a FAIL is a candidate and the exit code is 0. Lists are `[]` when empty, never `null`.
   - SARIF 2.1.0 (`report.sarif`), written with the other two (#99). Uploading it to code scanning comes in v0.2.
 - **SARIF details:** each finding points at the template line or values key it comes from, because code scanning needs a location. Fingerprints are stable (scenario, resource and key). Findings do not carry a line or key yet, so for now a result points at the chart's `Chart.yaml` when the chart is a directory under the working directory, and has no location otherwise. Its fingerprint hashes the scenario, the finding ID, the chart and which finding with that ID in the scenario it is; the resource and key join it with the locations. Private repositories need GitHub Code Security to show SARIF, so the Markdown report is also offered as a job summary and pull request comment.
 - **Exit codes:** `0` clean, `1` findings, `2` tool error, `3` incomplete (for example, the chart did not install).
