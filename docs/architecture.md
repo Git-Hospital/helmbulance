@@ -77,7 +77,7 @@ There is no separate chart model in v0.1. The scenarios read what the chart crea
 
 | Area | What is recorded |
 |---|---|
-| Workloads | Containers, ports, probes, security contexts, update strategy, volumes, and env vars read from Secrets |
+| Workloads | Containers, whether a readiness probe exists, update strategy, volumes, and env vars read from Secrets; Service ports are read separately |
 | Secrets | Which workload reads which key |
 | Network | Services (NetworkPolicies come with `network-isolation`, v0.1.x) |
 | Storage | PVCs and StatefulSet volume templates |
@@ -227,7 +227,7 @@ Every finding ID has a fixture pair, a small chart with the defect and a fixed t
   - Every `--set` value of four or more characters, wherever it appears in captured output.
   - Logs and events are not collected yet, so there is nothing more to redact.
 - **Escaping:** text that comes from the cluster (names, events, logs) is escaped and length-limited before it reaches Markdown, a terminal or a pull request comment.
-- **Failure bundle (planned, not built):** when a scenario fails or is inconclusive, `kind export logs`, events, `describe` output and the Helm history saved next to the report. Until then, keep the cluster with `--keep-cluster` and read them there (#55).
+- **Failure bundle (planned, not built):** when a scenario fails or is inconclusive, `kind export logs`, events, `describe` output and the Helm history saved next to the report. Until then, keep the cluster with `--keep-cluster`, run the Reproduce commands on it, then read the logs and events (#55).
 
 ### 3.7 Optional AI hypotheses (v0.3)
 
