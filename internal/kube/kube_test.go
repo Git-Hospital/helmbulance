@@ -29,7 +29,7 @@ func fakeKubectl(t *testing.T, out string) *Client {
 
 func TestServicesReadsTypeAndAddresses(t *testing.T) {
 	c := fakeKubectl(t, `{"items":[
-		{"metadata":{"name":"web"},"spec":{"type":"ClusterIP","clusterIP":"10.96.0.10","selector":{"app":"web"},"ports":[{"name":"http","port":80}]}},
+		{"metadata":{"name":"web"},"spec":{"type":"ClusterIP","clusterIP":"10.96.0.10","selector":{"app":"web"},"ports":[{"name":"http","port":80,"appProtocol":"http"}]}},
 		{"metadata":{"name":"ext"},"spec":{"type":"ExternalName","externalIPs":["203.0.113.5"],"selector":{"app":"web"}}},
 		{"metadata":{"name":"manual"},"spec":{"type":"ClusterIP","clusterIP":"10.96.0.11"}}
 	]}`)
@@ -38,7 +38,7 @@ func TestServicesReadsTypeAndAddresses(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Service{
-		{Name: "web", Selector: map[string]string{"app": "web"}, Ports: []ServicePort{{Name: "http", Port: 80}},
+		{Name: "web", Selector: map[string]string{"app": "web"}, Ports: []ServicePort{{Name: "http", Port: 80, AppProtocol: "http"}},
 			Type: "ClusterIP", ClusterIP: "10.96.0.10"},
 		{Name: "ext", Selector: map[string]string{"app": "web"}, Type: "ExternalName", ExternalIPs: []string{"203.0.113.5"}},
 	}
@@ -69,6 +69,59 @@ func TestWorkloadsIncludeDaemonSets(t *testing.T) {
 	}
 	if a, _ := os.ReadFile(args); !strings.Contains(string(a), "get deployments,statefulsets,daemonsets ") {
 		t.Errorf("kubectl args = %q, want DaemonSets asked for", a)
+	}
+}
+
+// The parsing rules zero-downtime depends on (#96): an absent replicas means 1 and an explicit 0
+// stays 0, maxUnavailable may be a number or a percent, a StatefulSet takes its strategy from
+// updateStrategy, and readiness and preStop count on any container.
+func TestWorkloadsParsing(t *testing.T) {
+	c := fakeKubectl(t, `{"items":[
+		{"kind":"Deployment","metadata":{"name":"percent"},"spec":{"replicas":3,"strategy":{"type":"RollingUpdate","rollingUpdate":{"maxUnavailable":"25%","maxSurge":"25%"}},
+			"template":{"metadata":{"labels":{"app":"web","tier":"front"}},"spec":{"containers":[{"name":"a"},{"name":"b","readinessProbe":{"httpGet":{"path":"/"}},"lifecycle":{"preStop":{"exec":{"command":["sleep","5"]}}}}]}}}},
+		{"kind":"Deployment","metadata":{"name":"number"},"spec":{"replicas":2,"strategy":{"type":"RollingUpdate","rollingUpdate":{"maxUnavailable":1}}}},
+		{"kind":"Deployment","metadata":{"name":"zero"},"spec":{"replicas":0,"strategy":{"type":"Recreate"}}},
+		{"kind":"Deployment","metadata":{"name":"unset"},"spec":{}},
+		{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"replicas":1,"strategy":{"type":"Ignored"},"updateStrategy":{"type":"OnDelete"},
+			"template":{"metadata":{"labels":{"app":"db"}},"spec":{"containers":[{"name":"db","readinessProbe":{"exec":{"command":["true"]}}}]}}}}
+	]}`)
+	got, err := c.Workloads(t.Context(), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Workload{
+		{Kind: "Deployment", Name: "percent", Replicas: 3, Strategy: "RollingUpdate", MaxUnavailable: "25%", MaxSurge: "25%",
+			HasReadiness: true, HasPreStop: true, PodLabels: map[string]string{"app": "web", "tier": "front"}},
+		{Kind: "Deployment", Name: "number", Replicas: 2, Strategy: "RollingUpdate", MaxUnavailable: "1"},
+		{Kind: "Deployment", Name: "zero", Replicas: 0, Strategy: "Recreate"},
+		{Kind: "Deployment", Name: "unset", Replicas: 1},
+		{Kind: "StatefulSet", Name: "db", Replicas: 1, Strategy: "OnDelete", HasReadiness: true, PodLabels: map[string]string{"app": "db"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Workloads =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+func TestWorkloadServes(t *testing.T) {
+	w := Workload{PodLabels: map[string]string{"app": "web", "tier": "front"}}
+	for _, c := range []struct {
+		name     string
+		selector map[string]string
+		want     bool
+	}{
+		{"no selector", nil, false},
+		{"empty selector", map[string]string{}, false},
+		{"subset of the pod labels", map[string]string{"app": "web"}, true},
+		{"all of the pod labels", map[string]string{"app": "web", "tier": "front"}, true},
+		{"a different value", map[string]string{"app": "db"}, false},
+		{"a key the pods lack", map[string]string{"app": "web", "zone": "a"}, false},
+	} {
+		if got := w.Serves(Service{Selector: c.selector}); got != c.want {
+			t.Errorf("%s: Serves = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if (Workload{}).Serves(Service{Selector: map[string]string{"app": "web"}}) {
+		t.Error("a workload without pod labels serves a Service with a selector")
 	}
 }
 

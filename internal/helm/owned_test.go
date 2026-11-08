@@ -96,3 +96,29 @@ esac
 		t.Errorf("OwnedSecrets = %v, %v; want app and hook-secret", got, err)
 	}
 }
+
+// Secrets that name another namespace are not the release namespace's, and ReleaseSecrets lists
+// them apart, so a summary can say they were not compared (#59).
+func TestReleaseSecretsListsOtherNamespacesApart(t *testing.T) {
+	c := fakeHelm(t, "")
+	script := `#!/bin/sh
+case "$*" in
+  "get manifest"*) printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: same\n  namespace: ns\n---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: creds\n  namespace: monitoring\n' ;;
+  "get hooks"*) printf -- '---\napiVersion: v1\nkind: List\nitems:\n- apiVersion: v1\n  kind: Secret\n  metadata: {name: hooked, namespace: other}\n' ;;
+esac
+`
+	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+	if err := os.WriteFile(filepath.Join(bin, "helm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owned, elsewhere, err := c.ReleaseSecrets(t.Context(), "hb", "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owned["app"] || !owned["same"] || len(owned) != 2 {
+		t.Errorf("owned = %v, want app and same", owned)
+	}
+	if want := []string{"monitoring/creds", "other/hooked"}; !reflect.DeepEqual(elsewhere, want) {
+		t.Errorf("elsewhere = %q, want %q", elsewhere, want)
+	}
+}

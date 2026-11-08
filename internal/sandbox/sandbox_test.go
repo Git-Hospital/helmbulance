@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
@@ -277,5 +278,97 @@ func TestUnrecordedWithNoClusters(t *testing.T) {
 	t.Setenv("FAKE_CLUSTERS", "")
 	if got, err := Unrecorded(t.Context(), &execx.Runner{}); err != nil || len(got) != 0 {
 		t.Errorf("Unrecorded = %v, %v; want none", got, err)
+	}
+}
+
+// Open checks the file once, but helm and kubectl read it again on every call. They get a pinned
+// copy with the sandbox's context, cluster and user only, so a use-context or a merge into the
+// kept file during the run cannot send them to another cluster (#47).
+func TestOpenGivesAPinnedOneContextCopy(t *testing.T) {
+	writeCluster(t, merged("kind-prod", sandbox))
+	c, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := filepath.Join(filepath.Dir(c.Kubeconfig), "kubeconfig")
+	if c.Kubeconfig == orig {
+		t.Fatalf("Open returned the shared kubeconfig %s, want a pinned copy", c.Kubeconfig)
+	}
+	b, err := os.ReadFile(c.Kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	for _, want := range []string{"current-context: " + sandbox, sandboxCA, "client-key-data: S0VZ"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("pinned copy lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "kind-prod") || strings.Contains(text, otherCA) {
+		t.Errorf("pinned copy keeps the other cluster:\n%s", text)
+	}
+	if fi, err := os.Stat(c.Kubeconfig); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("pinned copy mode %v, %v; want 0600", fi.Mode().Perm(), err)
+	}
+	// A use-context on the shared file after Open changes nothing for the run.
+	if err := os.WriteFile(orig, []byte(merged("kind-prod", "kind-prod")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fp, err := caFingerprint(c.Kubeconfig, name); err != nil || fp == "" {
+		t.Errorf("the pinned copy after a use-context on the shared file: %q, %v; want it to still name the sandbox", fp, err)
+	}
+}
+
+// While one run opens the cluster, another that reads the pinned copy sees a whole file, never an
+// empty one: an empty kubeconfig sends helm and kubectl to http://localhost:8080 (security review
+// of #142).
+func TestPinnedCopyIsNeverEmptyWhileItIsRewritten(t *testing.T) {
+	writeCluster(t, kindConfig)
+	c, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if _, err := Open(name); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}
+	}()
+	empty, missing := 0, 0
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
+		b, err := os.ReadFile(c.Kubeconfig)
+		switch {
+		case err != nil:
+			missing++
+		case len(b) == 0:
+			empty++
+		}
+	}
+	close(stop)
+	<-done
+	if empty > 0 || missing > 0 {
+		t.Errorf("read the pinned copy empty %d and missing %d times while it was rewritten", empty, missing)
+	}
+}
+
+// Over plain http, or with no server, TLS never runs and the CA proves nothing (security review of
+// #142).
+func TestOpenRefusesAServerWithoutTLS(t *testing.T) {
+	for _, server := range []string{"server: http://127.0.0.1:18089", ""} {
+		kc := strings.Replace(kindConfig, "server: https://127.0.0.1:41111", server, 1)
+		if kc == kindConfig {
+			t.Fatal("the fixture's server line changed")
+		}
+		refused(t, kc, "has no https server")
 	}
 }

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: zd-rolling-ondelete
+description: "Helmbulance fixture. zd-rolling plus a StatefulSet with updateStrategy OnDelete, which a rolling restart does not replace (#57)."
+type: application
+version: 0.1.0
