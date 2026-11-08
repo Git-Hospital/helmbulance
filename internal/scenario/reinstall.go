@@ -480,9 +480,8 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 }
 
 // observeLockout watches the release after a clean reinstall and adds what it saw to an HB-RI-001.
-// The finding comes from key names and readers alone, so when nothing failed it stays, but as a
-// low risk that was not observed: a store that sets its password again at every start, such as
-// Redis or Valkey with requirepass, works with the new one (#53).
+// The D5 severity stays even when nothing failed: readiness probes may never attempt a login,
+// so a healthy PostgreSQL pod does not show whether clients can use the new credential (#53).
 func observeLockout(ctx context.Context, env *Env, ns string, f *Finding) {
 	pods, err := env.Kube.Pods(ctx, ns)
 	var problems []string
@@ -495,9 +494,8 @@ func observeLockout(ctx context.Context, env *Env, ns string, f *Finding) {
 	case len(problems) > 0:
 		f.Evidence = append(f.Evidence, append([]string{"After the reinstall:"}, problems...)...)
 	default:
-		f.Severity = "low"
 		f.Title = "Data survives a reinstall with new credentials, but no workload failed in the sandbox"
-		f.Evidence = append(f.Evidence, "Not observed: after the reinstall every pod was ready and none restarted while Helmbulance watched.")
+		f.Evidence = append(f.Evidence, "Not observed: after the reinstall every pod was ready and none restarted while Helmbulance watched. A readiness probe often does not log in, so this does not prove the new credential works.")
 		f.Impact = "The volumes still hold the old data and the chart generated new credentials. Nothing " +
 			"failed here, so the app may set the credential again at every start (Redis or Valkey with " +
 			"requirepass), or the sandbox did not exercise it. A store that keeps the password it was " +

@@ -189,8 +189,7 @@ func TestReinstallUnreadyFirstInstallWithKeptData(t *testing.T) {
 }
 
 // HB-RI-001 comes from key names and readers. After a clean reinstall the workloads are watched:
-// a pod that is not ready is the lockout, seen; when every pod is fine the finding stays, as a low
-// risk that was not observed (#53).
+// a pod that is not ready is evidence; healthy pods do not prove credentials work (#53).
 func TestReinstallWatchesForTheLockout(t *testing.T) {
 	db := `{"items":[{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"volumeClaimTemplates":[{"metadata":{"name":"data"}}],` +
 		`"template":{"spec":{"containers":[{"name":"c","env":[{"name":"P","valueFrom":{"secretKeyRef":{"name":"app","key":"password"}}}]}]}}}}]}`
@@ -210,9 +209,10 @@ func TestReinstallWatchesForTheLockout(t *testing.T) {
 	if len(res.Findings) != 1 || res.Findings[0].ID != "HB-RI-001" {
 		t.Fatalf("healthy: %s %+v, want HB-RI-001", res.Verdict, res.Findings)
 	}
-	if f := res.Findings[0]; f.Severity != "low" || !strings.Contains(f.Title, "no workload failed") ||
-		!strings.Contains(strings.Join(f.Evidence, "\n"), "Not observed") {
-		t.Errorf("healthy: severity %s, title %q, evidence %q; want a low risk, not observed", f.Severity, f.Title, f.Evidence)
+	if f := res.Findings[0]; f.Severity != "high" || !strings.Contains(f.Title, "no workload failed") ||
+		!strings.Contains(strings.Join(f.Evidence, "\n"), "Not observed") ||
+		!strings.Contains(strings.Join(f.Evidence, "\n"), "readiness probe often does not log in") {
+		t.Errorf("healthy: severity %s, title %q, evidence %q; want high severity with the observation limit", f.Severity, f.Title, f.Evidence)
 	}
 
 	notReady := `{"items":[{"metadata":{"name":"db-0","uid":"p1","ownerReferences":[{"kind":"StatefulSet","name":"db","controller":true}]},` +
