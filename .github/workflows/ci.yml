@@ -51,6 +51,30 @@ jobs:
       - run: go test ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
+  # zizmor audits the workflows and action.yml for the properties the header promises: no
+  # pull_request_target, a read-only token, no persisted credentials, actions pinned by SHA (#100).
+  # Offline, so it needs no token; the result goes to the log, not to code scanning.
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: zizmor
+        env:
+          ZIZMOR_VERSION: v1.32.0
+          ZIZMOR_SHA256: bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b
+        run: |
+          mkdir "$RUNNER_TEMP/zizmor"
+          curl -fsSLo "$RUNNER_TEMP/zizmor.tar.gz" "https://github.com/zizmorcore/zizmor/releases/download/$ZIZMOR_VERSION/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$ZIZMOR_SHA256  $RUNNER_TEMP/zizmor.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/zizmor.tar.gz" -C "$RUNNER_TEMP/zizmor"
+          "$(find "$RUNNER_TEMP/zizmor" -type f -name zizmor | head -n 1)" --offline --format plain .github/workflows action.yml
+
   fixtures:
     # The job names stay the same when a Helm version is bumped, so required checks keep matching.
     name: fixtures (Helm ${{ matrix.major }})
