@@ -1,0 +1,5 @@
+apiVersion: v2
+name: gitops-capabilities-secret
+description: "Helmbulance fixture: a fixed twin of gitops-lookup-random whose Secret also depends on .Capabilities. Argo CD passes the cluster's version and API versions to its render, so nothing changes on a sync (#59)."
+type: application
+version: 1.0.0
