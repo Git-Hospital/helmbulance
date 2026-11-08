@@ -112,11 +112,11 @@ Each scenario goes through these phases:
 | Phase | What it does |
 |---|---|
 | `Applies(model)` | Decides whether the chart has what the scenario tests |
-| `Setup` | Installs a fresh release in its own namespace, under its own release name |
+| `Setup` | Clears what an earlier run left under the same names, and the cluster-scoped objects any scenario's release kept; then installs a fresh release in its own namespace, under its own release name |
 | `Control` | Records the baseline, or runs the neutral form of the operation |
 | `Act` | Performs the operation |
 | `Observe` + `Assert` | Waits until the cluster settles (no change for N seconds, with a timeout), then compares against the control |
-| `Cleanup` | Uninstalls, deletes the namespace, and checks for leftovers: orphan PVCs, Secrets, Jobs, hooks |
+| `Cleanup` | Uninstalls, deletes the namespace, and deletes the cluster-scoped objects the release kept with `helm.sh/resource-policy: keep`, which outlive both: the next scenario installs under another release name, and Helm refuses an object that names the old one (#52). Namespaced leftovers (PVCs, Secrets, Jobs, hooks) go with the namespace; a check that reports them is not built yet |
 
 A run's deadline, Ctrl-C or a SIGTERM to helmbulance (`kill`, `timeout`, `docker stop`) stops every tool call with the children that stay in its process group: the group gets SIGTERM, so helm can mark the release failed, and is killed 30 s later. `Cleanup` still runs after that, with its own 10 minute limit. A second Ctrl-C or SIGTERM quits at once and leaves the cluster as it is. An interrupted run never exits 0: a scenario cut short while its pods settle is `INCONCLUSIVE`, a finding proved before the interrupt still exits 1, and otherwise the exit code is 3.
 
