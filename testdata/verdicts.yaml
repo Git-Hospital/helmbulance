@@ -333,6 +333,15 @@ cases:
     args: [testdata/charts/zd-rolling, --scenario, zero-downtime]
     exit: 0
     verdicts: {zero-downtime: PASS}
+  # An OnDelete StatefulSet in the release: kubectl rollout status refuses it, so every run was
+  # INCONCLUSIVE before #57. It is left out of the restart.
+  - name: zd-rolling-ondelete
+    pair: zero-downtime
+    role: fixed
+    command: test
+    args: [testdata/charts/zd-rolling-ondelete, --scenario, zero-downtime]
+    exit: 0
+    verdicts: {zero-downtime: PASS}
   # A ResourceQuota on requests and limits rejects a traffic pod without them: INCONCLUSIVE before #97.
   - name: zd-rolling-quota
     pair: zero-downtime

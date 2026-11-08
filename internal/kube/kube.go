@@ -531,6 +531,8 @@ type ServicePort struct {
 	Name     string
 	Port     int
 	Protocol string
+	// AppProtocol is spec.ports[].appProtocol, such as http, https, h2c or kubernetes.io/h2c.
+	AppProtocol string
 }
 
 // Services returns the Services in ns that select pods (headless Services included).
@@ -550,9 +552,10 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 				ExternalIPs []string          `json:"externalIPs"`
 				Selector    map[string]string `json:"selector"`
 				Ports       []struct {
-					Name     string `json:"name"`
-					Port     int    `json:"port"`
-					Protocol string `json:"protocol"`
+					Name        string `json:"name"`
+					Port        int    `json:"port"`
+					Protocol    string `json:"protocol"`
+					AppProtocol string `json:"appProtocol"`
 				} `json:"ports"`
 			} `json:"spec"`
 		} `json:"items"`
@@ -573,7 +576,7 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 			ExternalIPs: item.Spec.ExternalIPs,
 		}
 		for _, p := range item.Spec.Ports {
-			s.Ports = append(s.Ports, ServicePort{Name: p.Name, Port: p.Port, Protocol: p.Protocol})
+			s.Ports = append(s.Ports, ServicePort{Name: p.Name, Port: p.Port, Protocol: p.Protocol, AppProtocol: p.AppProtocol})
 		}
 		services = append(services, s)
 	}
