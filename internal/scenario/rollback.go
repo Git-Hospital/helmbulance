@@ -3,8 +3,10 @@ package scenario
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
@@ -69,12 +71,16 @@ func (s Rollback) Run(ctx context.Context, env *Env) (res Result) {
 	}
 
 	// Control: the earlier version upgraded to itself, then rolled back to the install.
+	mark = len(env.Runner.Transcript())
 	if err := env.Helm.Upgrade(ctx, release, ns, from, env.Values, "--version", env.FromVersion); err != nil {
 		return inconclusive(res, "upgrading the earlier version to itself failed", err)
 	}
+	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	mark = len(env.Runner.Transcript())
 	if err := env.Helm.Rollback(ctx, release, ns, 1); err != nil {
 		return inconclusive(res, "rolling the earlier version back to itself failed, so a rollback proves nothing here", err)
 	}
+	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
 	controlRev, err := latestRevision(ctx, env, release, ns)
 	if err != nil {
 		return inconclusive(res, "could not read the release history", err)
@@ -117,7 +123,28 @@ func (s Rollback) Run(ctx context.Context, env *Env) (res Result) {
 		// A rollback whose --wait ran out while the earlier version's containers crash went
 		// through, and came back broken: HB-RB-002 with the containers as evidence (#28).
 		if timedOutWaiting(ctx, rollbackErr) {
-			if crashes := crashesAfterTimeout(ctx, env, ns, podsBefore, containersBefore, containersKnown); len(crashes) > 0 {
+			hookJobs, hookErr := env.Helm.HookJobs(ctx, release, ns)
+			if hookErr != nil {
+				fmt.Fprintf(env.Log, "could not identify rollback hook Jobs: %v\n", hookErr)
+			}
+			var crashes, hookCrashes []string
+			if hookErr == nil {
+				crashes = ReadCrashes(ctx, env.Kube, ns, env.Log, func(containers []kube.Container) []string {
+					hooks := slices.DeleteFunc(slices.Clone(containers), func(c kube.Container) bool { return !hookJobs[c.Owner] })
+					hookCrashes = crashedSince(hooks, containersBefore, podsBefore, containersKnown)
+					if len(hookCrashes) > 0 {
+						return hookCrashes
+					}
+					containers = slices.DeleteFunc(containers, func(c kube.Container) bool { return hookJobs[c.Owner] })
+					return crashedSince(containers, containersBefore, podsBefore, containersKnown)
+				})
+			}
+			if len(hookCrashes) > 0 {
+				return rollbackFails(res, back, repro, append([]string{
+					"`helm rollback` did not finish while a hook Job crashed: " + helmMessage(rollbackErr),
+				}, hookCrashes...))
+			}
+			if len(crashes) > 0 {
 				return rolledBackBroken(res, back, repro, append([]string{
 					"`helm rollback --wait` timed out while containers of " + fromV + " crashed or could not start: " + helmMessage(rollbackErr),
 				}, crashes...), nil, nil)
@@ -237,7 +264,7 @@ func rolledBackBroken(res Result, back string, repro, unhealthy []string, change
 		Title:    "The earlier version does not come back as it was after a rollback",
 		Severity: severity,
 		Evidence: evidence,
-		Impact: "`helm rollback` reports success, but the earlier version does not run as it did " +
+		Impact: "After `helm rollback`, the earlier version does not run as it did " +
 			"before the upgrade: it cannot read what the new version left behind, or its Secrets " +
 			"are not the ones its data was set up with.",
 		Fix: "Keep data that the new version writes readable by the version before it, or gate the " +

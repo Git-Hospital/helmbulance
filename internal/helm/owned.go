@@ -3,6 +3,7 @@ package helm
 import (
 	"context"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -54,4 +55,36 @@ type object struct {
 		Namespace string `yaml:"namespace"`
 	} `yaml:"metadata"`
 	Items []object `yaml:"items"`
+}
+
+// HookJobs names the release's hook Jobs in ns, so their pods are not mistaken for
+// application containers when a rollback hook fails.
+func (c *Client) HookJobs(ctx context.Context, release, ns string) (map[string]bool, error) {
+	out, err := c.run(ctx, append([]string{"get", "hooks", release}, c.base(ns)...)...)
+	if err != nil {
+		return nil, err
+	}
+	jobs := map[string]bool{}
+	for _, text := range docSeparator.Split(string(out), -1) {
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		var doc struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name        string            `yaml:"name"`
+				Namespace   string            `yaml:"namespace"`
+				Annotations map[string]string `yaml:"annotations"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+			return nil, err
+		}
+		if doc.Kind == "Job" && doc.Metadata.Name != "" &&
+			(doc.Metadata.Namespace == "" || doc.Metadata.Namespace == ns) &&
+			doc.Metadata.Annotations["helm.sh/hook"] != "" {
+			jobs["Job/"+doc.Metadata.Name] = true
+		}
+	}
+	return jobs, nil
 }

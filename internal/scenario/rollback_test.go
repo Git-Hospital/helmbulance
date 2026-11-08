@@ -21,6 +21,7 @@ type rollbackFake struct {
 	controlErr  string // the control rollback, to revision 1
 	upgradeErr  string // the upgrade to the chart under test
 	rollbackErr string // the rollback after it
+	hooks       string // helm get hooks output
 	// lastStatus and lastChart are the newest revision helm history shows after that rollback;
 	// "deployed" and "rollback-fixture-1.0.0" when empty.
 	lastStatus, lastChart string
@@ -63,6 +64,10 @@ echo "$*" >> "` + bin + `/calls"
 case "$*" in
   *"get metadata"*) echo '{"version":"1.0.0"}'; exit 0 ;;
   "get manifest"*) printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n'; exit 0 ;;
+  "get hooks"*) cat <<'HOOKS'
+` + f.hooks + `
+HOOKS
+    exit 0 ;;
   install*) echo v1 > "` + phase + `"; exit 0 ;;
   upgrade*--version*) exit 0 ;;
   upgrade*) echo v2 > "` + phase + `"; ` + fail(f.upgradeErr) + ` ;;
@@ -157,8 +162,8 @@ func TestRollbackRefusedByTheChartIsHBRB001(t *testing.T) {
 	if !strings.Contains(strings.Join(f.Evidence, " "), "pre-rollback hooks failed") {
 		t.Errorf("evidence = %q, want helm's message", f.Evidence)
 	}
-	if len(f.Reproduce) != 3 || !strings.Contains(f.Reproduce[2], "helm rollback hb-rollback 3") {
-		t.Errorf("reproduce = %q, want install, upgrade and the rollback to revision 3", f.Reproduce)
+	if len(f.Reproduce) != 5 || !strings.Contains(f.Reproduce[1], "helm upgrade") || !strings.Contains(f.Reproduce[2], "helm rollback hb-rollback 1") || !strings.Contains(f.Reproduce[3], "helm upgrade") || !strings.Contains(f.Reproduce[4], "helm rollback hb-rollback 3") {
+		t.Errorf("reproduce = %q, want install, control upgrade, control rollback, treatment upgrade and rollback to revision 3", f.Reproduce)
 	}
 }
 
@@ -189,6 +194,9 @@ func TestRollbackTimeoutWithACrashIsHBRB002(t *testing.T) {
 	}})
 	if res.Verdict != Fail || len(res.Findings) != 1 || res.Findings[0].ID != "HB-RB-002" {
 		t.Fatalf("verdict = %s with %+v (%s), want FAIL with HB-RB-002", res.Verdict, res.Findings, res.Summary)
+	}
+	if strings.Contains(res.Findings[0].Impact, "reports success") {
+		t.Error("timeout finding claims helm reported success")
 	}
 	if !strings.Contains(strings.Join(res.Findings[0].Evidence, " "), "pod `web-db2`") {
 		t.Errorf("evidence = %q, want the crashing pod", res.Findings[0].Evidence)
@@ -274,5 +282,24 @@ func TestRollbackKeyTheControlChangedIsNotBlamed(t *testing.T) {
 	}})
 	if res.Verdict != Pass || len(res.Findings) > 0 || !strings.Contains(res.Summary, "change on every rollback") {
 		t.Errorf("verdict = %s with %+v (%s), want PASS naming the key the control changed", res.Verdict, res.Findings, res.Summary)
+	}
+}
+
+func TestRollbackHookCrashIsHBRB001(t *testing.T) {
+	hook := `{"items":[{"metadata":{"name":"hook-pod","uid":"hook","ownerReferences":[{"kind":"Job","name":"undo"}]},"status":{"phase":"Running","containerStatuses":[{"name":"hook","restartCount":3,"state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}}]}`
+	for _, msg := range []string{
+		"Error: resource Job/hb-rollback/undo not ready. status: Failed",
+		"Error: resource Job/hb-rollback/undo not ready. status: InProgress\ncontext deadline exceeded",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			res, _ := runRollback(t, rollbackFake{
+				rollbackErr: msg,
+				hooks:       "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: undo\n  annotations:\n    helm.sh/hook: pre-rollback\n",
+				pods:        map[string]string{"back": hook},
+			})
+			if res.Verdict != Fail || len(res.Findings) != 1 || res.Findings[0].ID != "HB-RB-001" {
+				t.Fatalf("hook failure: %+v; want HB-RB-001", res)
+			}
+		})
 	}
 }

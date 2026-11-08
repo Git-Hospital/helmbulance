@@ -96,3 +96,26 @@ esac
 		t.Errorf("OwnedSecrets = %v, %v; want app and hook-secret", got, err)
 	}
 }
+
+func TestHookJobsOnlyNamesHooksInReleaseNamespace(t *testing.T) {
+	c := fakeHelm(t, "")
+	manifest := ""
+	for _, d := range []struct{ kind, name, ns, hook string }{
+		{"Job", "undo", "", "pre-rollback"},
+		{"Job", "after", "ns", "post-rollback"},
+		{"Job", "elsewhere", "other", "pre-rollback"},
+		{"Job", "ordinary", "ns", ""},
+		{"Secret", "auth", "ns", "pre-rollback"},
+	} {
+		manifest += "---\nkind: " + d.kind + "\nmetadata:\n  name: " + d.name + "\n  namespace: " + d.ns + "\n  annotations:\n    helm.sh/hook: " + d.hook + "\n"
+	}
+	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+	script := "#!/bin/sh\ncat <<'HOOKS'\n" + manifest + "HOOKS\n"
+	if err := os.WriteFile(filepath.Join(bin, "helm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.HookJobs(t.Context(), "hb", "ns")
+	if err != nil || !reflect.DeepEqual(got, map[string]bool{"Job/undo": true, "Job/after": true}) {
+		t.Fatalf("HookJobs = %v, %v", got, err)
+	}
+}
