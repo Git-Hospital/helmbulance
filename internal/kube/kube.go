@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -911,4 +913,51 @@ func (c *Client) ClaimUsers(ctx context.Context, ns string, claims []string) (ma
 func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
 	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "delete", "pod", name, "--ignore-not-found", "--wait=false")
 	return err
+}
+
+// Capabilities returns what helm would read from the cluster as .Capabilities: the server's
+// Kubernetes version, and its API versions: every served group/version, and group/version/Kind for
+// each resource, the two forms .Capabilities.APIVersions.Has accepts. A client-side render gets them through
+// --kube-version and --api-versions, as Argo CD passes them (#59).
+func (c *Client) Capabilities(ctx context.Context) (version string, apiVersions []string, err error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "version", "-o", "json")
+	if err != nil {
+		return "", nil, err
+	}
+	var v struct {
+		ServerVersion struct {
+			GitVersion string `json:"gitVersion"`
+		} `json:"serverVersion"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		return "", nil, fmt.Errorf("parse kubectl version: %w", err)
+	}
+	if v.ServerVersion.GitVersion == "" {
+		return "", nil, fmt.Errorf("kubectl version printed no server version")
+	}
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-resources", "--no-headers")
+	if err != nil {
+		return "", nil, err
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		// NAME [SHORTNAMES] APIVERSION NAMESPACED KIND: read from the right, since SHORTNAMES is
+		// often empty.
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		gv, kind := f[len(f)-3], f[len(f)-1]
+		seen[gv], seen[gv+"/"+kind] = true, true
+	}
+	// api-resources lists each group's preferred version only; api-versions lists every served one,
+	// such as autoscaling/v1 next to autoscaling/v2, and helm's server-side Capabilities has them all.
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-versions")
+	if err != nil {
+		return "", nil, err
+	}
+	for _, gv := range strings.Fields(string(out)) {
+		seen[gv] = true
+	}
+	return v.ServerVersion.GitVersion, slices.Sorted(maps.Keys(seen)), nil
 }

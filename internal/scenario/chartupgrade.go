@@ -189,6 +189,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		note("keys added by the new version, not a finding", describe(added, consumers)),
 		note("values moved to another key, not a finding", describe(moved, consumers)),
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
+		note("not compared, since they change on every upgrade of "+fromV+" too (upgrade-without-values)", describe(regenerated, consumers)),
 		unknownStatefulNote(statefulKnown, changes),
 		secrets.notComparedNote())
 	if healthErr != nil {

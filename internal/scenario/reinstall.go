@@ -239,7 +239,7 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 		res.Summary = fmt.Sprintf("%d problem(s) after uninstall and install", len(res.Findings))
 	} else {
 		res.Verdict = Pass
-		res.Summary = reinstallPassSummary(volumes, changes)
+		res.Summary = reinstallPassSummary(volumes, changes, !noKeys(before, after))
 	}
 	res.Summary = withNotes(res.Summary,
 		note("keys added by the reinstall, not a finding", describe(added, consumers)),
@@ -468,8 +468,12 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 
 // reinstallPassSummary says what was checked, including volumes deleted with the release, which
 // depend on the StorageClass and the chart and are not a finding on their own.
-func reinstallPassSummary(volumes []volume, changes []oracle.Change) string {
+func reinstallPassSummary(volumes []volume, changes []oracle.Change, compared bool) string {
 	summary := "Secrets came back unchanged after uninstall and install"
+	if !compared {
+		// No key was read before or after, so nothing came back unchanged (#59).
+		summary = noSecretsTested
+	}
 	switch {
 	case len(volumes) == 0 && len(changes) > 0:
 		return "the release has no volumes, so new Secrets after a reinstall lose nothing"

@@ -271,6 +271,15 @@ cases:
     args: [testdata/charts/gitops-values-secret, --scenario, gitops-render]
     exit: 0
     verdicts: {gitops-render: PASS}
+  # A Secret built from .Capabilities: the client-side render must get the cluster's version and
+  # API versions, as Argo CD passes them, or helm's defaults make it look changed (#59).
+  - name: gitops-capabilities-secret
+    pair: gitops-secret
+    role: fixed
+    command: test
+    args: [testdata/charts/gitops-capabilities-secret, --scenario, gitops-render]
+    exit: 0
+    verdicts: {gitops-render: PASS}
   # A password made in an install-only hook: Helm never runs the hook again, Argo CD runs it on
   # every sync (#45). Its twin's hook runs on upgrade too, so upgrade-without-values reports it.
   - name: gitops-install-hook
