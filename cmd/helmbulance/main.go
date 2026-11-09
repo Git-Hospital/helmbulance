@@ -456,6 +456,10 @@ func matrixCmd(args []string) int {
 		usage()
 		return exitError
 	}
+	if err := checkVersions(*versions); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitError
+	}
 	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
 		return exitError
 	}
@@ -631,6 +635,26 @@ func interruptContext() (context.Context, context.CancelFunc) {
 		}
 	}()
 	return ctx, cancel
+}
+
+// checkVersions refuses a --k8s list that names a version with no pinned node image, or none at
+// all, before any cluster starts: a typo is a usage error (exit 2), not an INCONCLUSIVE found only
+// after the versions before it ran (#56).
+func checkVersions(list string) error {
+	n := 0
+	for _, v := range strings.Split(list, ",") {
+		if v = strings.TrimSpace(v); v == "" {
+			continue
+		}
+		n++
+		if _, ok := matrix.NodeImages[v]; !ok {
+			return fmt.Errorf("--k8s %s: no kind node image for that version; supported: %s", v, strings.Join(matrix.Versions(), ", "))
+		}
+	}
+	if n == 0 {
+		return fmt.Errorf("--k8s names no version; supported: %s", strings.Join(matrix.Versions(), ", "))
+	}
+	return nil
 }
 
 // checkRotations rejects --expected-rotation patterns that could never match a "secret/key"

@@ -63,14 +63,20 @@ func TestLookupCalls(t *testing.T) {
 // server-side and $FAKE_CLIENT client-side ("random" prints a new value on every call; an empty
 // $FAKE_SERVER renders no Secret, as a chart that renders it only if not (lookup …)). The
 // server-side render must be an upgrade. Both renders give the Secret the helm.sh/hook $FAKE_HOOK.
-// kubectl holds db with password "pw" and has nothing else.
+// kubectl holds db with password "pw" and has nothing else; the client-side render must carry the
+// cluster's version and API versions, as Argo CD passes them (#59). With $FAKE_MANIFEST_NS set,
+// the release's manifest puts db in that namespace instead.
 const fakeGitopsTools = `#!/bin/sh
 secret() { printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: db\n  annotations: {helm.sh/hook: "%s"}\nstringData:\n  password: %s\n' "$2" "$1"; }
 case "$(basename "$0") $*" in
-  "helm get manifest"*) secret pw ;;
+  "helm get manifest"*) if [ -n "$FAKE_MANIFEST_NS" ]; then printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: db\n  namespace: %s\n' "$FAKE_MANIFEST_NS"; else secret pw; fi ;;
   "helm template"*"--dry-run=server --is-upgrade"*) [ -n "$FAKE_SERVER" ] && secret "$FAKE_SERVER" "$FAKE_HOOK" ;;
   "helm template"*"--dry-run=server"*) echo "fake helm: the server-side render must be an upgrade" >&2; exit 1 ;;
-  "helm template"*) v="$FAKE_CLIENT"; [ "$v" = random ] && v="r$$"; secret "$v" "$FAKE_HOOK" ;;
+  "helm template"*"--kube-version v1.34.11 --api-versions apps/v1,apps/v1/Deployment"*) v="$FAKE_CLIENT"; [ "$v" = random ] && v="r$$"; secret "$v" "$FAKE_HOOK" ;;
+  "helm template"*) echo "fake helm: the client-side render needs the cluster's version and API versions" >&2; exit 1 ;;
+  "kubectl"*" version -o json"*) echo '{"serverVersion":{"gitVersion":"v1.34.11"}}' ;;
+  "kubectl"*" api-resources --no-headers"*) echo 'deployments   deploy   apps/v1   true   Deployment' ;;
+  "kubectl"*" api-versions"*) echo apps/v1 ;;
   "kubectl"*"get secrets"*) echo '{"items":[{"metadata":{"name":"db"},"type":"Opaque","data":{"password":"cHc="}}]}' ;;
   "kubectl"*"get"*) echo '{"items":[]}' ;;
 esac
@@ -141,6 +147,18 @@ func TestGitopsRenderNamesLookupInARelativeChartPath(t *testing.T) {
 	res := runGitopsRender(t, "pw", "random", "charts/demo")
 	if res.Verdict != Fail || !strings.Contains(strings.Join(res.Findings[0].Evidence, "\n"), "`lookup` in `templates/secret.yaml:1`") {
 		t.Errorf("verdict = %s, findings = %+v; want the lookup line in the evidence", res.Verdict, res.Findings)
+	}
+}
+
+// #59: a release whose only Secret lands in another namespace has none to compare. The SKIPPED
+// summary says so for its own namespace and names the other Secret, not "the release has no Secrets".
+func TestGitopsRenderSkipNamesSecretsInAnotherNamespace(t *testing.T) {
+	t.Setenv("FAKE_MANIFEST_NS", "other")
+	res := runGitopsRender(t, "pw", "pw", t.TempDir())
+	for _, want := range []string{"the release has no Secrets in its namespace", "not compared, since the release renders them into another namespace: `other/db`"} {
+		if res.Verdict != Skipped || !strings.Contains(res.Summary, want) {
+			t.Errorf("%s: %q, want SKIPPED with %q", res.Verdict, res.Summary, want)
+		}
 	}
 }
 

@@ -1,0 +1,56 @@
+# Release binaries: when a v* tag is pushed, build helmbulance for Linux and macOS (amd64, arm64),
+# write SHA256SUMS, attest each archive's build provenance, and attach them to a draft GitHub
+# release. A person reads the draft and publishes it. Signing with cosign and an SBOM are v0.2
+# (docs/architecture.md). Follows the CI row of the security model (§4): no secrets beyond the
+# job's own token, no caches, actions pinned by commit SHA.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  binaries:
+    name: binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # create the draft release
+      id-token: write # sign the provenance attestation
+      attestations: write # store the attestation
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go vet ./...
+      - run: go test ./...
+      - name: build
+        run: scripts/release-build.sh "$TAG" "$RUNNER_TEMP/dist"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/dist/helmbulance_*.tar.gz
+      - name: draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=(--generate-notes)
+          if [[ -f "docs/releases/$TAG.md" ]]; then
+            notes=(--notes-file "docs/releases/$TAG.md")
+          fi
+          gh release create "$TAG" --draft --verify-tag --title "$TAG" "${notes[@]}" "$RUNNER_TEMP"/dist/helmbulance_*.tar.gz "$RUNNER_TEMP/dist/SHA256SUMS"

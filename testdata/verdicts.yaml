@@ -44,6 +44,16 @@ cases:
     verdicts: {upgrade-without-values: FAIL}
     findings:
       HB-UV-001: [hb-upgrade-db/password]
+  # Two scenarios on one cluster, and the chart keeps a cluster-scoped object: the first
+  # scenario's cleanup must delete it, or the second scenario's install refuses it as another
+  # release's (#52). Not a pair of its own: no finding, the second verdict is what changes.
+  - name: keeps-cluster-role
+    pair: secret-regeneration
+    role: fixed
+    command: test
+    args: [testdata/charts/keeps-cluster-role, --scenario, upgrade-without-values, --scenario, reinstall]
+    exit: 0
+    verdicts: {upgrade-without-values: PASS, reinstall: PASS}
   - name: keeps-secret-for-db-password
     pair: db-password-regeneration
     role: fixed
@@ -292,6 +302,15 @@ cases:
     args: [testdata/charts/gitops-values-secret, --scenario, gitops-render]
     exit: 0
     verdicts: {gitops-render: PASS}
+  # A Secret built from .Capabilities: the client-side render must get the cluster's version and
+  # API versions, as Argo CD passes them, or helm's defaults make it look changed (#59).
+  - name: gitops-capabilities-secret
+    pair: gitops-secret
+    role: fixed
+    command: test
+    args: [testdata/charts/gitops-capabilities-secret, --scenario, gitops-render]
+    exit: 0
+    verdicts: {gitops-render: PASS}
   # A password made in an install-only hook: Helm never runs the hook again, Argo CD runs it on
   # every sync (#45). Its twin's hook runs on upgrade too, so upgrade-without-values reports it.
   - name: gitops-install-hook
@@ -343,6 +362,15 @@ cases:
     role: fixed
     command: test
     args: [testdata/charts/zd-rolling, --scenario, zero-downtime]
+    exit: 0
+    verdicts: {zero-downtime: PASS}
+  # An OnDelete StatefulSet in the release: kubectl rollout status refuses it, so every run was
+  # INCONCLUSIVE before #57. It is left out of the restart.
+  - name: zd-rolling-ondelete
+    pair: zero-downtime
+    role: fixed
+    command: test
+    args: [testdata/charts/zd-rolling-ondelete, --scenario, zero-downtime]
     exit: 0
     verdicts: {zero-downtime: PASS}
   # A ResourceQuota on requests and limits rejects a traffic pod without them: INCONCLUSIVE before #97.
