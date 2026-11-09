@@ -81,7 +81,7 @@ There is no separate chart model in v0.1. The scenarios read what the chart crea
 | Secrets | Which workload reads which key |
 | Network | Services (NetworkPolicies come with `network-isolation`, v0.1.x) |
 | Storage | PVCs and StatefulSet volume templates |
-| Cluster-scoped resources | Not read. Scenarios run one at a time, so they do not collide |
+| Cluster-scoped resources | Read during setup and cleanup to remove objects a sandbox release kept. Scenarios run one at a time, so they do not collide |
 | `lookup` | Found statically in every template, subcharts included, then confirmed after install by comparing a client-side render with a server-side dry run |
 
 **Where `lookup` matters.** Argo CD renders charts with `helm template`, where `lookup` returns nothing. Flux's helm-controller runs real Helm installs, where `lookup` works. A `lookup` finding names Argo CD and does not claim to apply to "GitOps" in general.
@@ -256,8 +256,8 @@ NetworkPolicy cannot provide this, because the chart can add its own policies an
 
 Targets are checked when the connection is made, not when a name is resolved. A target must be the IP of a running pod in the release namespace. ExternalName and selector-less Services, `externalIPs` and load balancer addresses are refused, so a chart cannot point Helmbulance's traffic at a third party. Rate and duration caps are compiled into the probe binary; flags can only lower them.
 
-**Supply chain of the tool.** Today: `matrix`'s node images and the busybox image are pinned by digest, and the Action downloads kind, kubectl and helm with fixed versions and checks their sha256. It builds Helmbulance from source with `go build`, and users are told to pin it by commit SHA. Planned for v0.2, not built (#55):
-- release binaries signed with cosign (keyless), with an SBOM and SLSA provenance;
+**Supply chain of the tool.** Today: `matrix`'s node images and the busybox image are pinned by digest, and the Action downloads kind, kubectl and helm with fixed versions and checks their sha256. It builds Helmbulance from source with `go build`, and users are told to pin it by commit SHA. On a `v*` tag, the release workflow builds Linux and macOS archives (amd64 and arm64), writes `SHA256SUMS`, attests each archive's build provenance, and attaches them to a draft GitHub release for a person to publish. Planned for v0.2, not built (#55):
+- signing release binaries with cosign (keyless) and producing an SBOM;
 - images under `ghcr.io/git-hospital/`, and a probe image whose digest is embedded in the binary;
 - the Action verifying the binary signature before it runs it.
 
