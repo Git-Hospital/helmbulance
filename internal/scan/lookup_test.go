@@ -57,7 +57,7 @@ func TestLookupChecker(t *testing.T) {
 	}{
 		"in the Secret's own file": {map[string]string{secret: guarded}, true},
 		"in a library subchart's helper": {map[string]string{
-			secret:                              `{{ include "common.secret" . }}`,
+			secret:                             `{{ include "common.secret" . }}`,
 			"charts/common/templates/_lib.tpl": `{{- define "common.secret" -}}` + guarded + `{{- end -}}`,
 		}, true},
 		"through a helper that includes another": {map[string]string{
@@ -68,7 +68,7 @@ func TestLookupChecker(t *testing.T) {
 			secret:                   `{{ include "app.a" . }}`,
 			"templates/_helpers.tpl": `{{- define "app.a" -}}{{ if .Values.x }}x{{ end }}` + guarded + `{{- end -}}`,
 		}, true},
-		"only in a comment": {map[string]string{secret: `{{/* lookup "v1" "Secret" */}}{{ randAlphaNum 8 }}`}, false},
+		"only in a comment":    {map[string]string{secret: `{{/* lookup "v1" "Secret" */}}{{ randAlphaNum 8 }}`}, false},
 		"nslookup in a script": {map[string]string{secret: `script: nslookup db.example`}, false},
 		"no lookup":            {map[string]string{secret: `{{ randAlphaNum 8 }}`}, false},
 	} {
