@@ -221,7 +221,7 @@ func withDefault(kind string, field []string, v any) any {
 }
 
 var (
-	randomFn   = regexp.MustCompile(`\b(randAlphaNum|randAlpha|randAscii|randNumeric|randBytes|uuidv4|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b`)
+	randomFn = regexp.MustCompile(`\b(randAlphaNum|randAlpha|randAscii|randNumeric|randBytes|uuidv4|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b`)
 	// checksumOf matches the two ways a template names another for its checksum:
 	// include (print $.Template.BasePath "/secret.yaml") and
 	// include (printf "%s/secret.yaml" $.Template.BasePath), each piped to sha256sum (#56).
