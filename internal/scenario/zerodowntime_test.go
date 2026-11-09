@@ -520,3 +520,77 @@ func TestZeroDowntimeDaemonSetCauseIsMaxSurge(t *testing.T) {
 		t.Errorf("evidence does not name maxSurge as the cause:\n%s", ev)
 	}
 }
+
+// A StatefulSet with updateStrategy OnDelete keeps its pods through a rolling restart, and kubectl
+// rollout status refuses it, which made every run INCONCLUSIVE. It is left out, and the summary
+// names it (#57).
+func TestZeroDowntimeLeavesOutOnDelete(t *testing.T) {
+	const web = `{"kind":"Deployment","metadata":{"name":"web"},"spec":{"replicas":2,"template":{"metadata":{"labels":{"app":"web"}}}}}`
+	const db = `{"kind":"StatefulSet","metadata":{"name":"db"},"spec":{"replicas":1,"updateStrategy":{"type":"OnDelete"},"template":{"metadata":{"labels":{"app":"db"}}}}}`
+	logs := map[string]string{
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "300 ok\n",
+		"hb-traffic":         "300 ok\n301 ok\n302 ok\n",
+		"workloads":          `{"items":[` + web + `,` + db + `]}`,
+	}
+	var calls string
+	res := runZeroDowntime(t, logs, func(*Env) {
+		calls = filepath.Join(os.Getenv("FAKE_LOGS"), "calls")
+	})
+	b, _ := os.ReadFile(calls)
+	if strings.Contains(string(b), "statefulset/db") || !strings.Contains(string(b), "deployment/web") {
+		t.Errorf("rollout calls:\n%s\nwant web restarted and db left alone", b)
+	}
+	if res.Verdict != Pass || !strings.Contains(res.Summary, "`StatefulSet/db` left out, since updateStrategy OnDelete replaces no pod on a restart") {
+		t.Errorf("verdict %s, summary %q", res.Verdict, res.Summary)
+	}
+
+	logs["workloads"] = `{"items":[` + db + `]}`
+	if res := runZeroDowntime(t, logs); res.Verdict != Skipped || !strings.Contains(res.Summary, "every workload uses updateStrategy OnDelete") {
+		t.Errorf("only an OnDelete StatefulSet: %s %q, want SKIPPED", res.Verdict, res.Summary)
+	}
+}
+
+// A traffic pod that stopped sending before the end of the operation leaves the tail unmeasured:
+// INCONCLUSIVE, not a PASS on the requests before it stopped (#57).
+func TestZeroDowntimeTrafficMustGoOnThroughTheTail(t *testing.T) {
+	longTail := func(*Env) { trafficTail = 2 * time.Second }
+	for name, c := range map[string]struct {
+		log, verdict string
+	}{
+		"stopped when the operation ended": {"300 ok\n301 ok\n305 ok\n", Inconclusive},
+		"went on through the tail":         {"300 ok\n301 ok\n305 ok\n306 ok\n307 ok\n", Pass},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := runZeroDowntime(t, map[string]string{
+				"hb-traffic-control":  "100 ok\n",
+				"hb-traffic.before.0": "300 ok\n", // the operation starts at 300
+				"hb-traffic.before.1": "305 ok\n", // and ends at 305
+				"hb-traffic":          c.log,
+			}, longTail)
+			if res.Verdict != c.verdict {
+				t.Errorf("verdict %s (%s), want %s", res.Verdict, res.Summary, c.verdict)
+			}
+		})
+	}
+}
+
+// An upgrade that fails still says what the traffic saw until then (#57).
+func TestZeroDowntimeFailedUpgradeKeepsTheMeasuredOutage(t *testing.T) {
+	failingUpgrade := func(e *Env) {
+		e.FromVersion, e.From = "1.0.0", "repo/chart"
+		bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+		script := "#!/bin/sh\ncase \"$*\" in *\"get metadata\"*) echo '{\"version\":\"1.0.0\"}' ;; upgrade*--version*) exit 0 ;; upgrade*) echo 'Error: UPGRADE FAILED: timed out' >&2; exit 1 ;; esac\nexit 0\n"
+		if err := os.WriteFile(filepath.Join(bin, "helm"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res := runZeroDowntime(t, map[string]string{
+		"hb-traffic-control": "100 ok\n",
+		"hb-traffic.before":  "300 ok\n",
+		"hb-traffic":         "300 ok\n301 fail\n302 fail\n303 ok\n",
+	}, failingUpgrade)
+	if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "until then 2 of 4 requests failed, longest outage") {
+		t.Errorf("verdict %s, summary %q", res.Verdict, res.Summary)
+	}
+}
