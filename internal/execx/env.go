@@ -42,7 +42,11 @@ func SandboxEnv(environ []string) []string {
 			env = append(env, kv)
 		}
 	}
-	return append(env, "HELM_DRIVER=secret")
+	// kubectl reads ~/.kube/kuberc through HOME, and its defaults can set --server or
+	// --insecure-skip-tls-verify on the commands Helmbulance runs; it is turned off. KUBECTL_KUBERC
+	// is the switch on kubectl versions where kuberc is still behind a feature gate (security
+	// review of #142).
+	return append(env, "HELM_DRIVER=secret", "KUBERC=off", "KUBECTL_KUBERC=false")
 }
 
 // NewSandboxRunner returns a Runner for commands that act on a sandbox cluster. Every command

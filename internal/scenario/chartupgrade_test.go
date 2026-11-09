@@ -336,3 +336,49 @@ func TestStartFailures(t *testing.T) {
 		t.Errorf("StartFailures = %q, want %q", got, want)
 	}
 }
+
+// A key that changes on every upgrade of the earlier version is left out of the comparison, and the
+// PASS summary says so instead of only "with Secrets kept" (#59).
+func TestChartUpgradePassNamesKeysThatChangeOnEveryUpgrade(t *testing.T) {
+	bin := t.TempDir()
+	helmScript := `#!/bin/sh
+case "$*" in
+  *"get metadata"*) echo '{"version":"1.0.0"}' ;;
+  *"get manifest"*) printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: db\n' ;;
+  upgrade*) n=$(cat "` + bin + `/n" 2>/dev/null || echo 0); echo $((n+1)) > "` + bin + `/n" ;;
+esac
+exit 0
+`
+	// Every upgrade gives db/password a new value, the earlier version's and the new one's alike.
+	kubectlScript := `#!/bin/sh
+case "$*" in
+  *"get secrets"*) n=$(cat "` + bin + `/n" 2>/dev/null || echo 0)
+    echo "{\"items\":[{\"metadata\":{\"name\":\"db\"},\"type\":\"Opaque\",\"data\":{\"password\":\"$(printf 'pw%s' "$n" | base64)\"}}]}" ;;
+  *) echo '{"items":[]}' ;;
+esac
+`
+	for name, script := range map[string]string{"helm": helmScript, "kubectl": kubectlScript} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := settleInterval
+	t.Cleanup(func() { settleInterval = old })
+	settleInterval = time.Millisecond
+	hasher, err := oracle.NewHasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &execx.Runner{}
+	res := ChartUpgrade{}.Run(t.Context(), &Env{
+		Runner: runner, Helm: &helm.Client{Runner: runner, Timeout: time.Minute}, Kube: &kube.Client{Runner: runner},
+		Hasher: hasher, Chart: "./v2", From: "repo/chart", FromVersion: "1.0.0", Log: io.Discard,
+	})
+	if res.Verdict != Pass {
+		t.Fatalf("verdict = %s (%s), want PASS", res.Verdict, res.Summary)
+	}
+	if want := "not compared, since they change on every upgrade of 1.0.0 too (upgrade-without-values): `db/password`"; !strings.Contains(res.Summary, want) {
+		t.Errorf("summary = %q, want it to contain %q", res.Summary, want)
+	}
+}

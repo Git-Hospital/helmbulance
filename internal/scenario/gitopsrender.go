@@ -35,14 +35,12 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	defer func() {
 		ctx, cancel := cleanupContext(ctx)
 		defer cancel()
-		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
-		if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
+		cleanUp(ctx, env, release, ns)
 	}()
 
+	if err := startClean(ctx, env, release, ns); err != nil {
+		return inconclusive(res, "could not clear what an earlier run left", err)
+	}
 	mark := len(env.Runner.Transcript())
 	if err := env.Helm.Install(ctx, release, ns, env.Chart, env.Values); err != nil {
 		return inconclusive(res, "the chart did not install", err)
@@ -54,7 +52,10 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	if len(live) == 0 {
 		res.Verdict = Skipped
-		res.Summary = "the release has no Secrets, so there is nothing a client-side render could change"
+		// Secrets it renders into another namespace are not compared, so they are named, not
+		// hidden behind "no Secrets" (#59).
+		res.Summary = withNotes("the release has no Secrets in its namespace, so there is nothing a client-side render could change",
+			secrets.notComparedNote())
 		return res
 	}
 
@@ -62,10 +63,18 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	// as Argo CD does. Argo CD never passes --is-upgrade, so its render is always an install, while
 	// Helm keeps what only an install renders: a `.Release.IsInstall` Secret with keep, or one an
 	// install-only hook made (#45).
+	// Argo CD gives its render the cluster's version and API versions; without them helm template
+	// uses its own defaults, and a Secret built from .Capabilities would differ for that reason
+	// alone (#59).
+	version, apis, err := env.Kube.Capabilities(ctx)
+	if err != nil {
+		return inconclusive(res, "could not read the cluster's version and API versions", err)
+	}
+	clientCaps := []string{"--kube-version", version, "--api-versions", strings.Join(apis, ",")}
 	var hooks map[string]string
 	render := func(server bool) (oracle.SecretSnapshot, error) {
 		if !server {
-			out, err := env.Helm.Template(ctx, release, ns, env.Chart, env.Values, false)
+			out, err := env.Helm.Template(ctx, release, ns, env.Chart, env.Values, false, clientCaps...)
 			if err != nil {
 				return nil, err
 			}
