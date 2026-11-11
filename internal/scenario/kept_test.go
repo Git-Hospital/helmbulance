@@ -22,7 +22,7 @@ echo "$(basename "$0") $*" >> "$FAKE_DIR/log"
 case "$(basename "$0") $*" in
   "helm install"*) echo "Error: INSTALLATION FAILED: test" >&2; exit 1 ;;
   "kubectl"*" api-resources "*) echo clusterroles.rbac.authorization.k8s.io ;;
-  "kubectl"*" get clusterroles"*) cat <<JSON
+  "kubectl"*" get "*" -- clusterroles"*) cat <<JSON
 {"items":[
  {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"own","annotations":{"meta.helm.sh/release-name":"r","meta.helm.sh/release-namespace":"$FAKE_NS"}}},
  {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"other","annotations":{"meta.helm.sh/release-name":"r","meta.helm.sh/release-namespace":"hb-somewhere-else"}}}
@@ -92,10 +92,10 @@ func TestScenariosDeleteKeptClusterObjects(t *testing.T) {
 				t.Fatalf("no helm install in\n%s", log)
 			}
 			before, after := strings.Join(calls[:install], "\n"), strings.Join(calls[install:], "\n")
-			if !strings.Contains(before, "delete clusterrole.rbac.authorization.k8s.io/other clusterrole.rbac.authorization.k8s.io/own ") {
+			if !strings.Contains(before+"\n", " -- clusterrole.rbac.authorization.k8s.io/other clusterrole.rbac.authorization.k8s.io/own\n") {
 				t.Errorf("before the install, want both kept ClusterRoles deleted; got\n%s", before)
 			}
-			if !strings.Contains(after, "delete clusterrole.rbac.authorization.k8s.io/own ") || strings.Contains(after, "/other") {
+			if !strings.Contains(after+"\n", " -- clusterrole.rbac.authorization.k8s.io/own\n") || strings.Contains(after, "/other") {
 				t.Errorf("in the cleanup, want only the release's own kept ClusterRole deleted; got\n%s", after)
 			}
 		})

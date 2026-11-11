@@ -216,6 +216,21 @@ jobs:
           timeout: 3m
           report-dir: reports/good
 
+      # The defective chart again, with its regenerated password listed as an expected rotation
+      # (#98). HB-UV-001 goes; the restart it causes, HB-UV-003, stays, so it is still exit 1. Checked
+      # on kind before this step was added.
+      - name: Defective chart, rotation expected
+        id: rotation
+        continue-on-error: true
+        uses: ./ # zizmor: ignore[self-repository] only this commit is checked out; switch to $/ once confirmed for a root action
+        with:
+          chart: testdata/charts/regenerates-secret
+          scenarios: upgrade-without-values
+          expected-rotation: |
+            *-secret/password
+          timeout: 3m
+          report-dir: reports/rotation
+
       # allow-remote is off by default, so a chart that is not on disk is refused before any cluster
       # exists. The name is never resolved.
       - name: Remote chart, not allowed
@@ -237,6 +252,7 @@ jobs:
           REMOTE_OUTCOME: ${{ steps.remote.outcome }}
           REMOTE_CODE: ${{ steps.remote.outputs.exit-code }}
           REMOTE_VERDICT: ${{ steps.remote.outputs.verdict }}
+          ROTATION_CODE: ${{ steps.rotation.outputs.exit-code }}
         run: |
           echo "defective: outcome=$BAD_OUTCOME exit=$BAD_CODE verdict=$BAD_VERDICT"
           echo "fixed:     exit=$GOOD_CODE verdict=$GOOD_VERDICT"
@@ -252,3 +268,6 @@ jobs:
           test -s reports/bad/report.md
           test -s reports/good/report.md
           test ! -e reports/remote/report.md
+          echo "rotation:  exit=$ROTATION_CODE"
+          [ "$ROTATION_CODE" = 1 ]
+          jq -e '[.results[].findings[]?.id] == ["HB-UV-003"]' reports/rotation/report.json

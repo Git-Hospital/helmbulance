@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -384,6 +386,32 @@ func TestOneLine(t *testing.T) {
 	for in, want := range cases {
 		if got := oneLine(in); got != want {
 			t.Errorf("oneLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// After an interrupt no further scenario starts: each one left is INCONCLUSIVE "not run", so the
+// sandbox cluster is deleted at once instead of after every remaining scenario's cleanup (#58).
+func TestRunEachStopsStartingAfterAnInterrupt(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	var ran []string
+	names := []string{"a", "b", "c"}
+	got := runEach(ctx, names, func(i int) scenario.Result {
+		ran = append(ran, names[i])
+		if names[i] == "a" {
+			cancel() // the interrupt arrives while a runs
+		}
+		return scenario.Result{Scenario: names[i], Verdict: scenario.Pass}
+	})
+	if !reflect.DeepEqual(ran, []string{"a"}) {
+		t.Errorf("ran %v, want only a", ran)
+	}
+	if len(got) != 3 || got[0].Verdict != scenario.Pass {
+		t.Fatalf("results %+v, want a's own result first and one per name", got)
+	}
+	for _, r := range got[1:] {
+		if r.Verdict != scenario.Inconclusive || !strings.Contains(r.Summary, "not run") {
+			t.Errorf("%s: %+v, want INCONCLUSIVE not run", r.Scenario, r)
 		}
 	}
 }

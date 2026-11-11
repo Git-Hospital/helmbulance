@@ -12,7 +12,6 @@ On each run it:
 The Action passes fewer options than the CLI, and that changes what it can find ([#48](https://github.com/Git-Hospital/helmbulance/issues/48)):
 
 - **No install-only values.** The Action has no `--set` input, and the files in `values` are given both at install and in the upgrade. So `upgrade-without-values` cannot find a value the upgrade leaves out (HB-UV-002); through the Action it finds HB-UV-001 and HB-UV-003 only. Run the CLI with `--set` for that check.
-- **No input for `--traffic-path`, `--traffic-target` or `--expected-rotation`.** `zero-downtime` runs by default and ends INCONCLUSIVE when `/` does not answer 2xx or the picked port is wrong, which fails the step. Leave it out with `scenarios` in that case. A chart that renews a certificate on purpose gets HB-UV-001 on every run.
 
 Use it on your own charts and read the report, not only the exit code.
 
@@ -53,6 +52,9 @@ Nothing is released yet, so pin the Action to a full commit SHA.
 | `from` | | Chart that `chart-upgrade` and `zero-downtime` upgrade from: a path, or with `allow-remote` a `repo/chart`, `oci://…` or URL reference. |
 | `allow-remote` | `false` | `true` lets `chart` and `from` name a chart from a repository, OCI registry or URL. Without it such a reference ends the run with exit 2. |
 | `from-version` | | Version to upgrade from. Setting it enables `chart-upgrade`. For a local `chart`, also set `from` to the earlier chart; without it the run stops with exit 2, because helm ignores the version of a path. |
+| `traffic-target` | | Where `zero-downtime` sends its requests, `service:port`. Empty picks the Service port that looks most like plain HTTP. |
+| `traffic-path` | | The path `zero-downtime` requests; it must answer 2xx. Empty means `/`. |
+| `expected-rotation` | | Secret keys the chart changes on purpose, one `secret/key` pattern per line, globs allowed (`'*-webhook-tls/*'`). They are named in the summary, not reported. |
 | `timeout` | `10m` | Timeout for each install or upgrade. |
 | `report-dir` | `helmbulance-report` | Where `report.md`, `report.json` and `report.sarif` are written. |
 | `fail-on` | `findings` | `findings` fails the step on exit 1, 2 or 3. `error` fails only on 2 or 3. `never` always passes; read the `exit-code` output. |
