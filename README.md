@@ -125,7 +125,7 @@ The fixtures in `testdata/charts/` show what it finds: each defect has a fixed t
 
 ## Contributing
 
-Issues and ideas are welcome, especially failures you have seen in production that a scenario could catch. Open an issue describing what happened and how you found out.
+Issues and ideas are welcome, especially failures you have seen in production that a scenario could catch. Open an issue describing what happened and how you found out. To add a scenario yourself, start with [writing a scenario](docs/writing-a-scenario.md).
 
 ## Team
 
