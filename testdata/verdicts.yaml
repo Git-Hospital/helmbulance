@@ -10,12 +10,8 @@
 # ID, and for an ID that is still listed here once a pair covers it.
 uncovered:
   HB-CU-002: no fixture yet for an upgrade to a new chart version that changes a Secret
-  HB-CU-003: no fixture yet for a new chart version whose workloads do not become healthy
   HB-K8S-004: no fixture yet for an API server warning, other than a deprecation, about an object the chart creates
-  HB-RI-002: no fixture yet for a volume that survives a reinstall and comes back without its data
   HB-RI-003: no fixture yet for a chart that does not install again after helm uninstall
-  HB-K8S-001: no fixture yet for a chart that does not install on one Kubernetes version
-  HB-SCAN-002: no fixture yet for a checksum annotation that changes on the first upgrade
 
 cases:
   # upgrade-without-values
@@ -144,6 +140,24 @@ cases:
     exit: 0
     verdicts: {chart-upgrade: PASS}
 
+  # v2 is Ready long enough for --wait, then exits again and again (#60).
+  - name: upgrade-v2-unhealthy
+    pair: upgrade-v2-unhealthy
+    role: defect
+    command: test
+    args: [testdata/charts/upgrade-v2-unhealthy, --scenario, chart-upgrade, --from, testdata/charts/upgrade-v1, --from-version, 1.0.0]
+    exit: 1
+    verdicts: {chart-upgrade: FAIL}
+    findings:
+      HB-CU-003: [hb-chart-app]
+  - name: upgrade-v2-ok-for-unhealthy
+    pair: upgrade-v2-unhealthy
+    role: fixed
+    command: test
+    args: [testdata/charts/upgrade-v2-ok, --scenario, chart-upgrade, --from, testdata/charts/upgrade-v1, --from-version, 1.0.0]
+    exit: 0
+    verdicts: {chart-upgrade: PASS}
+
   # reinstall: the credentials must still match the data that was kept
   - name: reinstall-loses-creds
     pair: reinstall-creds
@@ -157,6 +171,23 @@ cases:
       HB-RI-001: ["After the reinstall:"]
   - name: reinstall-keeps-creds
     pair: reinstall-creds
+    role: fixed
+    command: test
+    args: [testdata/charts/reinstall-keeps-creds, --scenario, reinstall]
+    exit: 0
+    verdicts: {reinstall: PASS}
+  # The claim survives the reinstall, and an init container empties it at every start (#60).
+  - name: reinstall-wipes-data
+    pair: reinstall-data
+    role: defect
+    command: test
+    args: [testdata/charts/reinstall-wipes-data, --scenario, reinstall]
+    exit: 1
+    verdicts: {reinstall: FAIL}
+    findings:
+      HB-RI-002: [data-hb-reinstall-db-0]
+  - name: reinstall-keeps-creds-for-data
+    pair: reinstall-data
     role: fixed
     command: test
     args: [testdata/charts/reinstall-keeps-creds, --scenario, reinstall]
@@ -377,6 +408,36 @@ cases:
       HB-SCAN-003: [Secret/hb-secret, password]
   - name: scan-keeps-secret
     pair: scan-secret-regeneration
+    role: fixed
+    command: scan
+    args: [testdata/charts/keeps-secret, --strict]
+    exit: 0
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: PASS
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+
+  # The Deployment hashes the rendered secret.yaml, which keeps a random password with lookup:
+  # the hash is over a second random draw at install, so the first upgrade changes it (#60). Its
+  # twin, keeps-secret, hashes the values instead.
+  - name: scan-first-upgrade-restart
+    pair: scan-first-upgrade
+    role: defect
+    command: scan
+    args: [testdata/charts/scan-first-upgrade-restart, --strict]
+    exit: 1
+    verdicts:
+      scan:immutable-fields: SKIPPED
+      scan:first-upgrade-restart: FAIL
+      scan:regenerated-secrets: PASS
+      scan:unquoted-values: PASS
+      scan:duplicate-env: PASS
+    findings:
+      HB-SCAN-002: [templates/deployment.yaml, templates/secret.yaml]
+  - name: scan-keeps-secret-for-restart
+    pair: scan-first-upgrade
     role: fixed
     command: scan
     args: [testdata/charts/keeps-secret, --strict]
@@ -631,6 +692,25 @@ cases:
       HB-K8S-003: [Endpoints]
   - name: matrix-current-api
     pair: api-versions
+    role: fixed
+    command: matrix
+    args: [testdata/charts/current-api]
+    exit: 0
+    verdicts: {"k8s-{k8s}": PASS}
+
+  # An EndpointSlice in discovery.k8s.io/v1beta1, removed in 1.25: the install fails on every
+  # version tested, and the missing built-in API keeps it a finding (#60).
+  - name: matrix-removed-api
+    pair: removed-api
+    role: defect
+    command: matrix
+    args: [testdata/charts/removed-api]
+    exit: 1
+    verdicts: {"k8s-{k8s}": FAIL}
+    findings:
+      HB-K8S-001: [no matches for kind]
+  - name: matrix-current-api-for-removed
+    pair: removed-api
     role: fixed
     command: matrix
     args: [testdata/charts/current-api]
