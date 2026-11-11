@@ -639,14 +639,7 @@ func sourceContains(chart, source, text string) bool {
 // could not be read, a repository or OCI reference: then no Secret is left out.
 func lookupChecker(chart string) (uses func(source string) bool, readable bool) {
 	files := chartFiles(chart)
-	helpers := map[string]string{}
-	for name, text := range files {
-		if strings.HasSuffix(name, ".tpl") || strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".txt") {
-			for n, body := range defines(text) {
-				helpers[n] = body
-			}
-		}
-	}
+	looks := lookupHelpers(files)
 	return func(source string) bool {
 		_, rel, ok := strings.Cut(source, "/")
 		if !ok {
@@ -656,8 +649,82 @@ func lookupChecker(chart string) (uses func(source string) bool, readable bool) 
 		if !ok {
 			return false
 		}
-		return lookupCall.MatchString(withHelpers(withoutComments(text), helpers))
+		text = withoutComments(text)
+		if lookupCall.MatchString(text) {
+			return true
+		}
+		for _, inc := range includeOf.FindAllStringSubmatch(text, -1) {
+			if looks[inc[1]] {
+				return true
+			}
+		}
+		return false
 	}, files != nil
+}
+
+// lookupHelpers returns the helpers that call lookup, directly or through those they include.
+//
+// A name defined in several files counts only when every definition does. Which one helm renders
+// depends on more than the files: .helmignore and a subchart's condition can leave out the one that
+// would otherwise win, and neither is read here. So a disagreement makes a candidate that should not
+// be one rather than leave a regenerated Secret out. An empty define never replaces another in
+// text/template, so it counts only when the name has nothing else.
+//
+// One pass over the includes, without recursion: a body is done once it calls lookup or includes a
+// helper that is, and a helper once all its bodies are.
+func lookupHelpers(files map[string]string) map[string]bool {
+	type body struct {
+		name string
+		done bool
+	}
+	bodies := map[string][]string{}
+	for _, text := range files {
+		for n, b := range defines(text) {
+			bodies[n] = append(bodies[n], b)
+		}
+	}
+	left := map[string]int{}
+	users := map[string][]*body{}
+	var todo []*body
+	for n, all := range bodies {
+		var kept []string
+		for _, b := range all {
+			if strings.TrimSpace(b) != "" {
+				kept = append(kept, b)
+			}
+		}
+		if len(kept) == 0 {
+			kept = all[:1]
+		}
+		left[n] = len(kept)
+		for _, b := range kept {
+			x := &body{name: n}
+			if lookupCall.MatchString(b) {
+				x.done = true
+				todo = append(todo, x)
+				continue
+			}
+			for _, inc := range includeOf.FindAllStringSubmatch(b, -1) {
+				users[inc[1]] = append(users[inc[1]], x)
+			}
+		}
+	}
+	looks := map[string]bool{}
+	for len(todo) > 0 {
+		x := todo[len(todo)-1]
+		todo = todo[:len(todo)-1]
+		if left[x.name]--; left[x.name] > 0 || looks[x.name] {
+			continue
+		}
+		looks[x.name] = true
+		for _, u := range users[x.name] {
+			if !u.done {
+				u.done = true
+				todo = append(todo, u)
+			}
+		}
+	}
+	return looks
 }
 
 func dig(doc map[string]any, path []string) any {
