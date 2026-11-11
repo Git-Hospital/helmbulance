@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -216,12 +217,14 @@ func test(args []string) int {
 		Cluster:          c.Name,
 		Started:          started,
 	}
+	var names []string
 	for _, s := range selected {
-		fmt.Printf("▶ %s\n", s.Name())
-		res := s.Run(ctx, env)
-		fmt.Printf("  %s: %s\n", res.Verdict, oneLine(res.Summary))
-		rep.Results = append(rep.Results, res)
+		names = append(names, s.Name())
 	}
+	rep.Results = runEach(ctx, names, func(i int) scenario.Result {
+		fmt.Printf("▶ %s\n", names[i])
+		return selected[i].Run(ctx, env)
+	})
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()
 
@@ -489,16 +492,16 @@ func matrixCmd(args []string) int {
 		Started:       started,
 	}
 	opts := matrix.Options{Runner: runner, Chart: chart, Values: helm.Values{Files: files, Sets: sets}, Timeout: *timeout, Log: os.Stdout}
+	var vs, names []string
 	for _, v := range strings.Split(*versions, ",") {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			continue
+		if v = strings.TrimSpace(v); v != "" {
+			vs, names = append(vs, v), append(names, "k8s-"+v)
 		}
-		fmt.Printf("▶ Kubernetes %s\n", v)
-		res := matrix.Run(ctx, v, opts)
-		fmt.Printf("  %s: %s\n", res.Verdict, oneLine(res.Summary))
-		rep.Results = append(rep.Results, res)
 	}
+	rep.Results = runEach(ctx, names, func(i int) scenario.Result {
+		fmt.Printf("▶ Kubernetes %s\n", vs[i])
+		return matrix.Run(ctx, vs[i], opts)
+	})
 	attributed := matrix.Attribute(rep.Results)
 	for i, res := range attributed {
 		if res.Verdict != rep.Results[i].Verdict {
@@ -612,6 +615,13 @@ func localPaths() map[string]string {
 			paths[dir] = "$HELMBULANCE_STATE_DIR"
 		}
 	}
+	// The sandbox names its files by the state dir's real path (#155), so a symlink in it, such as
+	// /tmp or /var on macOS, would leave the real one in reports. It is hidden too.
+	for p, as := range maps.Clone(paths) {
+		if real, err := filepath.EvalSymlinks(p); err == nil && real != p {
+			paths[real] = as
+		}
+	}
 	return paths
 }
 
@@ -642,6 +652,24 @@ func interruptContext() (context.Context, context.CancelFunc) {
 		}
 	}()
 	return ctx, cancel
+}
+
+// runEach runs step for each of names in order and prints its verdict. After an interrupt it starts
+// no more steps: each one left is INCONCLUSIVE, "not run", so the sandbox cluster is deleted
+// without waiting for the start and cleanup of scenarios that would only be cut short (#58).
+func runEach(ctx context.Context, names []string, step func(i int) scenario.Result) []scenario.Result {
+	results := make([]scenario.Result, 0, len(names))
+	for i, name := range names {
+		if ctx.Err() != nil {
+			results = append(results, scenario.Result{Scenario: name, Verdict: scenario.Inconclusive,
+				Summary: "not run: the run was interrupted before it started"})
+			continue
+		}
+		res := step(i)
+		fmt.Printf("  %s: %s\n", res.Verdict, oneLine(res.Summary))
+		results = append(results, res)
+	}
+	return results
 }
 
 // checkVersions refuses a --k8s list that names a version with no pinned node image, or none at

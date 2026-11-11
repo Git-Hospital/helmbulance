@@ -101,7 +101,7 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 
 	mark := len(o.Runner.Transcript())
 	stderr, err := h.InstallCapture(ctx, release, ns, o.Chart, o.Values)
-	repro := []string{"kind create cluster --image " + image, reproLine(o.Runner.Transcript()[mark].Line)}
+	repro := []string{"kind create cluster --image " + image, execx.ReproLine(o.Runner.Transcript()[mark].Line)}
 	warnings := apiWarnings(stderr)
 
 	if err != nil {
@@ -414,16 +414,6 @@ func notReady(pods []kube.Pod) []string {
 		}
 	}
 	return bad
-}
-
-func reproLine(line string) string {
-	fields := strings.Fields(line)
-	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] == "--kubeconfig" {
-			fields[i+1] = "$KUBECONFIG"
-		}
-	}
-	return strings.Join(fields, " ")
 }
 
 func helmMessage(err error) string {

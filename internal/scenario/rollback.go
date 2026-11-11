@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 	"github.com/Git-Hospital/helmbulance/internal/kube"
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
@@ -59,7 +60,7 @@ func (s Rollback) Run(ctx context.Context, env *Env) (res Result) {
 	if err := env.Helm.Install(ctx, release, ns, from, env.Values, "--version", env.FromVersion); err != nil {
 		return inconclusive(res, "the earlier version did not install", err)
 	}
-	repro := []string{reproLine(env.Runner.Transcript()[mark].Line)}
+	repro := []string{execx.ReproLine(env.Runner.Transcript()[mark].Line)}
 	fromV, err := installedFrom(ctx, env, release, ns)
 	if err != nil {
 		return inconclusive(res, "could not confirm the earlier version", err)
@@ -75,12 +76,12 @@ func (s Rollback) Run(ctx context.Context, env *Env) (res Result) {
 	if err := env.Helm.Upgrade(ctx, release, ns, from, env.Values, "--version", env.FromVersion); err != nil {
 		return inconclusive(res, "upgrading the earlier version to itself failed", err)
 	}
-	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	repro = append(repro, execx.ReproLine(env.Runner.Transcript()[mark].Line))
 	mark = len(env.Runner.Transcript())
 	if err := env.Helm.Rollback(ctx, release, ns, 1); err != nil {
 		return inconclusive(res, "rolling the earlier version back to itself failed, so a rollback proves nothing here", err)
 	}
-	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	repro = append(repro, execx.ReproLine(env.Runner.Transcript()[mark].Line))
 	controlRev, err := latestRevision(ctx, env, release, ns)
 	if err != nil {
 		return inconclusive(res, "could not read the release history", err)
@@ -110,14 +111,14 @@ func (s Rollback) Run(ctx context.Context, env *Env) (res Result) {
 		// does then is HB-RB-003, not built yet.
 		return inconclusive(res, "the upgrade to the chart under test failed, so there was nothing to roll back (chart-upgrade reports it)", err)
 	}
-	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	repro = append(repro, execx.ReproLine(env.Runner.Transcript()[mark].Line))
 	back := "the rollback to " + fromV
 	if toV, err := env.Helm.ReleaseVersion(ctx, release, ns); err == nil {
 		back = "the rollback from " + toV + " to " + fromV
 	}
 	mark = len(env.Runner.Transcript())
 	rollbackErr := env.Helm.Rollback(ctx, release, ns, controlRev)
-	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	repro = append(repro, execx.ReproLine(env.Runner.Transcript()[mark].Line))
 
 	if rollbackErr != nil {
 		// A rollback whose --wait ran out while the earlier version's containers crash went

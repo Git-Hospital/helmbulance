@@ -147,6 +147,31 @@ jobs:
             timeout: 10m
             exit-code: 1
             findings: HB-CU-001
+          # HBC-09: with the MySQL filer store, the db Secret is kept on uninstall but is also a
+          # pre-install hook, so the next install replaces it with a new password
+          # (seaweedfs/seaweedfs#12138, found with Helmbulance; first released in 4.52.0). The sandbox
+          # has no MySQL, so the filer never becomes ready: the fix finds nothing but cannot pass
+          # either, and its expected result is INCONCLUSIVE, exit 3, with no finding (#102).
+          - id: HBC-09
+            chart: seaweedfs
+            version: 4.51.0
+            url: https://seaweedfs.github.io/seaweedfs/helm/seaweedfs-4.51.0.tgz
+            sha256: f76702dcae316379fb407be423e12f9e57bf5fa490265ef580e3628814849a36
+            values: testdata/corpus/hbc-09-seaweedfs/values.yaml
+            scenario: reinstall
+            timeout: 3m
+            exit-code: 1
+            findings: HB-RI-004
+          - id: HBC-09
+            chart: seaweedfs
+            version: 4.52.0
+            url: https://seaweedfs.github.io/seaweedfs/helm/seaweedfs-4.52.0.tgz
+            sha256: 5582e6acfba74934a3422de558e15f6e53c6d78cd14775423c36ea890d7bf741
+            values: testdata/corpus/hbc-09-seaweedfs/values.yaml
+            scenario: reinstall
+            timeout: 3m
+            exit-code: 3
+            findings: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 	"github.com/Git-Hospital/helmbulance/internal/kube"
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
@@ -52,7 +53,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	if err := env.Helm.Install(ctx, release, ns, from, env.Values, "--version", env.FromVersion); err != nil {
 		return inconclusive(res, "the earlier version did not install", err)
 	}
-	repro := []string{reproLine(env.Runner.Transcript()[mark].Line)}
+	repro := []string{execx.ReproLine(env.Runner.Transcript()[mark].Line)}
 	// fromV is the version helm resolved, which differs from --from-version for a range like ~1.2.
 	fromV, err := installedFrom(ctx, env, release, ns)
 	if err != nil {
@@ -93,7 +94,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	// Treatment: the version under test.
 	mark = len(env.Runner.Transcript())
 	upgradeErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values)
-	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	repro = append(repro, execx.ReproLine(env.Runner.Transcript()[mark].Line))
 	// A new version whose pods crash ends in the same `--wait` timeout as a slow machine. The
 	// release was applied, so its containers say which it was: a crash or a container that cannot
 	// start is the chart's failure (D4); anything else stays INCONCLUSIVE (#28).
