@@ -1,0 +1,8 @@
+# The MySQL filer store, the path of seaweedfs/seaweedfs#12138: the chart renders
+# <fullname>-db-secret, kept on uninstall (helm.sh/resource-policy: keep) but also a pre-install hook,
+# so the next install replaced it with a new password until 4.52.0 reused the stored one. No MySQL
+# runs in the sandbox, so the filer never becomes ready; reinstall still compares the kept Secret
+# (HB-RI-004 needs no running reader).
+filer:
+  extraEnvironmentVars:
+    WEED_MYSQL_ENABLED: "true"

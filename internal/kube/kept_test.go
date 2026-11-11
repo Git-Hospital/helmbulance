@@ -68,7 +68,7 @@ func TestHelmClusterObjectsKeepsOnlyReleasesInTheNamespacesAsked(t *testing.T) {
 		t.Errorf("a core kind takes no group: %q, want %q", got, want)
 	}
 	b, _ := os.ReadFile(calls)
-	if !strings.Contains(string(b), " get clusterroles.rbac.authorization.k8s.io,customresourcedefinitions.apiextensions.k8s.io,namespaces,persistentvolumes -l app.kubernetes.io/managed-by=Helm -o json") {
+	if !strings.Contains(string(b), " get -l app.kubernetes.io/managed-by=Helm -o json -- clusterroles.rbac.authorization.k8s.io,customresourcedefinitions.apiextensions.k8s.io,namespaces,persistentvolumes") {
 		t.Errorf("want one get over every cluster-scoped type, with Helm's label; calls:\n%s", b)
 	}
 }
@@ -96,7 +96,44 @@ func TestDeleteObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(calls)
-	if want := "delete clusterrole.rbac.authorization.k8s.io/a namespace/b --ignore-not-found --wait=true"; !strings.Contains(string(b), want) {
-		t.Errorf("want %q; calls:\n%s", want, b)
+	if want := "delete --ignore-not-found --wait=true --timeout=5m -- clusterrole.rbac.authorization.k8s.io/a namespace/b"; !strings.HasSuffix(strings.TrimSpace(string(b)), want) {
+		t.Errorf("want the refs after --, last: %q; calls:\n%s", want, b)
+	}
+}
+
+// An aggregated API the chart serves can list objects with any kind and apiVersion. Without the
+// checks, a kind such as --kubeconfig=… became a kubectl flag and sent the delete to another
+// cluster.
+func TestHelmClusterObjectsSkipsKindsThatAreNotKinds(t *testing.T) {
+	const hostile = `{"kind":"List","items":[
+		{"apiVersion":"kube/v1","kind":"--kubeconfig=/home/user/.kube/config","metadata":{"name":"x",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}},
+		{"apiVersion":"-n/v1","kind":"Widget","metadata":{"name":"x",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}},
+		{"apiVersion":"a.example.com/v1","kind":"Wid get","metadata":{"name":"x",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}},
+		{"apiVersion":"a.example.com/v1","kind":"Widget","metadata":{"name":"",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}},
+		{"apiVersion":"a.example.com/v1","kind":"Widget","metadata":{"name":"ok",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}},
+		{"apiVersion":"a.example.com/v1","kind":"Foo-Bar","metadata":{"name":"ok",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}},
+		{"apiVersion":"a.example.com/v1","kind":"Foo-","metadata":{"name":"x",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}},
+		{"apiVersion":"a.example.com/v1","kind":"Widget","metadata":{"name":"a/b",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}},
+		{"apiVersion":"a.example.com/v1","kind":"Widget","metadata":{"name":"..",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}},
+		{"apiVersion":"--context=prod","kind":"Namespace","metadata":{"name":"kube-public",
+			"annotations":{"meta.helm.sh/release-namespace":"hb-reinstall"}}}
+	]}`
+	c, _ := fakeKubectlCases(t, "widgets.a.example.com\n", hostile)
+	got, err := c.HelmClusterObjects(t.Context(), func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A CRD's kind may hold an inner dash, as in Foo-Bar.
+	if want := []string{"foo-bar.a.example.com/ok", "widget.a.example.com/ok"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("HelmClusterObjects = %q, want %q", got, want)
 	}
 }
