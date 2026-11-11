@@ -25,6 +25,19 @@ inputs:
   from-version:
     description: Chart version to upgrade from. Setting it enables chart-upgrade.
     default: ""
+  traffic-target:
+    description: >-
+      Where zero-downtime sends its requests, "service:port". Empty picks the Service port that looks
+      most like plain HTTP.
+    default: ""
+  traffic-path:
+    description: The path zero-downtime requests; it must answer 2xx. Empty means "/".
+    default: ""
+  expected-rotation:
+    description: >-
+      Secret keys the chart changes on purpose, one "secret/key" pattern per line (globs allowed,
+      such as '*-webhook-tls/*'). They are named in the summary, not reported.
+    default: ""
   timeout:
     description: Timeout for each install or upgrade.
     default: 10m
@@ -131,6 +144,9 @@ runs:
         FROM: ${{ inputs.from }}
         FROM_VERSION: ${{ inputs.from-version }}
         ALLOW_REMOTE: ${{ inputs.allow-remote }}
+        TRAFFIC_TARGET: ${{ inputs.traffic-target }}
+        TRAFFIC_PATH: ${{ inputs.traffic-path }}
+        EXPECTED_ROTATION: ${{ inputs.expected-rotation }}
         TIMEOUT: ${{ inputs.timeout }}
         REPORT_DIR: ${{ inputs.report-dir }}
         FAIL_ON: ${{ inputs.fail-on }}
@@ -145,6 +161,11 @@ runs:
         if [ -n "$FROM" ]; then args+=(--from "$FROM"); fi
         if [ -n "$FROM_VERSION" ]; then args+=(--from-version "$FROM_VERSION"); fi
         if [ "$ALLOW_REMOTE" = true ]; then args+=(--allow-remote); fi
+        if [ -n "$TRAFFIC_TARGET" ]; then args+=(--traffic-target "$TRAFFIC_TARGET"); fi
+        if [ -n "$TRAFFIC_PATH" ]; then args+=(--traffic-path "$TRAFFIC_PATH"); fi
+        while read -r r; do
+          if [ -n "$r" ]; then args+=(--expected-rotation "$r"); fi
+        done <<< "$EXPECTED_ROTATION"
 
         # Variables that point helm or kubectl at another cluster never reach Helmbulance.
         dropped=()

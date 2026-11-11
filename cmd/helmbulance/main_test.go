@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -505,5 +507,51 @@ ca:
 		if slices.Contains(got, not) {
 			t.Errorf("fileSecrets hides %q, which is not a secret: %q", not, got)
 		}
+	}
+}
+
+// After an interrupt no further scenario starts: each one left is INCONCLUSIVE "not run", so the
+// sandbox cluster is deleted at once instead of after every remaining scenario's cleanup (#58).
+func TestRunEachStopsStartingAfterAnInterrupt(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	var ran []string
+	names := []string{"a", "b", "c"}
+	got := runEach(ctx, names, func(i int) scenario.Result {
+		ran = append(ran, names[i])
+		if names[i] == "a" {
+			cancel() // the interrupt arrives while a runs
+		}
+		return scenario.Result{Scenario: names[i], Verdict: scenario.Pass}
+	})
+	if !reflect.DeepEqual(ran, []string{"a"}) {
+		t.Errorf("ran %v, want only a", ran)
+	}
+	if len(got) != 3 || got[0].Verdict != scenario.Pass {
+		t.Fatalf("results %+v, want a's own result first and one per name", got)
+	}
+	for _, r := range got[1:] {
+		if r.Verdict != scenario.Inconclusive || !strings.Contains(r.Summary, "not run") {
+			t.Errorf("%s: %+v, want INCONCLUSIVE not run", r.Scenario, r)
+		}
+	}
+}
+
+// An unsupported or empty --k8s is a usage error before any cluster starts (#56).
+func TestCheckVersions(t *testing.T) {
+	for _, good := range []string{"1.34, 1.37", "1.36,"} {
+		if err := checkVersions(good); err != nil {
+			t.Errorf("checkVersions(%q): %v", good, err)
+		}
+	}
+	for _, bad := range []string{"1.34,1.30", "", " , "} {
+		if err := checkVersions(bad); err == nil {
+			t.Errorf("checkVersions(%q) = nil, want an error", bad)
+		}
+	}
+}
+
+func TestMatrixRefusesAnUnsupportedVersionBeforeAnyCluster(t *testing.T) {
+	if code := matrixCmd([]string{"--k8s", "1.29", t.TempDir()}); code != exitError {
+		t.Errorf("exit %d, want %d", code, exitError)
 	}
 }
