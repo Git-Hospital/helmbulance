@@ -132,7 +132,7 @@ func (s Rollback) Run(ctx context.Context, env *Env) (res Result) {
 			if hookErr == nil {
 				crashes = ReadCrashes(ctx, env.Kube, ns, env.Log, func(containers []kube.Container) []string {
 					hooks := slices.DeleteFunc(slices.Clone(containers), func(c kube.Container) bool { return !hookJobs[c.Owner] })
-					hookCrashes = crashedSince(hooks, containersBefore, podsBefore, containersKnown)
+					hookCrashes = append(crashedSince(hooks, containersBefore, podsBefore, containersKnown), hookExits(hooks, podsBefore)...)
 					if len(hookCrashes) > 0 {
 						return hookCrashes
 					}
@@ -226,6 +226,24 @@ func latestRevision(ctx context.Context, env *Env, release, ns string) (int, err
 	return revs[len(revs)-1].Revision, nil
 }
 
+// hookExits lists the containers of hook pods started since before the upgrade whose run ended in
+// an error without a restart. A hook Job with `restartPolicy: Never` retries in a new pod each
+// time, so its failed pods have no restart count and no waiting reason, and crashedSince does not
+// list them.
+func hookExits(hooks []kube.Container, before []kube.Pod) []string {
+	old := map[string]bool{}
+	for _, p := range before {
+		old[p.UID] = true
+	}
+	var failed []string
+	for _, c := range hooks {
+		if !old[c.PodUID] && c.Restarts == 0 && c.Waiting == "" && c.LastReason != "" && c.LastExit != 0 {
+			failed = append(failed, describeContainer(c))
+		}
+	}
+	return failed
+}
+
 // rollbackFails is the HB-RB-001 result: the rollback to the earlier version did not succeed.
 func rollbackFails(res Result, back string, repro, evidence []string) Result {
 	res.Verdict = Fail
@@ -236,7 +254,8 @@ func rollbackFails(res Result, back string, repro, evidence []string) Result {
 		Severity: "high",
 		Evidence: evidence,
 		Impact: "A user whose upgrade went wrong cannot go back with `helm rollback`. The release is " +
-			"left failed, at the version that did not work.",
+			"left pending-rollback or failed, still on the version that did not work; a release left " +
+			"pending-rollback refuses `helm upgrade` until that is cleared.",
 		Fix: "Make the rollback hooks work after the new version ran: a pre-rollback hook that " +
 			"refuses data the new version wrote should migrate it back, or say how to. If a field " +
 			"conflict is named, drop or relax the field the new version took over.",

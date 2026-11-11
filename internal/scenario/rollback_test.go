@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -301,5 +302,35 @@ func TestRollbackHookCrashIsHBRB001(t *testing.T) {
 				t.Fatalf("hook failure: %+v; want HB-RB-001", res)
 			}
 		})
+	}
+}
+
+// A hook Job with restartPolicy: Never retries in a new pod each time: its failed pods have no
+// restart count and no waiting reason. Still retrying at the rollback timeout, it is HB-RB-001
+// with those pods as evidence, not INCONCLUSIVE. A hook pod that exited 0 is not a crash.
+func TestRollbackHookThatFailsWithoutRestartingIsHBRB001(t *testing.T) {
+	hookPod := func(name string, exit int) string {
+		return fmt.Sprintf(`{"metadata":{"name":%q,"uid":%q,"ownerReferences":[{"kind":"Job","name":"undo"}]},"status":{"phase":"Failed","containerStatuses":[{"name":"hook","restartCount":0,"state":{"terminated":{"reason":"Error","exitCode":%d}}}]}}`, name, name, exit)
+	}
+	run := func(pods string) Result {
+		res, _ := runRollback(t, rollbackFake{
+			rollbackErr: "Error: resource Job/hb-rollback/undo not ready. status: InProgress\ncontext deadline exceeded",
+			hooks:       "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: undo\n  annotations:\n    helm.sh/hook: pre-rollback\n",
+			pods:        map[string]string{"back": pods},
+		})
+		return res
+	}
+	res := run(items(hookPod("undo-a", 1), hookPod("undo-b", 1)))
+	if res.Verdict != Fail || len(res.Findings) != 1 || res.Findings[0].ID != "HB-RB-001" {
+		t.Fatalf("failed hook pods: verdict = %s with %+v (%s), want FAIL with HB-RB-001", res.Verdict, res.Findings, res.Summary)
+	}
+	if ev := strings.Join(res.Findings[0].Evidence, " "); !strings.Contains(ev, "pod `undo-a`") || !strings.Contains(ev, "pod `undo-b`") {
+		t.Errorf("evidence = %q, want both failed hook pods", res.Findings[0].Evidence)
+	}
+	if strings.Contains(res.Findings[0].Impact, "left failed,") {
+		t.Error("impact says the release is left failed; a failed pre-rollback hook leaves it pending-rollback")
+	}
+	if res := run(items(hookPod("undo-a", 0))); res.Verdict != Inconclusive {
+		t.Errorf("hook pod that exited 0: verdict = %s with %+v, want INCONCLUSIVE", res.Verdict, res.Findings)
 	}
 }
