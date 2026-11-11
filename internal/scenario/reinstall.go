@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
@@ -36,14 +38,10 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	res.Scenario = s.Name()
 	const release, ns = "hb-reinstall", reinstallNamespace
 	defer func() {
-		// Clean up even after a cancel, so a reused cluster does not keep the release (#11).
-		cleanup := context.WithoutCancel(ctx)
-		if err := env.Helm.Uninstall(cleanup, release, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
-		if err := env.Kube.DeleteNamespace(cleanup, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
+		// Clean up after cancellation, with the bounded cleanup context (#58).
+		cleanup, cancel := cleanupContext(ctx)
+		defer cancel()
+		cleanUp(cleanup, env, release, ns)
 	}()
 
 	// Runs before the cleanup above, while the release still exists (#115).
@@ -62,7 +60,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	var repro []string
 	for _, c := range env.Runner.Transcript()[mark:] {
-		repro = append(repro, reproLine(c.Line))
+		repro = append(repro, execx.ReproLine(c.Line))
 	}
 
 	secrets := newSecretReader(ctx, env, release, ns)
@@ -109,7 +107,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 		// INCONCLUSIVE. Other failures (a render refusal, the chart's webhook, a pull or tool error)
 		// are not this case and go to installFailed.
 		if timedOutWaiting(ctx, secondInstall) {
-			res = s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, repro)
+			res = s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, true, repro)
 			switch {
 			case len(res.Findings) > 0:
 				res.Findings[0].Evidence = append([]string{
@@ -124,7 +122,7 @@ func (s Reinstall) Run(ctx context.Context, env *Env) (res Result) {
 		}
 		return unreadyFirstInstall(s.installFailed(ctx, res, secondInstall, repro), firstInstall)
 	}
-	return unreadyFirstInstall(s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, repro), firstInstall)
+	return unreadyFirstInstall(s.analyze(ctx, env, res, release, ns, secrets, before, volumes, ran, false, repro), firstInstall)
 }
 
 // unreadyFirstInstall qualifies a result whose first install was applied but never became ready.
@@ -170,7 +168,7 @@ func unobservedCredentials(findings []Finding, changes, unrelated, certs []oracl
 // `--wait` timeout, since the release is applied in both. ran is false when the first install never
 // became ready.
 func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, ns string,
-	secrets *secretReader, before oracle.SecretSnapshot, volumes []volume, ran bool, repro []string) Result {
+	secrets *secretReader, before oracle.SecretSnapshot, volumes []volume, ran, timedOut bool, repro []string) Result {
 	after, err := secrets.snapshot()
 	if err != nil {
 		return secretsInconclusive(res, "after the reinstall", err)
@@ -217,6 +215,15 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 	res.Findings, unrelated, certs = reinstallFindings(volumes, changes, consumers, stateful, statefulKnown, claimUsers, repro)
 	if !ran {
 		res.Findings, unobserved = unobservedCredentials(res.Findings, changes, unrelated, certs)
+	} else if !timedOut {
+		// A reinstall whose --wait timed out already showed the release failing. After a clean
+		// one, the workloads are watched: a lockout shows as pods that stop being ready or restart
+		// (#53).
+		for i := range res.Findings {
+			if res.Findings[i].ID == "HB-RI-001" {
+				observeLockout(ctx, env, ns, &res.Findings[i])
+			}
+		}
 	}
 	kept := secrets.kept
 	if f, ok := keptSecretReplaced(append(slices.Clone(unrelated), unobserved...), kept, consumers, stateful, statefulKnown, repro); ok {
@@ -246,7 +253,7 @@ func (s Reinstall) analyze(ctx context.Context, env *Env, res Result, release, n
 		res.Summary = fmt.Sprintf("%d problem(s) after uninstall and install", len(res.Findings))
 	} else {
 		res.Verdict = Pass
-		res.Summary = reinstallPassSummary(volumes, changes)
+		res.Summary = reinstallPassSummary(volumes, changes, !noKeys(before, after))
 	}
 	res.Summary = withNotes(res.Summary,
 		note("keys added by the reinstall, not a finding", describe(added, consumers)),
@@ -473,10 +480,38 @@ func reinstallFindings(volumes []volume, changes []oracle.Change, consumers map[
 	return findings, unrelated, certs
 }
 
+// observeLockout watches the release after a clean reinstall and adds what it saw to an HB-RI-001.
+// The D5 severity stays even when nothing failed: readiness probes may never attempt a login,
+// so a healthy PostgreSQL pod does not show whether clients can use the new credential (#53).
+func observeLockout(ctx context.Context, env *Env, ns string, f *Finding) {
+	pods, err := env.Kube.Pods(ctx, ns)
+	var problems []string
+	if err == nil {
+		problems, err = unhealthyAfter(ctx, env, ns, nil, pods, nil)
+	}
+	switch {
+	case err != nil:
+		f.Evidence = append(f.Evidence, "The workloads could not be watched after the reinstall, so whether they failed is unknown: "+err.Error())
+	case len(problems) > 0:
+		f.Evidence = append(f.Evidence, append([]string{"After the reinstall:"}, problems...)...)
+	default:
+		f.Title = "Data survives a reinstall with new credentials, but no workload failed in the sandbox"
+		f.Evidence = append(f.Evidence, "Not observed: after the reinstall every pod was ready and none restarted while Helmbulance watched. A readiness probe often does not log in, so this does not prove the new credential works.")
+		f.Impact = "The volumes still hold the old data and the chart generated new credentials. Nothing " +
+			"failed here, so the app may set the credential again at every start (Redis or Valkey with " +
+			"requirepass), or the sandbox did not exercise it. A store that keeps the password it was " +
+			"initialised with, such as PostgreSQL or MySQL, refuses the new one."
+	}
+}
+
 // reinstallPassSummary says what was checked, including volumes deleted with the release, which
 // depend on the StorageClass and the chart and are not a finding on their own.
-func reinstallPassSummary(volumes []volume, changes []oracle.Change) string {
+func reinstallPassSummary(volumes []volume, changes []oracle.Change, compared bool) string {
 	summary := "Secrets came back unchanged after uninstall and install"
+	if !compared {
+		// No key was read before or after, so nothing came back unchanged (#59).
+		summary = noSecretsTested
+	}
 	switch {
 	case len(volumes) == 0 && len(changes) > 0:
 		return "the release has no volumes, so new Secrets after a reinstall lose nothing"
@@ -512,16 +547,20 @@ func claimsIn(volumes []volume, state string) []string {
 func transcriptRepro(env *Env, mark int) []string {
 	var lines []string
 	for _, c := range env.Runner.Transcript()[mark:] {
-		lines = append(lines, reproLine(c.Line))
+		lines = append(lines, execx.ReproLine(c.Line))
 	}
 	return lines
 }
 
-// sentinelRepro is the reproduction step for a sentinel: a one-off pod that mounts the claim. The
-// claim is named per volume in the evidence.
+// sentinelRepro is the reproduction step for a sentinel: the pod the scenario runs, mounting the
+// claim. The claim is named per volume in the evidence.
 func sentinelRepro(why, cmd string) []string {
+	overrides, err := kube.PVCPodOverrides("marker", sentinelImage, "CLAIM", cmd)
+	if err != nil {
+		return nil // a fixed map of strings always encodes
+	}
 	return []string{
 		"# " + why + " (replace CLAIM with each claim named above):",
-		`kubectl -n ` + reinstallNamespace + ` run marker --rm -i --restart Never --image busybox --overrides '{"spec":{"containers":[{"name":"marker","image":"busybox","command":["sh","-c","` + cmd + `"],"volumeMounts":[{"name":"v","mountPath":"/pvc"}]}],"volumes":[{"name":"v","persistentVolumeClaim":{"claimName":"CLAIM"}}]}}'`,
+		`kubectl -n ` + reinstallNamespace + ` run marker --rm -i --restart Never --image ` + sentinelImage + ` --overrides '` + overrides + `'`,
 	}
 }

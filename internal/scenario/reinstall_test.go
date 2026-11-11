@@ -73,20 +73,23 @@ func TestReinstallFindingsCertReadByKeeper(t *testing.T) {
 
 func TestReinstallPassSummary(t *testing.T) {
 	for _, c := range []struct {
-		volumes []volume
-		changes []oracle.Change
-		want    string
+		volumes    []volume
+		changes    []oracle.Change
+		want       string
+		uncompared bool
 	}{
-		{nil, nil, "Secrets came back unchanged after uninstall and install; the release has no volumes"},
-		{nil, []oracle.Change{{Ref: "s/k", Kind: oracle.Changed}}, "the release has no volumes, so new Secrets after a reinstall lose nothing"},
-		{[]volume{{claim: "a", state: "kept"}}, nil, "Secrets came back unchanged after uninstall and install; 1 volume(s) kept their data"},
+		{nil, nil, "Secrets came back unchanged after uninstall and install; the release has no volumes", false},
+		// No key read at all, e.g. every Secret in another namespace (#59).
+		{nil, nil, noSecretsTested + "; the release has no volumes", true},
+		{nil, []oracle.Change{{Ref: "s/k", Kind: oracle.Changed}}, "the release has no volumes, so new Secrets after a reinstall lose nothing", false},
+		{[]volume{{claim: "a", state: "kept"}}, nil, "Secrets came back unchanged after uninstall and install; 1 volume(s) kept their data", false},
 		{[]volume{{claim: "a", state: "recreated"}}, []oracle.Change{{Ref: "s/k", Kind: oracle.Changed}},
-			"no volume kept its data, so new Secrets are expected; deleted with the release (depends on the StorageClass reclaim policy): `a`"},
+			"no volume kept its data, so new Secrets are expected; deleted with the release (depends on the StorageClass reclaim policy): `a`", false},
 		// A volume kept its data and a Secret changed that nothing reading it uses (#59, item 2).
 		{[]volume{{claim: "a", state: "kept"}}, []oracle.Change{{Ref: "s/k", Kind: oracle.Changed}},
-			"some Secrets changed, and none of the changes is a finding; 1 volume(s) kept their data"},
+			"some Secrets changed, and none of the changes is a finding; 1 volume(s) kept their data", false},
 	} {
-		if got := reinstallPassSummary(c.volumes, c.changes); got != c.want {
+		if got := reinstallPassSummary(c.volumes, c.changes, !c.uncompared); got != c.want {
 			t.Errorf("reinstallPassSummary = %q, want %q", got, c.want)
 		}
 	}
@@ -116,9 +119,12 @@ func TestReinstallInstallFailed(t *testing.T) {
 	}
 }
 
+// The reproduce line runs the pod the scenario ran, requests and limits included: a namespace with
+// a ResourceQuota on them rejects a pod without (#124).
 func TestSentinelRepro(t *testing.T) {
 	got := strings.Join(sentinelRepro("write", "echo marker > /pvc/marker"), "\n")
-	for _, want := range []string{"# write", "kubectl -n hb-reinstall run marker", `"claimName":"CLAIM"`, "echo marker > /pvc/marker"} {
+	for _, want := range []string{"# write", "kubectl -n hb-reinstall run marker", `"claimName":"CLAIM"`, "echo marker > /pvc/marker",
+		`"requests":{"cpu":"10m","memory":"16Mi"}`, `"limits":{"cpu":"100m","memory":"32Mi"}`, "--image " + sentinelImage + " "} {
 		if !strings.Contains(got, want) {
 			t.Errorf("sentinelRepro does not contain %q:\n%s", want, got)
 		}

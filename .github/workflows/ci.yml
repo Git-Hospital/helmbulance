@@ -39,8 +39,41 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go vet ./...
+      # gofmt ships with the Go toolchain setup-go installs, so this needs no download (#93).
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Not gofmt-formatted (run gofmt -w on them):"
+            echo "$unformatted"
+            exit 1
+          fi
       - run: go test ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  # zizmor audits the workflows and action.yml for the properties the header promises: no
+  # pull_request_target, a read-only token, no persisted credentials, actions pinned by SHA (#100).
+  # Offline, so it needs no token; the result goes to the log, not to code scanning.
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: zizmor
+        env:
+          ZIZMOR_VERSION: v1.32.0
+          ZIZMOR_SHA256: bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b
+        run: |
+          mkdir "$RUNNER_TEMP/zizmor"
+          curl -fsSLo "$RUNNER_TEMP/zizmor.tar.gz" "https://github.com/zizmorcore/zizmor/releases/download/$ZIZMOR_VERSION/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$ZIZMOR_SHA256  $RUNNER_TEMP/zizmor.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/zizmor.tar.gz" -C "$RUNNER_TEMP/zizmor"
+          "$(find "$RUNNER_TEMP/zizmor" -type f -name zizmor | head -n 1)" --offline --format plain .github/workflows action.yml
 
   fixtures:
     # The job names stay the same when a Helm version is bumped, so required checks keep matching.
@@ -177,6 +210,21 @@ jobs:
           timeout: 3m
           report-dir: reports/good
 
+      # The defective chart again, with its regenerated password listed as an expected rotation
+      # (#98). HB-UV-001 goes; the restart it causes, HB-UV-003, stays, so it is still exit 1. Checked
+      # on kind before this step was added.
+      - name: Defective chart, rotation expected
+        id: rotation
+        continue-on-error: true
+        uses: ./ # zizmor: ignore[self-repository] only this commit is checked out; switch to $/ once confirmed for a root action
+        with:
+          chart: testdata/charts/regenerates-secret
+          scenarios: upgrade-without-values
+          expected-rotation: |
+            *-secret/password
+          timeout: 3m
+          report-dir: reports/rotation
+
       # allow-remote is off by default, so a chart that is not on disk is refused before any cluster
       # exists. The name is never resolved.
       - name: Remote chart, not allowed
@@ -198,6 +246,7 @@ jobs:
           REMOTE_OUTCOME: ${{ steps.remote.outcome }}
           REMOTE_CODE: ${{ steps.remote.outputs.exit-code }}
           REMOTE_VERDICT: ${{ steps.remote.outputs.verdict }}
+          ROTATION_CODE: ${{ steps.rotation.outputs.exit-code }}
         run: |
           echo "defective: outcome=$BAD_OUTCOME exit=$BAD_CODE verdict=$BAD_VERDICT"
           echo "fixed:     exit=$GOOD_CODE verdict=$GOOD_VERDICT"
@@ -213,3 +262,6 @@ jobs:
           test -s reports/bad/report.md
           test -s reports/good/report.md
           test ! -e reports/remote/report.md
+          echo "rotation:  exit=$ROTATION_CODE"
+          [ "$ROTATION_CODE" = 1 ]
+          jq -e '[.results[].findings[]?.id] == ["HB-UV-003"]' reports/rotation/report.json

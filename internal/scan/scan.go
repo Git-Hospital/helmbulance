@@ -111,27 +111,9 @@ func immutableFields(ctx context.Context, o Options) (res scenario.Result) {
 		res.Summary = "could not render the chart: " + err.Error()
 		return res
 	}
-	byKey := map[string]object{}
-	for _, c := range cur {
-		byKey[c.Kind+"/"+c.Name] = c
-	}
-	var evidence []string
-	for _, a := range old {
-		b, ok := byKey[a.Kind+"/"+a.Name]
-		if !ok || a.Hook || b.Hook {
-			continue
-		}
-		// A Job named after .Release.Revision gets a new name on every real upgrade; both renders
-		// here use revision 1, so comparing them would be a false alarm.
-		if a.Kind == "Job" && sourceContains(o.Chart, b.Source, "Release.Revision") {
-			continue
-		}
-		for _, field := range immutablePaths(a.Kind) {
-			if !reflect.DeepEqual(dig(a.Doc, field), dig(b.Doc, field)) {
-				evidence = append(evidence, fmt.Sprintf("`%s/%s` %s changes (%s)", a.Kind, a.Name, strings.Join(field, "."), b.Source))
-			}
-		}
-	}
+	evidence := immutableChanges(old, cur, func(source string) bool {
+		return sourceContains(o.Chart, source, "Release.Revision")
+	})
 	if len(evidence) == 0 {
 		res.Verdict = scenario.Pass
 		res.Summary = "no immutable field changes from " + o.FromVersion
@@ -152,11 +134,58 @@ func immutableFields(ctx context.Context, o Options) (res scenario.Result) {
 	return res
 }
 
+// withHelpers is text followed by the bodies of the helpers it includes, and of the helpers those
+// include, each once.
+func withHelpers(text string, helpers map[string]string) string {
+	seen := map[string]bool{}
+	out := text
+	for todo := text; todo != ""; {
+		var next string
+		for _, inc := range includeOf.FindAllStringSubmatch(todo, -1) {
+			if body, ok := helpers[inc[1]]; ok && !seen[inc[1]] {
+				seen[inc[1]] = true
+				out += "\n" + body
+				next += "\n" + body
+			}
+		}
+		todo = next
+	}
+	return out
+}
+
 func fromFlag(from string) string {
 	if from == "" {
 		return ""
 	}
 	return " --from " + from
+}
+
+// immutableChanges lists the immutable fields that differ between an object of the earlier
+// version (old) and the same object in the chart under test (cur). byRevision reports whether a
+// template names its object after .Release.Revision.
+func immutableChanges(old, cur []object, byRevision func(source string) bool) []string {
+	byKey := map[string]object{}
+	for _, c := range cur {
+		byKey[c.Kind+"/"+c.Name] = c
+	}
+	var evidence []string
+	for _, a := range old {
+		b, ok := byKey[a.Kind+"/"+a.Name]
+		if !ok || a.Hook || b.Hook {
+			continue
+		}
+		// A Job named after .Release.Revision gets a new name on every real upgrade; both renders
+		// here use revision 1, so comparing them would be a false alarm.
+		if a.Kind == "Job" && byRevision(b.Source) {
+			continue
+		}
+		for _, field := range immutablePaths(a.Kind) {
+			if !reflect.DeepEqual(withDefault(a.Kind, field, dig(a.Doc, field)), withDefault(a.Kind, field, dig(b.Doc, field))) {
+				evidence = append(evidence, fmt.Sprintf("`%s/%s` %s changes (%s)", a.Kind, a.Name, strings.Join(field, "."), b.Source))
+			}
+		}
+	}
+	return evidence
 }
 
 func immutablePaths(kind string) [][]string {
@@ -169,13 +198,34 @@ func immutablePaths(kind string) [][]string {
 		return [][]string{{"spec", "template"}}
 	case "PersistentVolumeClaim":
 		return [][]string{{"spec", "accessModes"}, {"spec", "storageClassName"}}
+	case "RoleBinding", "ClusterRoleBinding":
+		return [][]string{{"roleRef"}}
+	case "Service":
+		return [][]string{{"spec", "clusterIP"}}
 	}
 	return nil
 }
 
+// apiDefaults are the values the API server fills in for an immutable field left out, so that
+// writing the default out in one version and leaving it out in the other is not a change (#56).
+var apiDefaults = map[string]any{
+	"StatefulSet spec.podManagementPolicy": "OrderedReady",
+	"Service spec.clusterIP":               "", // assigned by the API server
+}
+
+func withDefault(kind string, field []string, v any) any {
+	if d, ok := apiDefaults[kind+" "+strings.Join(field, ".")]; ok && v == nil {
+		return d
+	}
+	return v
+}
+
 var (
-	randomFn   = regexp.MustCompile(`\b(randAlphaNum|randAlpha|randAscii|randNumeric|randBytes|uuidv4|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b`)
-	checksumOf = regexp.MustCompile(`include\s*\(\s*print\s+\$?\.Template\.BasePath\s+"([^"]+)"\s*\)[^}]*?sha256sum`)
+	randomFn = regexp.MustCompile(`\b(randAlphaNum|randAlpha|randAscii|randNumeric|randBytes|uuidv4|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b`)
+	// checksumOf matches the two ways a template names another for its checksum:
+	// include (print $.Template.BasePath "/secret.yaml") and
+	// include (printf "%s/secret.yaml" $.Template.BasePath), each piped to sha256sum (#56).
+	checksumOf = regexp.MustCompile(`include\s*\(\s*(?:print\s+\$?\.Template\.BasePath\s+"([^"]+)"|printf\s+"%s([^"]+)"\s+\$?\.Template\.BasePath)\s*\)[^}]*?sha256sum`)
 	includeOf  = regexp.MustCompile(`include\s+"([^"]+)"`)
 	defineOf   = regexp.MustCompile(`(?s)\{\{-?\s*define\s+"([^"]+)"\s*-?\}\}(.*?)\{\{-?\s*end\s*-?\}\}`)
 )
@@ -209,8 +259,14 @@ func firstUpgradeRestart(o Options) (res scenario.Result) {
 	}
 	var evidence []string
 	for name, text := range files {
-		for _, m := range checksumOf.FindAllStringSubmatch(text, -1) {
-			target := strings.TrimPrefix(m[1], "/")
+		// Files whose name starts with _ render nothing; their helpers count where they are included.
+		if strings.HasPrefix(filepath.Base(name), "_") {
+			continue
+		}
+		// A checksum can sit in a helper the template includes, such as
+		// checksum/config: {{ include "app.configChecksum" . }}.
+		for _, m := range checksumOf.FindAllStringSubmatch(withHelpers(text, helpers), -1) {
+			target := strings.TrimPrefix(m[1]+m[2], "/")
 			body, ok := files[target]
 			if !ok {
 				continue
