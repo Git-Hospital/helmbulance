@@ -123,9 +123,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 			control.Failed, control.Total, seconds(control.FailedAt))
 	}
 	if control.Failed > 0 {
-		return inconclusive(res, fmt.Sprintf("%d of %d requests to %s failed with nothing changing, in two controls (the second failed at second %s)",
-			control.Failed, control.Total, shown, seconds(control.FailedAt)),
-			fmt.Errorf("set --traffic-path to a URL that answers 2xx, or check NetworkPolicies that block the traffic pod"))
+		how, hint := controlFailure(control)
+		return inconclusive(res, fmt.Sprintf("%d of %d requests to %s failed with nothing changing, in two controls (the second failed at second %s%s)",
+			control.Failed, control.Total, shown, seconds(control.FailedAt), how), errors.New(hint))
 	}
 
 	workloads, err := env.Kube.Workloads(ctx, ns)
@@ -442,23 +442,51 @@ func notPlainHTTP(p kube.ServicePort) bool {
 // reach a pod that is not ready), externalIPs, and those with an address in outside (endpoints in
 // slices that are not pods in the namespace, keyed by Service name).
 func pickTarget(services []kube.Service, outside map[string][]string) (string, error) {
-	score := func(p kube.ServicePort) int {
-		switch {
-		case p.Protocol != "" && p.Protocol != "TCP":
-			return 0
-		// The requests are plain http://. A port that speaks TLS or gRPC would only fail them, and
-		// make the run INCONCLUSIVE where SKIPPED is right (#57).
-		case notPlainHTTP(p):
-			return 0
-		case p.Name == "http" || p.Name == "web":
-			return 3
-		case p.Port == 80 || p.Port == 8080 || p.Port == 3000 || p.Port == 8000:
-			return 2
-		case strings.Contains(p.Name, "http"):
+	// A port or Service named for metrics or monitoring serves a scraper, not users: it often answers
+	// only /metrics, so the control fails (#162). It is picked only when nothing else is left.
+	metrics := func(s kube.Service, p kube.ServicePort) bool {
+		for _, name := range []string{s.Name, p.Name} {
+			for _, w := range strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return r == '-' || r == '_' || r == '.' }) {
+				if w == "metrics" || w == "monitoring" || w == "prometheus" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	score := func(s kube.Service, p kube.ServicePort) int {
+		base := portScore(p)
+		if base > 0 && metrics(s, p) {
 			return 1
 		}
-		return 0
+		return 2 * base
 	}
+	return pickBest(services, outside, score)
+}
+
+// portScore ranks one port for pickTarget: a port named http or web, then a common HTTP port
+// number, then any port with http in its name; 0 for a port that is not plain HTTP over TCP.
+func portScore(p kube.ServicePort) int {
+	switch {
+	case p.Protocol != "" && p.Protocol != "TCP":
+		return 0
+	// The requests are plain http://. A port that speaks TLS or gRPC would only fail them, and
+	// make the run INCONCLUSIVE where SKIPPED is right (#57).
+	case notPlainHTTP(p):
+		return 0
+	case p.Name == "http" || p.Name == "web":
+		return 3
+	case p.Port == 80 || p.Port == 8080 || p.Port == 3000 || p.Port == 8000:
+		return 2
+	case strings.Contains(p.Name, "http"):
+		return 1
+	}
+	return 0
+}
+
+// pickBest returns the highest-scoring port of the Services that keep traffic on the release's
+// pods; see pickTarget.
+func pickBest(services []kube.Service, outside map[string][]string, score func(kube.Service, kube.ServicePort) int) (string, error) {
 	type candidate struct {
 		name  string
 		port  int
@@ -472,7 +500,7 @@ func pickTarget(services []kube.Service, outside map[string][]string) (string, e
 			continue
 		}
 		for _, p := range s.Ports {
-			if sc := score(p); sc > 0 {
+			if sc := score(s, p); sc > 0 {
 				cands = append(cands, candidate{s.Name, p.Port, sc})
 			}
 		}
@@ -548,13 +576,53 @@ func causes(workloads []kube.Workload) []string {
 	return out
 }
 
-// seconds lists failure times for a summary: "0, 1, 14".
+// seconds lists failure times for a summary, with runs of seconds shown as a range: "0 to 20, 31".
+// The times come in order, and a second can repeat, since five requests go out per second.
 func seconds(at []int64) string {
-	out := make([]string, len(at))
-	for i, t := range at {
-		out[i] = strconv.FormatInt(t, 10)
+	var out []string
+	for i := 0; i < len(at); {
+		j := i
+		for j+1 < len(at) && at[j+1]-at[j] <= 1 {
+			j++
+		}
+		if at[j] > at[i] {
+			out = append(out, fmt.Sprintf("%d to %d", at[i], at[j]))
+		} else {
+			out = append(out, strconv.FormatInt(at[i], 10))
+		}
+		i = j + 1
 	}
 	return strings.Join(out, ", ")
+}
+
+// controlFailure says how the control requests failed, for the summary (", most with HTTP 404 Not
+// Found"), and what to try, since a 404, a refused connection and a timeout have different fixes
+// (#162). Without a known reason (an older traffic pod, or wget said something else) the hint is
+// the general one.
+func controlFailure(control oracle.TrafficStats) (how, hint string) {
+	reason, n := control.MostCommonReason()
+	if reason == "" {
+		return "", "set --traffic-path to a URL that answers 2xx, or check NetworkPolicies that block the traffic pod"
+	}
+	how = ", all with " + reason
+	if n < control.Failed {
+		how = fmt.Sprintf(", %d of them with %s", n, reason)
+	}
+	switch {
+	case reason == "HTTP 400 Bad Request" || reason == "HTTP 421 Misdirected Request":
+		hint = "the app rejected the request itself, often because it does not accept the Service name as a host; set --traffic-target to a port that answers any host, or --traffic-path"
+	case strings.HasPrefix(reason, "HTTP 4"):
+		hint = "the port answers, but not at that path; set --traffic-path to a path that answers 2xx, such as a health endpoint"
+	case strings.HasPrefix(reason, "HTTP 5"):
+		hint = "the app answered with server errors before anything changed; set --traffic-path to a path that answers 2xx, or check that the release is healthy"
+	case reason == "connection refused":
+		hint = "nothing listens on that port; set --traffic-target to the Service port the app serves"
+	case reason == "timed out":
+		hint = "the requests got no answer; check NetworkPolicies that block the traffic pod, or set --traffic-target"
+	default:
+		hint = "set --traffic-target or --traffic-path to a URL that answers 2xx"
+	}
+	return how, hint
 }
 
 // settle is the wait between two workloads of a restart; tests replace it to see where it runs.

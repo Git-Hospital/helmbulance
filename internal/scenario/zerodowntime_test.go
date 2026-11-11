@@ -594,3 +594,49 @@ func TestZeroDowntimeFailedUpgradeKeepsTheMeasuredOutage(t *testing.T) {
 		t.Errorf("verdict %s, summary %q", res.Verdict, res.Summary)
 	}
 }
+
+func TestSecondsAsRanges(t *testing.T) {
+	for want, at := range map[string][]int64{
+		"":                nil,
+		"3":               {3},
+		"0 to 20":         {0, 0, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 20},
+		"0 to 1, 14":      {0, 1, 14},
+		"2, 4, 6 to 7, 9": {2, 4, 6, 7, 7, 9},
+	} {
+		if got := seconds(at); got != want {
+			t.Errorf("seconds(%v) = %q, want %q", at, got, want)
+		}
+	}
+}
+
+// When both controls fail, the summary says how, and the hint fits the reason (#162).
+func TestZeroDowntimeControlSaysHowRequestsFailed(t *testing.T) {
+	notFound := "fail wget: server returned error: HTTP/1.1 404 Not Found\n"
+	for name, c := range map[string]struct {
+		second    string
+		how, hint string
+	}{
+		"all 404": {"200 " + notFound + "200 " + notFound + "201 " + notFound,
+			"(the second failed at second 0 to 1, all with HTTP 404 Not Found)", "--traffic-path to a path that answers 2xx"},
+		"mostly refused": {"200 fail wget: can't connect to remote host (10.96.0.9): Connection refused\n201 fail wget: can't connect to remote host (10.96.0.9): Connection refused\n203 " + notFound,
+			"(the second failed at second 0 to 1, 3, 2 of them with connection refused)", "nothing listens on that port"},
+		"old pod, no reason": {"200 fail\n201 fail\n",
+			"(the second failed at second 0 to 1)", "check NetworkPolicies"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := runZeroDowntime(t, map[string]string{
+				"hb-traffic-control":   "100 fail\n",
+				"hb-traffic-control-2": c.second,
+			})
+			if res.Verdict != Inconclusive || !strings.Contains(res.Summary, c.how) {
+				t.Fatalf("summary %q, want %q", res.Summary, c.how)
+			}
+			if !strings.Contains(res.Summary, c.hint) {
+				t.Errorf("result %+v does not give the hint %q", res, c.hint)
+			}
+			if strings.Contains(res.Summary, "10.96.0.9") {
+				t.Error("wget's own text, which names a host, reached the summary")
+			}
+		})
+	}
+}

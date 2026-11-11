@@ -7,9 +7,11 @@ import (
 )
 
 // TrafficScript is the shell loop the traffic pod runs: one HTTP request every 200 ms, one line per
-// request: "<unix seconds> ok" or "<unix seconds> fail". A response with status 4xx or 5xx counts
-// as a failure (busybox wget exits non-zero). $URL is set by the caller.
-const TrafficScript = `while true; do t=$(date +%s); if wget -q -T 2 -O /dev/null "$URL"; then echo "$t ok"; else echo "$t fail"; fi; sleep 0.2; done`
+// request: "<unix seconds> ok", or "<unix seconds> fail <what wget printed>". A response with status
+// 4xx or 5xx counts as a failure (busybox wget exits non-zero). The reason is the first line of
+// wget's error, without tabs or carriage returns (busybox tr has no character classes), so that a
+// report can say how the requests failed (#162). $URL is set by the caller.
+const TrafficScript = `while true; do t=$(date +%s); if r=$(wget -q -T 2 -O /dev/null "$URL" 2>&1); then echo "$t ok"; else echo "$t fail $(printf '%s' "$r" | head -n 1 | tr -d '\r\t' | cut -c1-120)"; fi; sleep 0.2; done`
 
 // TrafficStats summarises a traffic log.
 type TrafficStats struct {
@@ -20,6 +22,45 @@ type TrafficStats struct {
 	// FailedAt is the second of each failure, counted from the first request, so a report can say
 	// whether the failures came at the start or later.
 	FailedAt []int64
+	// Reasons counts the failures by FailureReason; a line with no reason (an older traffic pod)
+	// is not counted here.
+	Reasons map[string]int
+}
+
+// FailureReason turns what busybox wget printed for a failed request into a short reason:
+// "HTTP 404 Not Found", "connection refused", "name not resolved", "timed out", "connection
+// reset", or "" when it says nothing known. Only these words reach a report, never wget's text,
+// which can name a host.
+func FailureReason(wget string) string {
+	switch {
+	case strings.Contains(wget, "server returned error: "):
+		status := wget[strings.Index(wget, "server returned error: ")+len("server returned error: "):]
+		if f := strings.Fields(status); len(f) >= 2 && strings.HasPrefix(f[0], "HTTP/") {
+			return strings.TrimSpace("HTTP " + strings.Join(f[1:], " "))
+		}
+		return "an HTTP error"
+	case strings.Contains(wget, "Connection refused"):
+		return "connection refused"
+	case strings.Contains(wget, "bad address"):
+		return "name not resolved"
+	case strings.Contains(wget, "timed out"):
+		return "timed out"
+	case strings.Contains(wget, "Connection reset"):
+		return "connection reset"
+	}
+	return ""
+}
+
+// MostCommonReason is the reason most failures had and how many had it; "" and 0 when no failure
+// carried a known reason. A tie goes to the alphabetically first, so reports do not flip.
+func (s TrafficStats) MostCommonReason() (string, int) {
+	best, n := "", 0
+	for r, c := range s.Reasons {
+		if c > n || c == n && r < best {
+			best, n = r, c
+		}
+	}
+	return best, n
 }
 
 // FailedPercent is the share of failed requests.
@@ -38,7 +79,7 @@ func ParseTraffic(log string) TrafficStats {
 // TrafficSecond returns the unix second of a traffic log line, in the traffic pod's own clock.
 func TrafficSecond(line string) (int64, bool) {
 	fields := strings.Fields(line)
-	if len(fields) != 2 {
+	if len(fields) < 2 {
 		return 0, false
 	}
 	t, err := strconv.ParseInt(fields[0], 10, 64)
@@ -68,7 +109,7 @@ func ParseTrafficBetween(log string, since, until int64) TrafficStats {
 	}
 	for _, line := range strings.Split(log, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 2 {
+		if len(fields) < 2 || fields[1] == "ok" && len(fields) != 2 {
 			continue
 		}
 		t, err := strconv.ParseInt(fields[0], 10, 64)
@@ -86,6 +127,12 @@ func ParseTrafficBetween(log string, since, until int64) TrafficStats {
 			s.Total++
 			s.Failed++
 			s.FailedAt = append(s.FailedAt, t-first)
+			if r := FailureReason(strings.Join(fields[2:], " ")); r != "" {
+				if s.Reasons == nil {
+					s.Reasons = map[string]int{}
+				}
+				s.Reasons[r]++
+			}
 			lastFail = t
 			if outageStart < 0 {
 				outageStart = t
