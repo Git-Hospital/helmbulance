@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,6 +147,28 @@ func TestUpgradeValuesPassWithNoSecretsSaysSo(t *testing.T) {
 	some := oracle.SecretSnapshot{"app/k": {1}}
 	if res, _ := (UpgradeValues{}).verdict(t.Context(), Result{}, some, some, some, cmd, cmd, cmd, env, nil); res.Summary != "Secrets stayed the same through both upgrades" {
 		t.Errorf("summary with Secrets compared = %q", res.Summary)
+	}
+}
+
+// A key that is neither a credential nor TLS goes back to the chart's default when an upgrade
+// leaves out its --set; HB-UV-002 says that, without the lookup advice meant for generated keys,
+// which would make such a value impossible to change (#53).
+func TestUpgradeValuesImpactFollowsTheKeyClass(t *testing.T) {
+	env := newFakeReader(t, `{"items":[]}`, secretManifest()).env
+	env.Values.Sets = []string{"x=y"}
+	cmd := []execx.Command{{Line: "helm upgrade hb ./chart"}}
+	for key, wantOther := range map[string]bool{"log-level": true, "password": false} {
+		before := oracle.SecretSnapshot{"app/" + key: {1}}
+		after := oracle.SecretSnapshot{"app/" + key: {2}}
+		res, _ := UpgradeValues{}.verdict(t.Context(), Result{}, before, before, after, cmd, cmd, cmd, env, nil)
+		if len(res.Findings) != 1 || res.Findings[0].ID != "HB-UV-002" {
+			t.Fatalf("%s: findings %+v, want HB-UV-002", key, res.Findings)
+		}
+		f := res.Findings[0]
+		other := strings.Contains(f.Impact, "back to the chart's defaults") && !strings.Contains(f.Fix, "lookup")
+		if other != wantOther {
+			t.Errorf("%s: impact %q, fix %q; want the chart-default wording %v", key, f.Impact, f.Fix, wantOther)
+		}
 	}
 }
 

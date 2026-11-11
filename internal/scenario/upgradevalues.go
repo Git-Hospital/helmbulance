@@ -265,7 +265,7 @@ func withRestarts(res Result, restarted restarts, installCmd, reuseCmd []execx.C
 	}
 	var repro []string
 	for _, c := range installCmd {
-		repro = append(repro, reproLine(c.Line))
+		repro = append(repro, execx.ReproLine(c.Line))
 	}
 	var evidence []string
 	for _, o := range restarted.owners {
@@ -293,7 +293,7 @@ func withRestarts(res Result, restarted restarts, installCmd, reuseCmd []execx.C
 		Fix: "Usually a pod-template annotation that changes on every render, such as a checksum of a " +
 			"Secret with a generated value, a timestamp or randAlphaNum. Keep generated values stable " +
 			"(see HB-UV-001) and hash only inputs that come from values.",
-		Reproduce: concat(repro, reproLine(reuseCmd[0].Line)),
+		Reproduce: concat(repro, execx.ReproLine(reuseCmd[0].Line)),
 	})
 	res.Verdict = Fail
 	res.Summary = fmt.Sprintf("%d problem(s) across upgrades", len(res.Findings)) + incomplete
@@ -316,14 +316,14 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 
 	var repro []string
 	for _, c := range installCmd {
-		repro = append(repro, reproLine(c.Line))
+		repro = append(repro, execx.ReproLine(c.Line))
 	}
 
 	control := oracle.Diff(installed, reused)
 	regenerated, added := splitAdded(control)
 	regenerated, rotated := splitExpected(regenerated, env.ExpectedRotation)
 	if len(regenerated) > 0 {
-		steps := concat(repro, reproLine(reuseCmd[0].Line))
+		steps := concat(repro, execx.ReproLine(reuseCmd[0].Line))
 		impact := "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
 			"its first start stop matching, and anything encrypted or signed with the old value " +
 			"can no longer be read."
@@ -361,7 +361,7 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		rotated = append(rotated, more...)
 	}
 	if len(changes) > 0 {
-		steps := concat(repro, reproLine(filesCmd[0].Line))
+		steps := concat(repro, execx.ReproLine(filesCmd[0].Line))
 		title := "Secret values are lost when an upgrade leaves out an install-time --set"
 		if len(env.Values.Sets) == 0 {
 			title = "Secret values change when the release is upgraded from its values files"
@@ -380,6 +380,18 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 				"would make existing data unreadable.",
 			Reproduce: steps,
 		})
+		// Keys that are neither credentials nor TLS material, such as config a user set with --set
+		// that the chart renders into a Secret, are not lost encryption keys: they go back to the
+		// chart's default, and keeping them with lookup would make them impossible to change (#53).
+		if allOther(changes) {
+			f := &res.Findings[len(res.Findings)-1]
+			f.Impact = "Upgrading from the values files, without repeating every --set used at install, " +
+				"sets these values back to the chart's defaults, or drops them. They are not credentials, " +
+				"so nothing is locked out, but the release now runs with settings nobody chose."
+			f.Fix = "Put the value in the values file the release is upgraded from, or say in the chart's " +
+				"documentation that it must be given on every upgrade. List a key that changes on " +
+				"purpose with --expected-rotation."
+		}
 	}
 
 	if len(res.Findings) > 0 {
@@ -407,6 +419,16 @@ func switchedImpact(switched []oracle.Change, example string) string {
 	}
 	return " A workload that keeps data now reads a new credential instead of the one its data was " +
 		"set up with, " + example + "."
+}
+
+// allOther reports whether every change is to a key that is neither a credential nor TLS material.
+func allOther(changes []oracle.Change) bool {
+	for _, c := range changes {
+		if keyClass(c) != oracle.ClassOther {
+			return false
+		}
+	}
+	return len(changes) > 0
 }
 
 func describe(changes []oracle.Change, consumers map[string][]string) []string {
@@ -448,16 +470,4 @@ func withoutRefs(changes, seen []oracle.Change) []oracle.Change {
 		}
 	}
 	return out
-}
-
-// reproLine replaces the sandbox kubeconfig path, so the command reads as one to run against any
-// test cluster.
-func reproLine(line string) string {
-	fields := strings.Fields(line)
-	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] == "--kubeconfig" {
-			fields[i+1] = "$KUBECONFIG"
-		}
-	}
-	return strings.Join(fields, " ")
 }

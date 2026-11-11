@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -333,8 +334,8 @@ func (c *Client) HelmClusterObjects(ctx context.Context, mine func(ns string) bo
 	if len(types) == 0 {
 		return nil, nil
 	}
-	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "get", strings.Join(types, ","),
-		"-l", "app.kubernetes.io/managed-by=Helm", "-o", "json")
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "get",
+		"-l", "app.kubernetes.io/managed-by=Helm", "-o", "json", "--", strings.Join(types, ","))
 	if err != nil {
 		return nil, err
 	}
@@ -357,8 +358,16 @@ func (c *Client) HelmClusterObjects(ctx context.Context, mine func(ns string) bo
 			continue
 		}
 		// kind.group/name, which kubectl resolves without knowing the plural; core kinds have no group.
+		// An aggregated API the chart serves can return any kind and apiVersion, so a ref that is not
+		// a plain kind and group is skipped rather than handed to kubectl.
 		typ := strings.ToLower(item.Kind)
-		if group, _, ok := strings.Cut(item.APIVersion, "/"); ok {
+		group, _, hasGroup := strings.Cut(item.APIVersion, "/")
+		name := item.Metadata.Name
+		if !kindName.MatchString(item.Kind) || hasGroup && !groupName.MatchString(group) || !hasGroup && item.APIVersion != "v1" ||
+			name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/%") {
+			continue
+		}
+		if hasGroup {
 			typ += "." + group
 		}
 		refs = append(refs, typ+"/"+item.Metadata.Name)
@@ -367,14 +376,21 @@ func (c *Client) HelmClusterObjects(ctx context.Context, mine func(ns string) bo
 	return refs, nil
 }
 
+// kindName and groupName are what a kind and an API group can be: a CRD's kind, lowercased, is a
+// DNS-1035 label, so it may hold an inner dash.
+var (
+	kindName  = regexp.MustCompile(`^[A-Za-z]([-A-Za-z0-9]*[A-Za-z0-9])?$`)
+	groupName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+)
+
 // DeleteObjects deletes refs (TYPE/NAME, as HelmClusterObjects returns them) and waits until they
-// are gone.
+// are gone. The refs come after "--", so none of them can be read as a flag such as --kubeconfig.
 func (c *Client) DeleteObjects(ctx context.Context, refs []string) error {
 	if len(refs) == 0 {
 		return nil
 	}
-	args := append([]string{"--kubeconfig", c.Kubeconfig, "delete"}, refs...)
-	_, err := c.Runner.Run(ctx, "kubectl", append(args, "--ignore-not-found", "--wait=true", "--timeout=5m")...)
+	args := []string{"--kubeconfig", c.Kubeconfig, "delete", "--ignore-not-found", "--wait=true", "--timeout=5m", "--"}
+	_, err := c.Runner.Run(ctx, "kubectl", append(args, refs...)...)
 	return err
 }
 
