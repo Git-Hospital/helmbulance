@@ -1,0 +1,5 @@
+apiVersion: v2
+name: upgrade-fixture
+description: "Helmbulance fixture. The new version's container runs long enough for helm upgrade --wait to finish, then exits, so the release restarts while it is watched after the upgrade (HB-CU-003). Its twin is upgrade-v2-ok."
+type: application
+version: 2.0.0

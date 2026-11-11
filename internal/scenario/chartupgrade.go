@@ -109,8 +109,8 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		if crashes := crashesAfterTimeout(ctx, env, ns, podsBefore, containersBefore, containersKnown); len(crashes) > 0 {
 			return upgradeFails(res, fromV, repro,
 				append([]string{"`helm upgrade --wait` timed out while containers of the new version crashed or could not start: " + helmMessage(upgradeErr)}, crashes...),
-				"Read the crashed container's logs (`kubectl logs --previous`) and the pod events in the "+
-					"failure bundle. Typical causes are a setting the new version requires, a changed command "+
+				"Keep the cluster with --keep-cluster, run the Reproduce commands on it, then read the crashed container's logs (`kubectl logs --previous`) and the pod events "+
+					"(`kubectl get events`). Typical causes are a setting the new version requires, a changed command "+
 					"or port, a probe that fails, or a Secret or ConfigMap key the new version reads but the "+
 					"chart does not create.")
 		}
@@ -177,7 +177,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 			Severity:  "high",
 			Evidence:  unhealthy,
 			Impact:    "The upgrade completed, but parts of the application are not ready or keep restarting.",
-			Fix:       "Read the pod logs and events in the failure bundle; typical causes are a removed setting the app still needs, a migration that fails, or a changed port or probe.",
+			Fix:       "Keep the cluster with --keep-cluster, run the Reproduce commands on it, then read the pod logs and events (`kubectl logs`, `kubectl get events`); typical causes are a removed setting the app still needs, a migration that fails, or a changed port or probe.",
 			Reproduce: repro,
 		})
 	}

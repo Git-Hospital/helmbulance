@@ -1,0 +1,5 @@
+apiVersion: v2
+name: removed-api
+description: "Helmbulance fixture. current-api with a discovery.k8s.io/v1beta1 EndpointSlice, an API version removed in Kubernetes 1.25, so the install fails on every version matrix tests (HB-K8S-001). Its twin is current-api."
+type: application
+version: 0.1.0

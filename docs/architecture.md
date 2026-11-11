@@ -59,7 +59,7 @@ chart + values ─▶ Chart model ─▶ Sandbox ─▶ Scenario engine ─▶ O
   - The reproduction command in a report is the command that really ran.
 - **kubectl** is used for reads in v0.1. client-go replaces it where watching or ephemeral containers need it. Every read (`get`, `logs`) has `--request-timeout 60s`; watches (`rollout status`, `wait`, `delete --wait`) keep their own `--timeout` (#54).
 - **The tool's own clusters only.**
-  - Every sandbox gets its own kubeconfig (mode 0600, in `~/.helmbulance/clusters/<name>/`), and the SHA-256 of the cluster CA is recorded when the cluster is created.
+  - Every sandbox gets its own kubeconfig (mode 0600, in `~/.helmbulance/clusters/<name>/`, or under `$HELMBULANCE_STATE_DIR` when it is set), and the SHA-256 of the cluster CA is recorded when the cluster is created.
   - Reusing a cluster (`--cluster`) checks that fingerprint on the cluster the kubeconfig's `current-context` points at, which must be `kind-<name>`: helm and kubectl follow it, so another cluster merged into the file is refused (#47). So is an entry with `insecure-skip-tls-verify`, under which the CA proves nothing. The name must be one the tool makes (`helmbulance-` and 8 hex characters). helm and kubectl then get a copy of the file with that context, its cluster and its user only (`kubeconfig.pinned`, mode 0600, checked again before it replaces the copy a run may be using), so a `use-context` or a merge into the kept file during the run cannot send them elsewhere (#47). A new cluster gets the same copy as soon as kind has written its kubeconfig, and is deleted if that file fails the checks below. The copy is written to a temporary file and renamed into place, so a second run never reads it empty, which would mean `http://localhost:8080`. A cluster entry whose `server` is not `https` is refused, since the CA proves nothing without TLS, and kubectl's `~/.kube/kuberc` is turned off (`KUBERC=off`), since its defaults can set `--server` on the commands Helmbulance runs.
   - Each entry in the copy may hold only what kind writes: the context `cluster` and `user`, the cluster `certificate-authority-data` and `server`, the user `client-certificate-data` and `client-key-data`, all of them. Anything else (`exec`, `auth-provider`, `token`, `as`, `proxy-url`, `tls-server-name`, a namespace, …) is refused, so a hand-edited kept file cannot make helm or kubectl run a command, act as someone else or go through another host (#155).
   - The fingerprint protects against mistakes, not against someone who can write the state directory, so that is checked too (#155). The state directory (`HELMBULANCE_STATE_DIR`, `~/.helmbulance` by default) is resolved to its real path once, and the files are named by it from then on, since helm and kubectl open the kubeconfig by path on every call. That path and every directory above it, up to `/`, must belong to the user running Helmbulance or root and be writable only by its owner, or sticky like `/tmp`, as OpenSSH's `StrictModes` checks. `clusters/` and `clusters/<name>/` must be real directories of that user with mode 0700. A new cluster is checked before kind writes its kubeconfig, since `MkdirAll` leaves an existing directory as it is. Systems without Unix owners and modes skip the check. It reads modes, not ACLs: an ACL on the state directory that lets others write (macOS `chmod +a`) is not seen. A file system without Unix modes (`/mnt/c` on WSL, exFAT, SMB) or a bind mount owned by another uid is refused.
@@ -69,22 +69,21 @@ chart + values ─▶ Chart model ─▶ Sandbox ─▶ Scenario engine ─▶ O
 
 ### 3.2 Chart model
 
-The chart is read on the host before any sandbox exists, so reading it is hardened:
+The chart is read on the host before any sandbox exists:
 
-- symlinks and paths outside the chart are refused;
-- the size and file count of chart archives are capped;
-- dependencies are never fetched or updated (only vendored `charts/` or a lock-verified set);
-- the Helm version in use is reported, and the project's CI runs `govulncheck`.
+- dependencies are never fetched or updated: helm uses the vendored `charts/`, and Helmbulance never passes `--dependency-update`;
+- the Helm version in use is reported, and the project's CI runs `govulncheck`;
+- not built yet, planned with the protections for third-party charts (§4, v0.3): refusing symlinks and paths outside the chart, and capping the size and file count of chart archives. Today helm and Helmbulance's own readers follow symlinks (#54).
 
-The model records what the chart creates:
+There is no separate chart model in v0.1. The scenarios read what the chart created from the cluster after the install, and from the release's manifest:
 
 | Area | What is recorded |
 |---|---|
-| Workloads | Containers, ports, probes, security contexts, update strategy, volumes, and env vars read from Secrets |
+| Workloads | Containers, whether a readiness probe exists, update strategy, volumes, and env vars read from Secrets; Service ports are read separately |
 | Secrets | Which workload reads which key |
-| Network | Services and NetworkPolicies |
+| Network | Services (NetworkPolicies come with `network-isolation`, v0.1.x) |
 | Storage | PVCs and StatefulSet volume templates |
-| Cluster-scoped resources | CRDs, cluster roles, webhooks. Their presence turns off parallel runs. |
+| Cluster-scoped resources | Read during setup and cleanup to remove objects a sandbox release kept. Scenarios run one at a time, so they do not collide |
 | `lookup` | Found statically in every template, subcharts included, then confirmed after install by comparing a client-side render with a server-side dry run |
 
 **Where `lookup` matters.** Argo CD renders charts with `helm template`, where `lookup` returns nothing. Flux's helm-controller runs real Helm installs, where `lookup` works. A `lookup` finding names Argo CD and does not claim to apply to "GitOps" in general.
@@ -92,20 +91,22 @@ The model records what the chart creates:
 ### 3.3 Sandbox
 
 **v0.1:**
-- kind v0.24 or newer, with a pinned node image. Its default CNI, kindnet, enforces NetworkPolicy through kube-network-policies.
-- Enforcement is proven when the sandbox starts, with a canary: a deny-all policy and a test pod. If the canary fails, network scenarios report `INCONCLUSIVE`.
-- kind's default `standard` StorageClass (local-path, reclaim policy Delete). Reports say so, because data-survival results depend on the reclaim policy.
-- Pod Security admission in `warn` and `audit` mode. The reached level (restricted, baseline or privileged) is reported as information. Enforcing it would stop many charts from installing and would change what is measured.
+- kind, with its own default node image unless `--node-image` is given. CI tests with kind v0.33.0, and `matrix` pins node images built for v0.33, so `matrix` needs it. There is no kind version check (#55). kind's default CNI, kindnet, enforces NetworkPolicy through kube-network-policies.
+- kind's default `standard` StorageClass (local-path, reclaim policy Delete). The reinstall summary says when a volume went with the release because of it.
 - No ingress controller and no metrics-server in v0.1, because no v0.1 scenario needs them. When an HTTP entry point is needed, it will be a Gateway API implementation (ingress-nginx was retired in March 2026).
-- `listenAddress` and `apiServerAddress` bound to `127.0.0.1`.
+- kind's defaults for the API server address (`127.0.0.1`); Helmbulance adds no port mappings.
+
+**Not built yet** (#54, #55):
+- A canary that proves NetworkPolicy enforcement when the sandbox starts (a deny-all policy and a test pod), so network scenarios report `INCONCLUSIVE` when it fails. It comes with `network-isolation` (v0.1.x).
+- Pod Security admission in `warn` and `audit` mode, with the reached level reported as information (#115). Enforcing it would stop many charts from installing and would change what is measured.
 - Memory and CPU limits on the node containers.
 
 **Speed and image pulls:**
-- Scenarios run one after another in one cluster (`--parallel=1` by default). A full application with a database and a search engine, installed three or four times at once, does not fit in a laptop's Docker memory, and running out of memory is the largest source of flaky results.
+- Scenarios run one after another in one cluster; there is no parallel mode. A full application with a database and a search engine, installed three or four times at once, does not fit in a laptop's Docker memory, and running out of memory is the largest source of flaky results.
 - Images pulled for the first install stay on the node, so later installs start faster.
 - `--keep-cluster` and `--cluster` reuse a sandbox across runs.
 - A registry mirror can come later. One pull-through mirror serves only one upstream registry, so it is not worth it in v0.1.
-- Images that do not exist for the host's architecture are reported as "not installable on arm64", not as a chart finding.
+- An image that does not exist for the host's architecture cannot be pulled, so the install ends `INCONCLUSIVE`, not as a chart finding. Naming the architecture in the summary is not built yet.
 
 ### 3.4 Scenario engine
 
@@ -229,11 +230,11 @@ Every finding ID has a fixture pair, a small chart with the defect and a fixed t
 - **Redaction:**
   - Secret `data` and `stringData`, and Helm release Secrets in full.
   - URL user info and query values.
-  - env and ConfigMap values whose names look secret.
-  - Any known secret value found verbatim in logs or events.
+  - Every `--set` value of four or more characters, wherever it appears in captured output.
+  - Logs and events are not collected yet, so there is nothing more to redact.
   - In a reproduce line, each `--set` value is a shell variable, such as `auth.password="${HB_SET_AUTH_PASSWORD:?…}"`, one per key (`a.b` and `a_b` get `HB_SET_A_B` and `HB_SET_A_B_2`): the line runs once the variable holds the value, and the shell stops with that message when it does not.
 - **Escaping:** text that comes from the cluster (names, events, logs) is escaped and length-limited before it reaches Markdown, a terminal or a pull request comment.
-- **Failure bundle:** when a scenario fails or is inconclusive, `kind export logs`, events, `describe` output and the Helm history are saved next to the report.
+- **Failure bundle (planned, not built):** when a scenario fails or is inconclusive, `kind export logs`, events, `describe` output and the Helm history saved next to the report. Until then, keep the cluster with `--keep-cluster`, run the Reproduce commands on it, then read the logs and events (#55).
 
 ### 3.7 Optional AI hypotheses (v0.3)
 
@@ -258,11 +259,10 @@ NetworkPolicy cannot provide this, because the chart can add its own policies an
 
 Targets are checked when the connection is made, not when a name is resolved. A target must be the IP of a running pod in the release namespace. ExternalName and selector-less Services, `externalIPs` and load balancer addresses are refused, so a chart cannot point Helmbulance's traffic at a third party. Rate and duration caps are compiled into the probe binary; flags can only lower them.
 
-**Supply chain of the tool:**
-- Release binaries and the probe image are signed with cosign (keyless) and published with an SBOM and SLSA provenance.
-- Images are published under `ghcr.io/git-hospital/`. The probe image digest is embedded in the binary.
-- Node images and add-on manifests are pinned by digest.
-- The GitHub Action verifies the binary signature before running it, and users are told to pin the Action by commit SHA.
+**Supply chain of the tool.** Today: `matrix`'s node images and the busybox image are pinned by digest, and the Action downloads kind, kubectl and helm with fixed versions and checks their sha256. It builds Helmbulance from source with `go build`, and users are told to pin it by commit SHA. On a `v*` tag, the release workflow builds Linux and macOS archives (amd64 and arm64), writes `SHA256SUMS`, attests each archive's build provenance, and attaches them to a draft GitHub release for a person to publish. Planned for v0.2, not built (#55):
+- signing release binaries with cosign (keyless) and producing an SBOM;
+- images under `ghcr.io/git-hospital/`, and a probe image whose digest is embedded in the binary;
+- the Action verifying the binary signature before it runs it.
 
 ## 5. No hosted infrastructure
 
@@ -282,7 +282,7 @@ A hosted service (submit a chart, get a report) is a possible later product, not
 | Tool | What it does | How Helmbulance relates |
 |---|---|---|
 | Trivy, Checkov, kube-linter, Kubescape, Polaris | Static checks of rendered manifests | Complementary: they read YAML, Helmbulance observes behaviour. Their results may be included in the report later. |
-| chart-testing (`ct`) | Lint, install, `helm test` | Helmbulance starts where `ct install` stops: after the first install. |
+| chart-testing (`ct`) | Lint, install, `helm test`; with `--upgrade`, an upgrade from the previous version | `ct install --upgrade` checks that the upgrade succeeds. Helmbulance checks what it does to the release: Secrets kept, values left out, pods restarted for nothing, traffic during it, and the uninstall, reinstall and GitOps render that `ct` does not run. Helmbulance does not run `helm test` hooks. |
 | helm-unittest | Assertions on rendered templates | No cluster. Helmbulance's fixtures could use it for render-level checks. |
 | Terratest, kuttl, Chainsaw, Testkube | Frameworks to write your own end-to-end tests | They need a test written for each chart. Helmbulance ships ready scenarios with control and treatment built in. Exporting scenarios in kuttl or Chainsaw format is a possible bridge. |
 | Chaos Mesh, Litmus | Fault injection in long-running clusters | Platforms installed in a cluster. Helmbulance is a short-lived test run focused on chart lifecycle. |
@@ -298,9 +298,13 @@ internal/helm/          helm CLI driver
 internal/kube/          cluster reads
 internal/oracle/        oracles
 internal/scenario/      scenarios
+internal/scan/          the static pre-screen (helmbulance scan)
+internal/matrix/        one cluster per Kubernetes version (helmbulance matrix)
 internal/report/        Markdown, JSON and SARIF
+tools/verdicts/         runs testdata/verdicts.yaml against the fixtures
 testdata/charts/        fixture charts: one defect and one fixed twin each
-docs/                   architecture, scenario reference, case studies
+testdata/corpus/        values for the known-bug corpus
+docs/                   architecture, the Action, the corpus, decisions, case studies
 ```
 
 ## 8. Milestones
