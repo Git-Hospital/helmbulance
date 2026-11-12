@@ -60,6 +60,10 @@ func TestPickTarget(t *testing.T) {
 		{"a metrics port is still picked when it is the only one", []kube.Service{
 			svc("exporter-metrics", kube.ServicePort{Name: "http", Port: 9100}),
 		}, "exporter-metrics:9100"},
+		{"among metrics ports the usual order still holds", []kube.Service{
+			svc("monitoring-exporter", kube.ServicePort{Name: "tcp", Port: 8080}),
+			svc("monitoring-ui", kube.ServicePort{Name: "http", Port: 3000}),
+		}, "monitoring-ui:3000"},
 		{"metricsserver is not the word metrics", []kube.Service{
 			svc("metricsserver", kube.ServicePort{Name: "http", Port: 80}),
 			svc("app", kube.ServicePort{Name: "http-alt", Port: 9000}),

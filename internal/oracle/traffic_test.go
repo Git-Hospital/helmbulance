@@ -97,8 +97,12 @@ func TestFailureReason(t *testing.T) {
 		"wget: download timed out":                                           "timed out",
 		"wget: error getting response: Connection reset by peer":             "connection reset",
 		"wget: server returned error: garbled":                               "an HTTP error",
-		"":                                                                   "",
-		"wget: something else":                                               "",
+		"wget: server returned error: HTTP/1.1 400 ":                         "HTTP 400 Bad Request",
+		"wget: server returned error: HTTP/1.1 404 see http://10.0.0.5/x":    "HTTP 404 Not Found",
+		"wget: server returned error: HTTP/1.1 599 Custom":                   "HTTP 599",
+		"wget: server returned error: HTTP/1.1 abc Bad":                      "an HTTP error",
+		"":                     "",
+		"wget: something else": "",
 	} {
 		if got := FailureReason(in); got != want {
 			t.Errorf("FailureReason(%q) = %q, want %q", in, got, want)

@@ -1,6 +1,7 @@
 package oracle
 
 import (
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -28,15 +29,19 @@ type TrafficStats struct {
 }
 
 // FailureReason turns what busybox wget printed for a failed request into a short reason:
-// "HTTP 404 Not Found", "connection refused", "name not resolved", "timed out", "connection
+// "HTTP 404 Not Found" (the code with Go's name for it, not the server's phrase), "connection refused", "name not resolved", "timed out", "connection
 // reset", or "" when it says nothing known. Only these words reach a report, never wget's text,
 // which can name a host.
 func FailureReason(wget string) string {
 	switch {
 	case strings.Contains(wget, "server returned error: "):
 		status := wget[strings.Index(wget, "server returned error: ")+len("server returned error: "):]
+		// Only the status code is kept: the reason phrase is the app's own text, which can be
+		// missing ("HTTP/1.1 400 ") or carry anything, such as a URL.
 		if f := strings.Fields(status); len(f) >= 2 && strings.HasPrefix(f[0], "HTTP/") {
-			return strings.TrimSpace("HTTP " + strings.Join(f[1:], " "))
+			if code, err := strconv.Atoi(f[1]); err == nil && code >= 100 && code <= 999 {
+				return strings.TrimSpace("HTTP " + f[1] + " " + http.StatusText(code))
+			}
 		}
 		return "an HTTP error"
 	case strings.Contains(wget, "Connection refused"):

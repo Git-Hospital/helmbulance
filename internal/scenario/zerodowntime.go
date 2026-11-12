@@ -454,12 +454,14 @@ func pickTarget(services []kube.Service, outside map[string][]string) (string, e
 		}
 		return false
 	}
+	// portScore is at most 3, so adding 3 puts every other port above every metrics port and
+	// keeps the order within each group.
 	score := func(s kube.Service, p kube.ServicePort) int {
 		base := portScore(p)
-		if base > 0 && metrics(s, p) {
-			return 1
+		if base == 0 || metrics(s, p) {
+			return base
 		}
-		return 2 * base
+		return base + 3
 	}
 	return pickBest(services, outside, score)
 }
