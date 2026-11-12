@@ -16,6 +16,12 @@ import (
 	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
 
+// readTimeout bounds each request of a kubectl read (get, logs). Without it kubectl's transport
+// gives up after about a minute on its own, so the timing was not predictable, and a cluster that
+// stopped answering read as a health problem later than it needed to (#54). Watches (rollout
+// status, wait, delete --wait) keep their own --timeout and get none: it would cut them short.
+const readTimeout = "60s"
+
 // Client reads one sandbox cluster.
 type Client struct {
 	Runner     *execx.Runner
@@ -40,7 +46,7 @@ var skippedSecretTypes = map[string]bool{
 // Secrets returns the Secrets in ns, sorted by name, without Helm's release records and service
 // account tokens. It does not know which ones the chart renders; see helm.Client.OwnedSecrets.
 func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "secrets", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "secrets", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +233,7 @@ func podSpecOf(w workloadObject) podSpec {
 // call, leaving out the Jobs leftOut names. The three readers share it, so a kind or a volume
 // source is added in one place (#81).
 func (c *Client) podWorkloads(ctx context.Context, ns string) ([]workloadObject, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns,
 		"get", "deployments,statefulsets,daemonsets,jobs,cronjobs", "-o", "json")
 	if err != nil {
 		return nil, err
@@ -417,7 +423,7 @@ func (p Pod) FinishedJob() bool {
 // Pods returns the pods in ns with their readiness and restart counts. Finished pods and pods that
 // are terminating are left out.
 func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pods", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "pods", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +488,7 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 // FailedJobs returns the Jobs in ns that gave up (condition Failed) or are retrying after a failed
 // attempt, as "Job/<name>: <message>".
 func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "jobs", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "jobs", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +559,7 @@ type ServicePort struct {
 
 // Services returns the Services in ns that select pods (headless Services included).
 func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "services", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "services", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -628,7 +634,7 @@ func (w Workload) Serves(s Service) bool {
 // Workloads returns the Deployments, StatefulSets and DaemonSets in ns. A DaemonSet's replicas are
 // the nodes it is scheduled on.
 func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "deployments,statefulsets,daemonsets", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "deployments,statefulsets,daemonsets", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -786,13 +792,13 @@ func (c *Client) WaitPodRunning(ctx context.Context, ns, name, timeout string) e
 
 // Logs returns the logs of a pod.
 func (c *Client) Logs(ctx context.Context, ns, name string) (string, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "logs", name)
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "logs", name)
 	return string(out), err
 }
 
 // LastLogLine returns the last line a pod has written so far.
 func (c *Client) LastLogLine(ctx context.Context, ns, name string) (string, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "logs", "--tail=1", name)
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "logs", "--tail=1", name)
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -804,7 +810,7 @@ type PVC struct {
 
 // PVCs returns the PersistentVolumeClaims in ns, sorted by name.
 func (c *Client) PVCs(ctx context.Context, ns string) ([]PVC, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pvc", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "pvc", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -879,7 +885,7 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		out, err := c.Runner.Run(ctx, "kubectl", append(base, "get", "pod", name, "-o", "jsonpath={.status.phase}")...)
+		out, err := c.Runner.Run(ctx, "kubectl", append(base, "--request-timeout", readTimeout, "get", "pod", name, "-o", "jsonpath={.status.phase}")...)
 		if err != nil {
 			return "", err
 		}
@@ -896,7 +902,7 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 		case <-time.After(2 * time.Second):
 		}
 	}
-	out, err := c.Runner.Run(ctx, "kubectl", append(base, "logs", name)...)
+	out, err := c.Runner.Run(ctx, "kubectl", append(base, "--request-timeout", readTimeout, "logs", name)...)
 	return string(out), err
 }
 

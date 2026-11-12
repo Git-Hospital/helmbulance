@@ -77,7 +77,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		return secretsInconclusive(res, "after the control upgrade", err)
 	}
 	if reuseErr != nil {
-		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env, nil)
 		res = afterTimeout(res, "HB-UV-001", "the upgrade with reused values", reuseErr,
 			crashesAfterTimeout(ctx, env, ns, podsBefore, nil, false))
 		if res.Verdict == Fail {
@@ -111,7 +111,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 
 	// Treatment: values files only. Without any --set or values file it would repeat the control.
 	if len(env.Values.Sets) == 0 && len(env.Values.Files) == 0 {
-		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env, nil)
 		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
 		return res
 	}
@@ -119,11 +119,18 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not read pods before the upgrade with the values files: %v\n", err)
 	}
+	// Who reads which key before the upgrade, so a workload that moves to a newly generated
+	// credential can be told from one that only gained a key (#54).
+	readersBefore, err := env.Kube.SecretConsumers(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not map Secret consumers before the upgrade with the values files: %v\n", err)
+		readersBefore = nil
+	}
 	mark = len(env.Runner.Transcript())
 	// --reset-values: without any values flag Helm would reuse the install values, --set included.
 	filesErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{Files: env.Values.Files}, "--reset-values")
 	if filesErr != nil && !timedOutWaiting(ctx, filesErr) {
-		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env, nil)
 		// --set a=1 --set a=2 drops one key, not two.
 		dropped := len(slices.Compact(slices.Sorted(slices.Values(execx.SetKeys(env.Values.Sets)))))
 		res = filesUpgradeFailed(ctx, res, filesErr, dropped)
@@ -136,7 +143,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		return secretsInconclusive(res, "after the upgrade", err)
 	}
 
-	res, notes := s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
+	res, notes := s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env, readersBefore)
 	if filesErr != nil {
 		res = afterTimeout(res, "HB-UV-002", "the upgrade with the values files", filesErr,
 			crashesAfterTimeout(ctx, env, ns, podsTreated, nil, false))
@@ -296,8 +303,10 @@ func withRestarts(res Result, restarted restarts, installCmd, reuseCmd []execx.C
 	return res
 }
 
+// readersBefore are the Secret readers just before the upgrade with the values files, nil when
+// unknown or when that upgrade did not run.
 func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reused, filesOnly oracle.SecretSnapshot,
-	installCmd, reuseCmd, filesCmd []execx.Command, env *Env) (Result, []string) {
+	installCmd, reuseCmd, filesCmd []execx.Command, env *Env, readersBefore map[string][]string) (Result, []string) {
 	consumers, err := env.Kube.SecretConsumers(ctx, upgradeNamespace)
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", err)
@@ -344,10 +353,12 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	}
 
 	// Keys that already changed in the control are reported there, not again here.
-	var changes []oracle.Change
+	var changes, switched []oracle.Change
 	if filesOnly != nil {
 		var more []oracle.Change
 		changes, more = splitAdded(withoutRefs(oracle.Diff(reused, filesOnly), control))
+		switched, more = switchedTo(more, readersBefore, consumers, stateful)
+		changes = append(changes, switched...)
 		added = append(added, more...)
 		changes, more = splitExpected(changes, env.ExpectedRotation)
 		rotated = append(rotated, more...)
@@ -365,7 +376,8 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 			Evidence: describe(changes, consumers),
 			Impact: "Upgrading from the values file in git, without repeating every --set used at " +
 				"install, silently replaces or removes these values. For an encryption key this " +
-				"means new data is written with a different key, or none, and old data cannot be read.",
+				"means new data is written with a different key, or none, and old data cannot be read." +
+				switchedImpact(switched, "such as a password the chart generates when an existingSecret is no longer given"),
 			Fix: "Once a value is in use, keep it: fall back to the value stored in the Secret (via " +
 				"`lookup`) when values no longer provide it, and `fail` the render when a new value " +
 				"would make existing data unreadable.",
@@ -400,6 +412,16 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
 		unknownStatefulNote(statefulKnown, regenerated, changes),
 	}
+}
+
+// switchedImpact is the sentence an Impact gains when a workload with persistent data moved to a
+// new credential key.
+func switchedImpact(switched []oracle.Change, example string) string {
+	if len(switched) == 0 {
+		return ""
+	}
+	return " A workload that keeps data now reads a new credential instead of the one its data was " +
+		"set up with, " + example + "."
 }
 
 // allOther reports whether every change is to a key that is neither a credential nor TLS material.
