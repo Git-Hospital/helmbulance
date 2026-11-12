@@ -382,3 +382,26 @@ esac
 		t.Errorf("summary = %q, want it to contain %q", res.Summary, want)
 	}
 }
+
+// A timeout that stays INCONCLUSIVE because no read listed a crash says in the log what each
+// container was doing, so a flaky fixture explains itself (matrix-crashes-on-1-37 on Helm 3).
+func TestLogStatesSaysWhatTheContainersWereDoing(t *testing.T) {
+	var b strings.Builder
+	logStates(&b, []kube.Container{
+		{Pod: "web-1", Name: "app", Waiting: "ContainerCreating"},
+		{Pod: "web-2", Name: "app", Restarts: 2, LastReason: "Error", LastExit: 1},
+	})
+	for _, want := range []string{
+		"pod web-1 container app: waiting ContainerCreating, 0 restart(s)\n",
+		"pod web-2 container app: running, 2 restart(s), last run Error (exit 1)\n",
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("log %q does not say %q", b.String(), want)
+		}
+	}
+	b.Reset()
+	logStates(&b, nil)
+	if !strings.Contains(b.String(), "no containers yet") {
+		t.Errorf("an empty release is not named: %q", b.String())
+	}
+}
