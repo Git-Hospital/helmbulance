@@ -371,7 +371,7 @@ func fileSecrets(files []string) []string {
 				if dec.Decode(&doc) != nil {
 					break
 				}
-				out = secretScalars(&doc, "", out)
+				out = secretScalars(&doc, "", out, 0)
 			}
 		}
 	}
@@ -380,15 +380,20 @@ func fileSecrets(files []string) []string {
 
 // secretScalars walks a YAML node and appends the scalars that fileSecrets keeps. parent is the
 // key the node is under, so tls.key and ca.key count while a toleration's key does not.
-func secretScalars(n *yaml.Node, parent string, out []string) []string {
+func secretScalars(n *yaml.Node, parent string, out []string, depth int) []string {
+	// An alias can name a node that holds it (a: &a [*a]), which yaml.v3 returns as a cycle; helm
+	// rejects such a file, so the walk stops instead of overflowing the stack (review of #122).
+	if depth > maxValuesDepth {
+		return out
+	}
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, c := range n.Content {
-			out = secretScalars(c, parent, out)
+			out = secretScalars(c, parent, out, depth+1)
 		}
 	case yaml.AliasNode:
 		if n.Alias != nil {
-			out = secretScalars(n.Alias, parent, out)
+			out = secretScalars(n.Alias, parent, out, depth+1)
 		}
 	case yaml.MappingNode:
 		envSecret := false
@@ -401,7 +406,7 @@ func secretScalars(n *yaml.Node, parent string, out []string) []string {
 			k, v := n.Content[i], resolveAlias(n.Content[i+1])
 			if k.Value == "<<" {
 				// A merge key puts the aliased mapping's keys into this one, under the same parent.
-				out = secretScalars(v, parent, out)
+				out = secretScalars(v, parent, out, depth+1)
 				continue
 			}
 			secret := secretKey(k.Value) || tlsKey(parent, k.Value)
@@ -419,7 +424,7 @@ func secretScalars(n *yaml.Node, parent string, out []string) []string {
 				}
 			}
 			if !strings.EqualFold(k.Value, "secretKeys") {
-				out = secretScalars(v, k.Value, out)
+				out = secretScalars(v, k.Value, out, depth+1)
 			}
 		}
 	}
@@ -448,8 +453,10 @@ func secretKey(key string) bool {
 			return false
 		}
 	}
-	switch k {
-	case "apikey", "secretkey", "privatekey", "accesskey", "encryptionkey", "signingkey", "masterkey":
+	// Compared without _ and -, so secret_key and secret-access-key are read like secretKey and
+	// secretAccessKey, the S3 names (review of #122).
+	switch strings.NewReplacer("_", "", "-", "").Replace(k) {
+	case "apikey", "secretkey", "secretaccesskey", "privatekey", "accesskey", "encryptionkey", "signingkey", "masterkey":
 		return true
 	}
 	// userPasswordKey and adminTokenKey name a key in a Secret; jwtKey is the key itself.
@@ -462,6 +469,9 @@ func secretKey(key string) bool {
 	}
 	return true
 }
+
+// maxValuesDepth bounds how deep secretScalars follows a values file; real ones stay far below it.
+const maxValuesDepth = 1000
 
 // keyNames are values keys that hold a key or a connection string although ValuesKeyClass does
 // not class them (review of #122): fernetKey is Airflow's, accountKey Azure Storage's.

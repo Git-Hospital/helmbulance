@@ -537,6 +537,10 @@ env:
     value: ascending-order
 pin:
   apiToken: 012345670
+s3:
+  secretAccessKey: S3Secret-2f2f
+  secret_key: S3Secret-3a3a
+  secret_access_key: S3Secret-4b4b
 auth:
   userPasswordKey: user-password-entry
   adminTokenKey: admin-token-entry
@@ -551,7 +555,7 @@ db:
 	got := fileSecrets([]string{values})
 	for _, want := range []string{
 		"AliasSecret-3c3c", "MergedSecret-4d4d", "Fernet-5e5e", "Jwt-6f6f", "Account-7a7a", "Conn-8b8b",
-		"SslKey-9c9c", "Stripe-0d0d", "SecondDoc-1e1e", "012345670", "2.739128e+06", "2739128",
+		"SslKey-9c9c", "Stripe-0d0d", "S3Secret-2f2f", "S3Secret-3a3a", "S3Secret-4b4b", "SecondDoc-1e1e", "012345670", "2.739128e+06", "2739128",
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("fileSecrets is missing %q: %q", want, got)
@@ -607,5 +611,17 @@ func TestCheckVersions(t *testing.T) {
 func TestMatrixRefusesAnUnsupportedVersionBeforeAnyCluster(t *testing.T) {
 	if code := matrixCmd([]string{"--k8s", "1.29", t.TempDir()}); code != exitError {
 		t.Errorf("exit %d, want %d", code, exitError)
+	}
+}
+
+// An alias that names a node holding it is a cycle in yaml.v3's tree; fileSecrets must return
+// instead of recursing until the stack overflows (review of #122).
+func TestFileSecretsSurvivesASelfReferencingAlias(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte("a: &a [*a]\npassword: AfterTheCycle-5c5c\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileSecrets([]string{values}); !slices.Contains(got, "AfterTheCycle-5c5c") {
+		t.Errorf("fileSecrets = %q, want the password after the cycle", got)
 	}
 }
