@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 // The production waits are for real clusters: Settle's 90 s / 30 s / 10 s, the Secret snapshot's
@@ -14,5 +16,6 @@ func TestMain(m *testing.M) {
 	settleInterval = time.Millisecond
 	crashReadGap = time.Millisecond
 	controlDuration, trafficLead, trafficTail = time.Millisecond, time.Millisecond, time.Millisecond
+	kube.OutsideRecheck = time.Millisecond
 	os.Exit(m.Run())
 }

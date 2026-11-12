@@ -1,0 +1,5 @@
+apiVersion: v2
+name: keeps-cluster-role
+description: "Helmbulance fixture. keeps-secret plus a ClusterRole kept with helm.sh/resource-policy: keep, which outlives helm uninstall and the namespace, so the next scenario on the same cluster meets it (#52)."
+type: application
+version: 0.1.0

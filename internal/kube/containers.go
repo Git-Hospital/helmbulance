@@ -27,7 +27,7 @@ type Container struct {
 // Containers returns the containers and init containers of the pods in ns. Pods that are
 // terminating are left out, like in Pods.
 func (c *Client) Containers(ctx context.Context, ns string) ([]Container, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pods", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "pods", "-o", "json")
 	if err != nil {
 		return nil, err
 	}

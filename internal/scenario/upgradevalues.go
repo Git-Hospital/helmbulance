@@ -37,13 +37,11 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	defer func() {
 		ctx, cancel := cleanupContext(ctx)
 		defer cancel()
-		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
-		if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
+		cleanUp(ctx, env, release, ns)
 	}()
+
+	// Runs before the cleanup above, while the release still exists (#115).
+	defer recordPodSecurity(ctx, env, ns, &res)
 
 	if err := startClean(ctx, env, release, ns); err != nil {
 		return inconclusive(res, "could not clear what an earlier run left", err)
@@ -79,7 +77,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		return secretsInconclusive(res, "after the control upgrade", err)
 	}
 	if reuseErr != nil {
-		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env, nil)
 		res = afterTimeout(res, "HB-UV-001", "the upgrade with reused values", reuseErr,
 			crashesAfterTimeout(ctx, env, ns, podsBefore, nil, false))
 		if res.Verdict == Fail {
@@ -113,7 +111,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 
 	// Treatment: values files only. Without any --set or values file it would repeat the control.
 	if len(env.Values.Sets) == 0 && len(env.Values.Files) == 0 {
-		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env, nil)
 		res.Summary = withNotes(res.Summary, append(notes, secrets.notComparedNote())...)
 		return res
 	}
@@ -121,11 +119,18 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not read pods before the upgrade with the values files: %v\n", err)
 	}
+	// Who reads which key before the upgrade, so a workload that moves to a newly generated
+	// credential can be told from one that only gained a key (#54).
+	readersBefore, err := env.Kube.SecretConsumers(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not map Secret consumers before the upgrade with the values files: %v\n", err)
+		readersBefore = nil
+	}
 	mark = len(env.Runner.Transcript())
 	// --reset-values: without any values flag Helm would reuse the install values, --set included.
 	filesErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, helm.Values{Files: env.Values.Files}, "--reset-values")
 	if filesErr != nil && !timedOutWaiting(ctx, filesErr) {
-		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env)
+		res, notes := s.verdict(ctx, res, installed, reused, nil, installCmd, reuseCmd, nil, env, nil)
 		// --set a=1 --set a=2 drops one key, not two.
 		dropped := len(slices.Compact(slices.Sorted(slices.Values(execx.SetKeys(env.Values.Sets)))))
 		res = filesUpgradeFailed(ctx, res, filesErr, dropped)
@@ -138,7 +143,7 @@ func (s UpgradeValues) Run(ctx context.Context, env *Env) (res Result) {
 		return secretsInconclusive(res, "after the upgrade", err)
 	}
 
-	res, notes := s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env)
+	res, notes := s.verdict(ctx, res, installed, reused, filesOnly, installCmd, reuseCmd, filesCmd, env, readersBefore)
 	if filesErr != nil {
 		res = afterTimeout(res, "HB-UV-002", "the upgrade with the values files", filesErr,
 			crashesAfterTimeout(ctx, env, ns, podsTreated, nil, false))
@@ -263,7 +268,7 @@ func withRestarts(res Result, restarted restarts, installCmd, reuseCmd []execx.C
 	}
 	var repro []string
 	for _, c := range installCmd {
-		repro = append(repro, reproLine(c.Line))
+		repro = append(repro, execx.ReproLine(c.Line))
 	}
 	var evidence []string
 	for _, o := range restarted.owners {
@@ -291,15 +296,17 @@ func withRestarts(res Result, restarted restarts, installCmd, reuseCmd []execx.C
 		Fix: "Usually a pod-template annotation that changes on every render, such as a checksum of a " +
 			"Secret with a generated value, a timestamp or randAlphaNum. Keep generated values stable " +
 			"(see HB-UV-001) and hash only inputs that come from values.",
-		Reproduce: concat(repro, reproLine(reuseCmd[0].Line)),
+		Reproduce: concat(repro, execx.ReproLine(reuseCmd[0].Line)),
 	})
 	res.Verdict = Fail
 	res.Summary = fmt.Sprintf("%d problem(s) across upgrades", len(res.Findings)) + incomplete
 	return res
 }
 
+// readersBefore are the Secret readers just before the upgrade with the values files, nil when
+// unknown or when that upgrade did not run.
 func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reused, filesOnly oracle.SecretSnapshot,
-	installCmd, reuseCmd, filesCmd []execx.Command, env *Env) (Result, []string) {
+	installCmd, reuseCmd, filesCmd []execx.Command, env *Env, readersBefore map[string][]string) (Result, []string) {
 	consumers, err := env.Kube.SecretConsumers(ctx, upgradeNamespace)
 	if err != nil {
 		fmt.Fprintf(env.Log, "could not map Secret consumers: %v\n", err)
@@ -312,14 +319,14 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 
 	var repro []string
 	for _, c := range installCmd {
-		repro = append(repro, reproLine(c.Line))
+		repro = append(repro, execx.ReproLine(c.Line))
 	}
 
 	control := oracle.Diff(installed, reused)
 	regenerated, added := splitAdded(control)
 	regenerated, rotated := splitExpected(regenerated, env.ExpectedRotation)
 	if len(regenerated) > 0 {
-		steps := concat(repro, reproLine(reuseCmd[0].Line))
+		steps := concat(repro, execx.ReproLine(reuseCmd[0].Line))
 		impact := "Every `helm upgrade` replaces these values. Passwords that a database stored at " +
 			"its first start stop matching, and anything encrypted or signed with the old value " +
 			"can no longer be read."
@@ -346,16 +353,18 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 	}
 
 	// Keys that already changed in the control are reported there, not again here.
-	var changes []oracle.Change
+	var changes, switched []oracle.Change
 	if filesOnly != nil {
 		var more []oracle.Change
 		changes, more = splitAdded(withoutRefs(oracle.Diff(reused, filesOnly), control))
+		switched, more = switchedTo(more, readersBefore, consumers, stateful)
+		changes = append(changes, switched...)
 		added = append(added, more...)
 		changes, more = splitExpected(changes, env.ExpectedRotation)
 		rotated = append(rotated, more...)
 	}
 	if len(changes) > 0 {
-		steps := concat(repro, reproLine(filesCmd[0].Line))
+		steps := concat(repro, execx.ReproLine(filesCmd[0].Line))
 		title := "Secret values are lost when an upgrade leaves out an install-time --set"
 		if len(env.Values.Sets) == 0 {
 			title = "Secret values change when the release is upgraded from its values files"
@@ -367,12 +376,25 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 			Evidence: describe(changes, consumers),
 			Impact: "Upgrading from the values file in git, without repeating every --set used at " +
 				"install, silently replaces or removes these values. For an encryption key this " +
-				"means new data is written with a different key, or none, and old data cannot be read.",
+				"means new data is written with a different key, or none, and old data cannot be read." +
+				switchedImpact(switched, "such as a password the chart generates when an existingSecret is no longer given"),
 			Fix: "Once a value is in use, keep it: fall back to the value stored in the Secret (via " +
 				"`lookup`) when values no longer provide it, and `fail` the render when a new value " +
 				"would make existing data unreadable.",
 			Reproduce: steps,
 		})
+		// Keys that are neither credentials nor TLS material, such as config a user set with --set
+		// that the chart renders into a Secret, are not lost encryption keys: they go back to the
+		// chart's default, and keeping them with lookup would make them impossible to change (#53).
+		if allOther(changes) {
+			f := &res.Findings[len(res.Findings)-1]
+			f.Impact = "Upgrading from the values files, without repeating every --set used at install, " +
+				"sets these values back to the chart's defaults, or drops them. They are not credentials, " +
+				"so nothing is locked out, but the release now runs with settings nobody chose."
+			f.Fix = "Put the value in the values file the release is upgraded from, or say in the chart's " +
+				"documentation that it must be given on every upgrade. List a key that changes on " +
+				"purpose with --expected-rotation."
+		}
 	}
 
 	if len(res.Findings) > 0 {
@@ -390,6 +412,26 @@ func (s UpgradeValues) verdict(ctx context.Context, res Result, installed, reuse
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
 		unknownStatefulNote(statefulKnown, regenerated, changes),
 	}
+}
+
+// switchedImpact is the sentence an Impact gains when a workload with persistent data moved to a
+// new credential key.
+func switchedImpact(switched []oracle.Change, example string) string {
+	if len(switched) == 0 {
+		return ""
+	}
+	return " A workload that keeps data now reads a new credential instead of the one its data was " +
+		"set up with, " + example + "."
+}
+
+// allOther reports whether every change is to a key that is neither a credential nor TLS material.
+func allOther(changes []oracle.Change) bool {
+	for _, c := range changes {
+		if keyClass(c) != oracle.ClassOther {
+			return false
+		}
+	}
+	return len(changes) > 0
 }
 
 func describe(changes []oracle.Change, consumers map[string][]string) []string {
@@ -431,16 +473,4 @@ func withoutRefs(changes, seen []oracle.Change) []oracle.Change {
 		}
 	}
 	return out
-}
-
-// reproLine replaces the sandbox kubeconfig path, so the command reads as one to run against any
-// test cluster.
-func reproLine(line string) string {
-	fields := strings.Fields(line)
-	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] == "--kubeconfig" {
-			fields[i+1] = "$KUBECONFIG"
-		}
-	}
-	return strings.Join(fields, " ")
 }

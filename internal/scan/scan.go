@@ -111,27 +111,9 @@ func immutableFields(ctx context.Context, o Options) (res scenario.Result) {
 		res.Summary = "could not render the chart: " + err.Error()
 		return res
 	}
-	byKey := map[string]object{}
-	for _, c := range cur {
-		byKey[c.Kind+"/"+c.Name] = c
-	}
-	var evidence []string
-	for _, a := range old {
-		b, ok := byKey[a.Kind+"/"+a.Name]
-		if !ok || a.Hook || b.Hook {
-			continue
-		}
-		// A Job named after .Release.Revision gets a new name on every real upgrade; both renders
-		// here use revision 1, so comparing them would be a false alarm.
-		if a.Kind == "Job" && sourceContains(o.Chart, b.Source, "Release.Revision") {
-			continue
-		}
-		for _, field := range immutablePaths(a.Kind) {
-			if !reflect.DeepEqual(dig(a.Doc, field), dig(b.Doc, field)) {
-				evidence = append(evidence, fmt.Sprintf("`%s/%s` %s changes (%s)", a.Kind, a.Name, strings.Join(field, "."), b.Source))
-			}
-		}
-	}
+	evidence := immutableChanges(old, cur, func(source string) bool {
+		return sourceContains(o.Chart, source, "Release.Revision")
+	})
 	if len(evidence) == 0 {
 		res.Verdict = scenario.Pass
 		res.Summary = "no immutable field changes from " + o.FromVersion
@@ -152,11 +134,58 @@ func immutableFields(ctx context.Context, o Options) (res scenario.Result) {
 	return res
 }
 
+// withHelpers is text followed by the bodies of the helpers it includes, and of the helpers those
+// include, each once.
+func withHelpers(text string, helpers map[string]string) string {
+	seen := map[string]bool{}
+	out := text
+	for todo := text; todo != ""; {
+		var next string
+		for _, inc := range includeOf.FindAllStringSubmatch(todo, -1) {
+			if body, ok := helpers[inc[1]]; ok && !seen[inc[1]] {
+				seen[inc[1]] = true
+				out += "\n" + body
+				next += "\n" + body
+			}
+		}
+		todo = next
+	}
+	return out
+}
+
 func fromFlag(from string) string {
 	if from == "" {
 		return ""
 	}
 	return " --from " + from
+}
+
+// immutableChanges lists the immutable fields that differ between an object of the earlier
+// version (old) and the same object in the chart under test (cur). byRevision reports whether a
+// template names its object after .Release.Revision.
+func immutableChanges(old, cur []object, byRevision func(source string) bool) []string {
+	byKey := map[string]object{}
+	for _, c := range cur {
+		byKey[c.Kind+"/"+c.Name] = c
+	}
+	var evidence []string
+	for _, a := range old {
+		b, ok := byKey[a.Kind+"/"+a.Name]
+		if !ok || a.Hook || b.Hook {
+			continue
+		}
+		// A Job named after .Release.Revision gets a new name on every real upgrade; both renders
+		// here use revision 1, so comparing them would be a false alarm.
+		if a.Kind == "Job" && byRevision(b.Source) {
+			continue
+		}
+		for _, field := range immutablePaths(a.Kind) {
+			if !reflect.DeepEqual(withDefault(a.Kind, field, dig(a.Doc, field)), withDefault(a.Kind, field, dig(b.Doc, field))) {
+				evidence = append(evidence, fmt.Sprintf("`%s/%s` %s changes (%s)", a.Kind, a.Name, strings.Join(field, "."), b.Source))
+			}
+		}
+	}
+	return evidence
 }
 
 func immutablePaths(kind string) [][]string {
@@ -169,13 +198,34 @@ func immutablePaths(kind string) [][]string {
 		return [][]string{{"spec", "template"}}
 	case "PersistentVolumeClaim":
 		return [][]string{{"spec", "accessModes"}, {"spec", "storageClassName"}}
+	case "RoleBinding", "ClusterRoleBinding":
+		return [][]string{{"roleRef"}}
+	case "Service":
+		return [][]string{{"spec", "clusterIP"}}
 	}
 	return nil
 }
 
+// apiDefaults are the values the API server fills in for an immutable field left out, so that
+// writing the default out in one version and leaving it out in the other is not a change (#56).
+var apiDefaults = map[string]any{
+	"StatefulSet spec.podManagementPolicy": "OrderedReady",
+	"Service spec.clusterIP":               "", // assigned by the API server
+}
+
+func withDefault(kind string, field []string, v any) any {
+	if d, ok := apiDefaults[kind+" "+strings.Join(field, ".")]; ok && v == nil {
+		return d
+	}
+	return v
+}
+
 var (
-	randomFn   = regexp.MustCompile(`\b(randAlphaNum|randAlpha|randAscii|randNumeric|randBytes|uuidv4|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b`)
-	checksumOf = regexp.MustCompile(`include\s*\(\s*print\s+\$?\.Template\.BasePath\s+"([^"]+)"\s*\)[^}]*?sha256sum`)
+	randomFn = regexp.MustCompile(`\b(randAlphaNum|randAlpha|randAscii|randNumeric|randBytes|uuidv4|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b`)
+	// checksumOf matches the two ways a template names another for its checksum:
+	// include (print $.Template.BasePath "/secret.yaml") and
+	// include (printf "%s/secret.yaml" $.Template.BasePath), each piped to sha256sum (#56).
+	checksumOf = regexp.MustCompile(`include\s*\(\s*(?:print\s+\$?\.Template\.BasePath\s+"([^"]+)"|printf\s+"%s([^"]+)"\s+\$?\.Template\.BasePath)\s*\)[^}]*?sha256sum`)
 	includeOf  = regexp.MustCompile(`include\s+"([^"]+)"`)
 	defineOf   = regexp.MustCompile(`(?s)\{\{-?\s*define\s+"([^"]+)"\s*-?\}\}(.*?)\{\{-?\s*end\s*-?\}\}`)
 )
@@ -209,8 +259,14 @@ func firstUpgradeRestart(o Options) (res scenario.Result) {
 	}
 	var evidence []string
 	for name, text := range files {
-		for _, m := range checksumOf.FindAllStringSubmatch(text, -1) {
-			target := strings.TrimPrefix(m[1], "/")
+		// Files whose name starts with _ render nothing; their helpers count where they are included.
+		if strings.HasPrefix(filepath.Base(name), "_") {
+			continue
+		}
+		// A checksum can sit in a helper the template includes, such as
+		// checksum/config: {{ include "app.configChecksum" . }}.
+		for _, m := range checksumOf.FindAllStringSubmatch(withHelpers(text, helpers), -1) {
+			target := strings.TrimPrefix(m[1]+m[2], "/")
 			body, ok := files[target]
 			if !ok {
 				continue
@@ -276,12 +332,23 @@ func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 			upgraded[x.Kind+"/"+x.Name] = true
 		}
 	}
-	onUpgrade, onSync := regenerated(installs[0], installs[1], upgraded, func(source string) bool {
-		return sourceUsesLookup(o.Chart, source)
-	})
+	usesLookup, readable := lookupChecker(o.Chart)
+	onUpgrade, onSync, guarded := regenerated(installs[0], installs[1], upgraded, usesLookup)
+	// A Secret that calls lookup is left out as a whole: whether lookup keeps every key that differs
+	// only shows on a cluster, where upgrade-without-values compares them one by one (#51).
+	if len(guarded) > 0 {
+		note += fmt.Sprintf("; %d Secret(s) that use `lookup` differ between two renders and are left out (%s): only `helmbulance test` checks which keys lookup keeps",
+			len(guarded), strings.Join(guarded, ", "))
+	}
+	if !readable {
+		note += "; the chart's templates could not be read, so no Secret that uses `lookup` was left out"
+	}
 	if len(onUpgrade)+len(onSync) == 0 {
 		res.Verdict = scenario.Pass
 		res.Summary = "no Secret value is generated anew on every render" + note
+		if len(guarded) > 0 {
+			res.Summary = "no Secret without `lookup` has values generated anew on every render" + note
+		}
 		return res
 	}
 	res.Verdict = scenario.Fail
@@ -317,7 +384,7 @@ func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 // chart did not render as an upgrade, and then only hooks can be told apart, by their annotation.
 // A Secret whose template uses lookup is left out, and so is a hook that runs neither at install
 // nor at upgrade (test, delete, rollback).
-func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source string) bool) (onUpgrade, onSync []string) {
+func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source string) bool) (onUpgrade, onSync, guarded []string) {
 	second := map[string]object{}
 	for _, x := range b {
 		second[x.Kind+"/"+x.Name] = x
@@ -327,7 +394,7 @@ func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source
 			continue
 		}
 		y, ok := second["Secret/"+x.Name]
-		if !ok || usesLookup(x.Source) {
+		if !ok {
 			continue
 		}
 		var changed []string
@@ -341,6 +408,10 @@ func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source
 			}
 		}
 		if len(changed) == 0 {
+			continue
+		}
+		if usesLookup(x.Source) {
+			guarded = append(guarded, "`Secret/"+x.Name+"`")
 			continue
 		}
 		sort.Strings(changed)
@@ -359,7 +430,8 @@ func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source
 	}
 	sort.Strings(onUpgrade)
 	sort.Strings(onSync)
-	return onUpgrade, onSync
+	sort.Strings(guarded)
+	return onUpgrade, onSync, guarded
 }
 
 // maxUnquoted caps how many default values unquotedValues tries, one render each.
@@ -560,47 +632,99 @@ func sourceContains(chart, source, text string) bool {
 	return err == nil && strings.Contains(string(b), text)
 }
 
-// sourceUsesLookup reports whether the template a manifest came from (or a helper it includes)
-// uses lookup. "# Source:" paths start with the chart name.
-func sourceUsesLookup(chart, source string) bool {
-	if source == "" {
-		return false
-	}
-	parts := strings.SplitN(source, "/", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	b, err := os.ReadFile(filepath.Join(chart, parts[1]))
-	if err != nil {
-		return false
-	}
-	text := string(b)
-	if strings.Contains(text, "lookup") {
-		return true
-	}
-	includes := includeOf.FindAllStringSubmatch(text, -1)
-	if len(includes) == 0 {
-		return false
-	}
-	found := false
-	_ = filepath.WalkDir(filepath.Join(chart, "templates"), func(path string, d os.DirEntry, err error) error {
-		if found || err != nil || d.IsDir() {
-			return nil
+// lookupChecker reports whether the template a manifest came from, or a helper it includes at
+// any depth, calls lookup. It reads the chart's files once, subcharts and their archives included,
+// so a lookup in a library or subchart helper counts, and a helper's body runs to its own end
+// (#51). "# Source:" paths start with the chart name. readable is false when the chart's files
+// could not be read, a repository or OCI reference: then no Secret is left out.
+func lookupChecker(chart string) (uses func(source string) bool, readable bool) {
+	files := chartFiles(chart)
+	looks := lookupHelpers(files)
+	return func(source string) bool {
+		_, rel, ok := strings.Cut(source, "/")
+		if !ok {
+			return false
 		}
-		hb, err := os.ReadFile(path)
-		if err != nil {
-			return nil
+		text, ok := files[rel]
+		if !ok {
+			return false
 		}
-		for _, m := range defineOf.FindAllStringSubmatch(string(hb), -1) {
-			for _, inc := range includes {
-				if m[1] == inc[1] && strings.Contains(m[2], "lookup") {
-					found = true
-				}
+		text = withoutComments(text)
+		if lookupCall.MatchString(text) {
+			return true
+		}
+		for _, inc := range includeOf.FindAllStringSubmatch(text, -1) {
+			if looks[inc[1]] {
+				return true
 			}
 		}
-		return nil
-	})
-	return found
+		return false
+	}, files != nil
+}
+
+// lookupHelpers returns the helpers that call lookup, directly or through those they include.
+//
+// A name defined in several files counts only when every definition does. Which one helm renders
+// depends on more than the files: .helmignore and a subchart's condition can leave out the one that
+// would otherwise win, and neither is read here. So a disagreement makes a candidate that should not
+// be one rather than leave a regenerated Secret out. An empty define never replaces another in
+// text/template, so it counts only when the name has nothing else.
+//
+// One pass over the includes, without recursion: a body is done once it calls lookup or includes a
+// helper that is, and a helper once all its bodies are.
+func lookupHelpers(files map[string]string) map[string]bool {
+	type body struct {
+		name string
+		done bool
+	}
+	bodies := map[string][]string{}
+	for _, text := range files {
+		for n, b := range defines(text) {
+			bodies[n] = append(bodies[n], b)
+		}
+	}
+	left := map[string]int{}
+	users := map[string][]*body{}
+	var todo []*body
+	for n, all := range bodies {
+		var kept []string
+		for _, b := range all {
+			if strings.TrimSpace(b) != "" {
+				kept = append(kept, b)
+			}
+		}
+		if len(kept) == 0 {
+			kept = all[:1]
+		}
+		left[n] = len(kept)
+		for _, b := range kept {
+			x := &body{name: n}
+			if lookupCall.MatchString(b) {
+				x.done = true
+				todo = append(todo, x)
+				continue
+			}
+			for _, inc := range includeOf.FindAllStringSubmatch(b, -1) {
+				users[inc[1]] = append(users[inc[1]], x)
+			}
+		}
+	}
+	looks := map[string]bool{}
+	for len(todo) > 0 {
+		x := todo[len(todo)-1]
+		todo = todo[:len(todo)-1]
+		if left[x.name]--; left[x.name] > 0 || looks[x.name] {
+			continue
+		}
+		looks[x.name] = true
+		for _, u := range users[x.name] {
+			if !u.done {
+				u.done = true
+				todo = append(todo, u)
+			}
+		}
+	}
+	return looks
 }
 
 func dig(doc map[string]any, path []string) any {
