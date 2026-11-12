@@ -393,3 +393,19 @@ func TestRollbackOldHookPodDoesNotHideHBRB002(t *testing.T) {
 		t.Errorf("evidence = %q, want the crashing pod", res.Findings[0].Evidence)
 	}
 }
+
+// A pre-upgrade hook only the chart under test has is not in helm get hooks after the rollback,
+// which lists v1's. Its Job, left under the default delete policy, still carries the annotation,
+// so a pod that restarted once and then completed is no crash of v1 (#130 review).
+func TestRollbackHookOfTheNewerChartIsNoCrashOfV1(t *testing.T) {
+	migrate := `{"metadata":{"name":"migrate-a","uid":"migrate-a","ownerReferences":[{"kind":"Job","name":"migrate"}]},"status":{"phase":"Succeeded","containerStatuses":[{"name":"migrate","restartCount":1,"state":{"terminated":{"reason":"Completed","exitCode":0}},"lastState":{"terminated":{"reason":"Error","exitCode":1}}}]}}`
+	job := `{"metadata":{"name":"migrate","annotations":{"helm.sh/hook":"pre-upgrade"}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
+	res, _ := runRollback(t, rollbackFake{
+		rollbackErr: rollbackTimeout,
+		pods:        map[string]string{"control": items(podJSON("db", 0, "")), "back": items(migrate, podJSON("db", 0, ""))},
+		jobs:        map[string]string{"back": items(job)},
+	})
+	if res.Verdict != Inconclusive || len(res.Findings) > 0 {
+		t.Errorf("verdict = %s with %+v (%s), want INCONCLUSIVE", res.Verdict, res.Findings, res.Summary)
+	}
+}

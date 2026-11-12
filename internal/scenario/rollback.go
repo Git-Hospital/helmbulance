@@ -128,28 +128,29 @@ func (s Rollback) Run(ctx context.Context, env *Env) (res Result) {
 			if hookErr != nil {
 				fmt.Fprintf(env.Log, "could not identify rollback hook Jobs: %v\n", hookErr)
 			}
-			// A Complete Job's failed pods were attempts a later pod made good, so they are no
-			// crash. Without that list a pod that exited with an error proves nothing.
-			complete, completeErr := env.Kube.CompleteJobs(ctx, ns)
-			if completeErr != nil {
-				fmt.Fprintf(env.Log, "could not read which Jobs completed: %v\n", completeErr)
+			// helm get hooks names only the newest revision's hooks, v1's after the rollback. A
+			// hook only the chart under test has, such as a pre-upgrade migration, can still be in
+			// the namespace, so the Jobs' own annotations count too. A Complete Job's failed pods
+			// were attempts a later pod made good, so they are no crash. Without these a hook pod
+			// could pass for a crash of the earlier version.
+			jobs, jobsErr := env.Kube.JobStates(ctx, ns)
+			if jobsErr != nil {
+				fmt.Fprintf(env.Log, "could not read the Jobs: %v\n", jobsErr)
 			}
+			isHook := func(owner string) bool { return hookJobs[owner] != "" || jobs[owner].Hook != "" }
 			var crashes, hookCrashes []string
-			if hookErr == nil {
+			if hookErr == nil && jobsErr == nil {
 				crashes = ReadCrashes(ctx, env.Kube, ns, env.Log, func(containers []kube.Container) []string {
 					// Only the rollback's own hooks can make the rollback fail; a pre-upgrade hook
 					// pod left from the upgrade says nothing about it.
 					hooks := slices.DeleteFunc(slices.Clone(containers), func(c kube.Container) bool {
-						return !rollbackHook(hookJobs[c.Owner]) || complete[c.Owner]
+						return !rollbackHook(hookJobs[c.Owner]) || jobs[c.Owner].Complete
 					})
-					hookCrashes = crashedSince(hooks, containersBefore, podsBefore, containersKnown)
-					if completeErr == nil {
-						hookCrashes = append(hookCrashes, hookExits(hooks, podsBefore)...)
-					}
+					hookCrashes = append(crashedSince(hooks, containersBefore, podsBefore, containersKnown), hookExits(hooks, podsBefore)...)
 					if len(hookCrashes) > 0 {
 						return hookCrashes
 					}
-					containers = slices.DeleteFunc(containers, func(c kube.Container) bool { return hookJobs[c.Owner] != "" })
+					containers = slices.DeleteFunc(containers, func(c kube.Container) bool { return isHook(c.Owner) })
 					return crashedSince(containers, containersBefore, podsBefore, containersKnown)
 				})
 			}
