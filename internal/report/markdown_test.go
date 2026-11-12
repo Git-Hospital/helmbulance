@@ -164,6 +164,39 @@ func TestMarkdownNeutralisesLinkReferenceDefinitions(t *testing.T) {
 	}
 }
 
+// A control or bidi character between "]" and "(" hid the pair from the link breaking, and dropping
+// it afterwards joined them again (review of #121). The four lines from that review stay text.
+func TestMarkdownDropsControlsBeforeBreakingLinks(t *testing.T) {
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "chart-upgrade",
+		Verdict:  scenario.Fail,
+		Summary:  "see ![x]",
+		Findings: []scenario.Finding{{
+			ID:    "HB-CU-001",
+			Title: "x",
+			Evidence: []string{
+				"Error: [Re-run here]\x00(https://evil.example/login)",
+				"Error: ![p]\x7f(https://evil.example/pixel.png)",
+				"Error: !\u202e[p]\u202c(https://evil.example/pixel.png)",
+				"[x]\x01: https://evil.example/ref.png",
+				"# Not a heading",
+				"a\u200b\u200e\ufeff\u2028b",
+			},
+		}},
+	}}}
+	md := r.Markdown()
+	for _, bad := range []string{"](https://evil.example", "[x]:", "\n- # Not", "\u200b", "\u200e", "\ufeff", "\u2028"} {
+		if strings.Contains(md, bad) {
+			t.Errorf("report.md contains %q:\n%s", bad, md)
+		}
+	}
+	for _, want := range []string{"[Re-run here]&#40;https://evil.example/login)", "![p]&#40;https://evil.example/pixel.png)", "[x]&#58; https://evil.example/ref.png", `\# Not a heading`, "ab"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("report.md does not keep %q as text:\n%s", want, md)
+		}
+	}
+}
+
 // A reproduce line can carry a values key from the chart. A line break and a fence in it must not
 // close the code block and let the rest render as Markdown.
 func TestMarkdownKeepsReproduceInItsBlock(t *testing.T) {

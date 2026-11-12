@@ -214,20 +214,34 @@ var markdownText = strings.NewReplacer("|", "\\|", "\n", " ", "\r", " ", "\t", "
 // carriage return is a line ending in CommonMark too, so it is turned into a space like a newline;
 // otherwise a chart's `fail "x\r## Heading"` would start a heading in the report. Control
 // characters and the bidirectional overrides that reorder what is shown are dropped: report.md is
-// also read in a terminal.
+// also read in a terminal. They are dropped before the replacer runs: a control between "]" and "("
+// would otherwise hide the pair from it and join them again when dropped (review of #121). A
+// leading "#" is escaped, since the text can start a list item, where "# x" is a heading.
 func inline(s string) string {
-	return dropControls(markdownText.Replace(s))
+	s = markdownText.Replace(dropControls(s))
+	if t := strings.TrimLeft(s, " "); strings.HasPrefix(t, "#") {
+		return `\` + t
+	}
+	return s
 }
 
 // commandLine keeps a reproduce command on one line of its code block: a values key the chart
 // chose can hold a line break.
 func commandLine(s string) string {
-	return dropControls(strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s))
+	return dropControls(s)
 }
 
+// dropControls turns a line break or tab into a space, so "x\n## heading" stays two words, and drops
+// the other control characters, the bidirectional marks and overrides, the zero-width characters
+// and the Unicode line and paragraph separators.
 func dropControls(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			return ' '
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0),
+			r >= 0x200b && r <= 0x200f, r == 0x2028 || r == 0x2029,
+			r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069, r == 0xfeff:
 			return -1
 		}
 		return r
