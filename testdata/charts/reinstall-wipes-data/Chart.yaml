@@ -1,0 +1,5 @@
+apiVersion: v2
+name: reinstall-wipes-data
+description: "Helmbulance fixture. reinstall-keeps-creds plus an init container that empties the volume at every start, so the claim survives a reinstall and comes back without its data (HB-RI-002). Its twin is reinstall-keeps-creds."
+type: application
+version: 0.1.0

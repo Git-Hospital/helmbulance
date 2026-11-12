@@ -1,0 +1,5 @@
+apiVersion: v2
+name: cu-key
+description: "Helmbulance fixture: adds password-v2 with another value and points the StatefulSet at it, while password stays. Data set up with password no longer matches (#54)."
+type: application
+version: 2.0.0

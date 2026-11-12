@@ -1,0 +1,5 @@
+apiVersion: v2
+name: cu-key
+description: "Helmbulance fixture: fixed twin of cu-key-v2-switch. Adds password-v2, but the StatefulSet still reads password (#54)."
+type: application
+version: 2.0.0

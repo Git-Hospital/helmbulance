@@ -6,12 +6,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
+
+// readTimeout bounds each request of a kubectl read (get, logs). Without it kubectl's transport
+// gives up after about a minute on its own, so the timing was not predictable, and a cluster that
+// stopped answering read as a health problem later than it needed to (#54). Watches (rollout
+// status, wait, delete --wait) keep their own --timeout and get none: it would cut them short.
+const readTimeout = "60s"
 
 // Client reads one sandbox cluster.
 type Client struct {
@@ -37,7 +46,7 @@ var skippedSecretTypes = map[string]bool{
 // Secrets returns the Secrets in ns, sorted by name, without Helm's release records and service
 // account tokens. It does not know which ones the chart renders; see helm.Client.OwnedSecrets.
 func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "secrets", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "secrets", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +233,7 @@ func podSpecOf(w workloadObject) podSpec {
 // call, leaving out the Jobs leftOut names. The three readers share it, so a kind or a volume
 // source is added in one place (#81).
 func (c *Client) podWorkloads(ctx context.Context, ns string) ([]workloadObject, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns,
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns,
 		"get", "deployments,statefulsets,daemonsets,jobs,cronjobs", "-o", "json")
 	if err != nil {
 		return nil, err
@@ -309,6 +318,82 @@ func (c *Client) DeleteNamespace(ctx context.Context, ns string) error {
 	return err
 }
 
+// HelmClusterObjects returns the cluster-scoped objects Helm made for a release whose namespace
+// mine accepts, as TYPE/NAME for kubectl delete. Helm labels what it installs
+// app.kubernetes.io/managed-by=Helm and annotates it with the release's name and namespace, and
+// `helm uninstall` leaves an object that carries helm.sh/resource-policy: keep. Deleting the
+// namespace takes the namespaced ones; a cluster-scoped one stays, and the next install under
+// another release name refuses it as "invalid ownership metadata" (#52).
+func (c *Client) HelmClusterObjects(ctx context.Context, mine func(ns string) bool) ([]string, error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-resources",
+		"--namespaced=false", "--verbs=list,delete", "-o", "name")
+	if err != nil {
+		return nil, err
+	}
+	types := strings.Fields(string(out))
+	if len(types) == 0 {
+		return nil, nil
+	}
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "get",
+		"-l", "app.kubernetes.io/managed-by=Helm", "-o", "json", "--", strings.Join(types, ","))
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			APIVersion string `json:"apiVersion"`
+			Kind       string `json:"kind"`
+			Metadata   struct {
+				Name        string            `json:"name"`
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, fmt.Errorf("parse cluster-scoped objects: %w", err)
+	}
+	var refs []string
+	for _, item := range list.Items {
+		if !mine(item.Metadata.Annotations["meta.helm.sh/release-namespace"]) {
+			continue
+		}
+		// kind.group/name, which kubectl resolves without knowing the plural; core kinds have no group.
+		// An aggregated API the chart serves can return any kind and apiVersion, so a ref that is not
+		// a plain kind and group is skipped rather than handed to kubectl.
+		typ := strings.ToLower(item.Kind)
+		group, _, hasGroup := strings.Cut(item.APIVersion, "/")
+		name := item.Metadata.Name
+		if !kindName.MatchString(item.Kind) || hasGroup && !groupName.MatchString(group) || !hasGroup && item.APIVersion != "v1" ||
+			name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/%") {
+			continue
+		}
+		if hasGroup {
+			typ += "." + group
+		}
+		refs = append(refs, typ+"/"+item.Metadata.Name)
+	}
+	sort.Strings(refs)
+	return refs, nil
+}
+
+// kindName and groupName are what a kind and an API group can be: a CRD's kind, lowercased, is a
+// DNS-1035 label, so it may hold an inner dash.
+var (
+	kindName  = regexp.MustCompile(`^[A-Za-z]([-A-Za-z0-9]*[A-Za-z0-9])?$`)
+	groupName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+)
+
+// DeleteObjects deletes refs (TYPE/NAME, as HelmClusterObjects returns them) and waits until they
+// are gone. The refs come after "--", so none of them can be read as a flag such as --kubeconfig.
+func (c *Client) DeleteObjects(ctx context.Context, refs []string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	args := []string{"--kubeconfig", c.Kubeconfig, "delete", "--ignore-not-found", "--wait=true", "--timeout=5m", "--"}
+	_, err := c.Runner.Run(ctx, "kubectl", append(args, refs...)...)
+	return err
+}
+
 // Pod is the health of one pod.
 type Pod struct {
 	Name     string
@@ -338,7 +423,7 @@ func (p Pod) FinishedJob() bool {
 // Pods returns the pods in ns with their readiness and restart counts. Finished pods and pods that
 // are terminating are left out.
 func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pods", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "pods", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +488,7 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 // FailedJobs returns the Jobs in ns that gave up (condition Failed) or are retrying after a failed
 // attempt, as "Job/<name>: <message>".
 func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "jobs", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "jobs", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -468,11 +553,13 @@ type ServicePort struct {
 	Name     string
 	Port     int
 	Protocol string
+	// AppProtocol is spec.ports[].appProtocol, such as http, https, h2c or kubernetes.io/h2c.
+	AppProtocol string
 }
 
 // Services returns the Services in ns that select pods (headless Services included).
 func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "services", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "services", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -487,9 +574,10 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 				ExternalIPs []string          `json:"externalIPs"`
 				Selector    map[string]string `json:"selector"`
 				Ports       []struct {
-					Name     string `json:"name"`
-					Port     int    `json:"port"`
-					Protocol string `json:"protocol"`
+					Name        string `json:"name"`
+					Port        int    `json:"port"`
+					Protocol    string `json:"protocol"`
+					AppProtocol string `json:"appProtocol"`
 				} `json:"ports"`
 			} `json:"spec"`
 		} `json:"items"`
@@ -510,7 +598,7 @@ func (c *Client) Services(ctx context.Context, ns string) ([]Service, error) {
 			ExternalIPs: item.Spec.ExternalIPs,
 		}
 		for _, p := range item.Spec.Ports {
-			s.Ports = append(s.Ports, ServicePort{Name: p.Name, Port: p.Port, Protocol: p.Protocol})
+			s.Ports = append(s.Ports, ServicePort{Name: p.Name, Port: p.Port, Protocol: p.Protocol, AppProtocol: p.AppProtocol})
 		}
 		services = append(services, s)
 	}
@@ -546,7 +634,7 @@ func (w Workload) Serves(s Service) bool {
 // Workloads returns the Deployments, StatefulSets and DaemonSets in ns. A DaemonSet's replicas are
 // the nodes it is scheduled on.
 func (c *Client) Workloads(ctx context.Context, ns string) ([]Workload, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "deployments,statefulsets,daemonsets", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "deployments,statefulsets,daemonsets", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -704,13 +792,13 @@ func (c *Client) WaitPodRunning(ctx context.Context, ns, name, timeout string) e
 
 // Logs returns the logs of a pod.
 func (c *Client) Logs(ctx context.Context, ns, name string) (string, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "logs", name)
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "logs", name)
 	return string(out), err
 }
 
 // LastLogLine returns the last line a pod has written so far.
 func (c *Client) LastLogLine(ctx context.Context, ns, name string) (string, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "logs", "--tail=1", name)
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "logs", "--tail=1", name)
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -722,7 +810,7 @@ type PVC struct {
 
 // PVCs returns the PersistentVolumeClaims in ns, sorted by name.
 func (c *Client) PVCs(ctx context.Context, ns string) ([]PVC, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "pvc", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "pvc", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -748,13 +836,11 @@ func (c *Client) PVCs(ctx context.Context, ns string) ([]PVC, error) {
 	return pvcs, nil
 }
 
-// RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
-// returns what it printed. The pod runs as root with only the capabilities it needs to write into a
-// volume whatever owner the app gave its files (CHOWN, DAC_OVERRIDE, FOWNER), no service account
-// token, small resource limits, and is deleted afterwards, even when ctx is cancelled. It returns
-// as soon as the pod fails, and gives up after timeout.
-func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script string, timeout time.Duration) (string, error) {
-	overrides, err := json.Marshal(map[string]any{"spec": map[string]any{
+// PVCPodOverrides is the pod RunWithPVC runs, as kubectl run --overrides: one container that mounts
+// claim at /pvc and runs script, with smallPod's requests and limits. A reproduce line uses it too,
+// so it runs the same pod.
+func PVCPodOverrides(name, image, claim, script string) (string, error) {
+	pod := map[string]any{"spec": map[string]any{
 		"restartPolicy":                "Never",
 		"automountServiceAccountToken": false,
 		"securityContext":              map[string]any{"seccompProfile": map[string]any{"type": "RuntimeDefault"}},
@@ -768,7 +854,24 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 			"resources": smallPod(),
 		}},
 		"volumes": []any{map[string]any{"name": "pvc", "persistentVolumeClaim": map[string]any{"claimName": claim}}},
-	}})
+	}}
+	// Without HTML escaping, a script's > stays > in a line a person reads and runs.
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(pod); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(b.String(), "\n"), nil
+}
+
+// RunWithPVC runs script once in a pod that mounts the PersistentVolumeClaim claim at /pvc, and
+// returns what it printed. The pod runs as root with only the capabilities it needs to write into a
+// volume whatever owner the app gave its files (CHOWN, DAC_OVERRIDE, FOWNER), no service account
+// token, small resource limits, and is deleted afterwards, even when ctx is cancelled. It returns
+// as soon as the pod fails, and gives up after timeout.
+func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script string, timeout time.Duration) (string, error) {
+	overrides, err := PVCPodOverrides(name, image, claim, script)
 	if err != nil {
 		return "", err
 	}
@@ -777,12 +880,12 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 		_, _ = c.Runner.Run(context.WithoutCancel(ctx), "kubectl", append(base, "delete", "pod", name, "--ignore-not-found", "--wait=true")...)
 	}()
 	if _, err := c.Runner.Run(ctx, "kubectl", append(base, "run", name, "--image", image, "--restart", "Never",
-		"--overrides", string(overrides))...); err != nil {
+		"--overrides", overrides)...); err != nil {
 		return "", err
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		out, err := c.Runner.Run(ctx, "kubectl", append(base, "get", "pod", name, "-o", "jsonpath={.status.phase}")...)
+		out, err := c.Runner.Run(ctx, "kubectl", append(base, "--request-timeout", readTimeout, "get", "pod", name, "-o", "jsonpath={.status.phase}")...)
 		if err != nil {
 			return "", err
 		}
@@ -799,7 +902,7 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 		case <-time.After(2 * time.Second):
 		}
 	}
-	out, err := c.Runner.Run(ctx, "kubectl", append(base, "logs", name)...)
+	out, err := c.Runner.Run(ctx, "kubectl", append(base, "--request-timeout", readTimeout, "logs", name)...)
 	return string(out), err
 }
 
@@ -835,4 +938,97 @@ func (c *Client) ClaimUsers(ctx context.Context, ns string, claims []string) (ma
 func (c *Client) DeletePod(ctx context.Context, ns, name string) error {
 	_, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "delete", "pod", name, "--ignore-not-found", "--wait=false")
 	return err
+}
+
+// PodSecurityLevel returns the Pod Security level the pods in ns reach: restricted, baseline or
+// privileged, with the API server's own lines for the pods that keep them from the next stricter
+// level. It asks with a server-side dry run of the enforce label, so the namespace is never
+// labelled and no warning reaches helm's stderr, which matrix reads (#115). With no pod in ns the
+// level is "": there is nothing to judge. A kubectl error is an error, never a level.
+func (c *Client) PodSecurityLevel(ctx context.Context, ns string) (level string, violations []string, err error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", "60s",
+		"--namespace", ns, "get", "pods", "-o", "name")
+	if err != nil {
+		return "", nil, err
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return "", nil, nil
+	}
+	// The violations returned are those of the level just above the one reached: what keeps the
+	// pods from restricted when they reach baseline, and from baseline when they are privileged.
+	reached, violations := "privileged", []string(nil)
+	for _, l := range []string{"restricted", "baseline"} {
+		_, stderr, err := c.Runner.RunCapture(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "label", "--dry-run=server",
+			"--overwrite", "namespace", ns, "pod-security.kubernetes.io/enforce="+l)
+		if err != nil {
+			return "", nil, err
+		}
+		lines := podSecurityViolations(string(stderr))
+		if len(lines) == 0 {
+			return l, violations, nil
+		}
+		violations = lines
+	}
+	return reached, violations, nil
+}
+
+// podSecurityViolations returns the "Warning: <pod>: <checks>" lines of a dry-run label, without
+// the "existing pods in namespace … violate" header.
+func podSecurityViolations(stderr string) []string {
+	var lines []string
+	for _, l := range strings.Split(stderr, "\n") {
+		w, ok := strings.CutPrefix(strings.TrimSpace(l), "Warning: ")
+		if !ok || strings.HasPrefix(w, "existing pods in namespace") {
+			continue
+		}
+		lines = append(lines, w)
+	}
+	return lines
+}
+
+// Capabilities returns what helm would read from the cluster as .Capabilities: the server's
+// Kubernetes version, and its API versions: every served group/version, and group/version/Kind for
+// each resource, the two forms .Capabilities.APIVersions.Has accepts. A client-side render gets them through
+// --kube-version and --api-versions, as Argo CD passes them (#59).
+func (c *Client) Capabilities(ctx context.Context) (version string, apiVersions []string, err error) {
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "version", "-o", "json")
+	if err != nil {
+		return "", nil, err
+	}
+	var v struct {
+		ServerVersion struct {
+			GitVersion string `json:"gitVersion"`
+		} `json:"serverVersion"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		return "", nil, fmt.Errorf("parse kubectl version: %w", err)
+	}
+	if v.ServerVersion.GitVersion == "" {
+		return "", nil, fmt.Errorf("kubectl version printed no server version")
+	}
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-resources", "--no-headers")
+	if err != nil {
+		return "", nil, err
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		// NAME [SHORTNAMES] APIVERSION NAMESPACED KIND: read from the right, since SHORTNAMES is
+		// often empty.
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		gv, kind := f[len(f)-3], f[len(f)-1]
+		seen[gv], seen[gv+"/"+kind] = true, true
+	}
+	// api-resources lists each group's preferred version only; api-versions lists every served one,
+	// such as autoscaling/v1 next to autoscaling/v2, and helm's server-side Capabilities has them all.
+	out, err = c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "api-versions")
+	if err != nil {
+		return "", nil, err
+	}
+	for _, gv := range strings.Fields(string(out)) {
+		seen[gv] = true
+	}
+	return v.ServerVersion.GitVersion, slices.Sorted(maps.Keys(seen)), nil
 }

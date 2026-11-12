@@ -54,13 +54,11 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic-control-2")
 		_ = env.Kube.DeletePod(ctx, ns, "hb-traffic")
-		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
-		if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
+		cleanUp(ctx, env, release, ns)
 	}()
+
+	// Runs before the cleanup above, while the release still exists (#115).
+	defer recordPodSecurity(ctx, env, ns, &res)
 
 	// Install: the earlier version when there is one, so the treatment is the real upgrade.
 	installChart, installExtra := env.Chart, []string(nil)
@@ -137,12 +135,27 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	if err != nil {
 		return inconclusive(res, "could not read the workloads", err)
 	}
+	// A StatefulSet or DaemonSet with updateStrategy OnDelete keeps its pods through a rolling
+	// restart, and kubectl rollout status refuses it, which made every run INCONCLUSIVE (#57).
+	var onDelete []string
+	if env.FromVersion == "" {
+		var kept []kube.Workload
+		for _, w := range workloads {
+			if w.Strategy == "OnDelete" {
+				onDelete = append(onDelete, "`"+w.Kind+"/"+w.Name+"`")
+			} else {
+				kept = append(kept, w)
+			}
+		}
+		workloads = kept
+	}
 	services, err := env.Kube.Services(ctx, ns)
 	if err != nil {
 		return inconclusive(res, "could not read the Services", err)
 	}
 	var actErr, recheckErr error
-	var actStart int64
+	var actStart, actEnd int64
+	var actEndKnown bool
 	// restarts holds the second, in the traffic pod's clock, at which each workload's restart began.
 	// One workload is restarted at a time, so a failure is blamed on the one being replaced then,
 	// not on whatever the Service selects (#10).
@@ -162,6 +175,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		operation += fmt.Sprintf(" (%s, %s behind %s)", count(behind, "workload"), count(behindPods, "pod"), svc.Name)
 	}
 	operation += ", one at a time"
+	if len(onDelete) > 0 {
+		operation += fmt.Sprintf("; %s left out, since updateStrategy OnDelete replaces no pod on a restart", strings.Join(onDelete, ", "))
+	}
 	act := func() error {
 		for i, w := range workloads {
 			start := actStart
@@ -196,6 +212,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	} else if len(workloads) == 0 {
 		res.Verdict = Skipped
 		res.Summary = "no Deployment, StatefulSet or DaemonSet to restart, so nothing would be replaced"
+		if len(onDelete) > 0 {
+			res.Summary = "every workload uses updateStrategy OnDelete (" + strings.Join(onDelete, ", ") + "), so a rolling restart replaces no pod"
+		}
 		return res
 	} else if svcKnown && behind == 0 {
 		res.Verdict = Skipped
@@ -229,6 +248,11 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 		}
 		actStart, _ = oracle.TrafficSecond(last)
 		actErr = act()
+		// Where the operation ended, in the pod's clock, so the traffic can be checked to have
+		// gone on through the tail (#57).
+		if last, err := env.Kube.LastLogLine(ctx, ns, "hb-traffic"); err == nil {
+			actEnd, actEndKnown = oracle.TrafficSecond(last)
+		}
 		recheck()
 		if err := sleep(ctx, trafficTail); err != nil {
 			return err
@@ -241,9 +265,22 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	}
 	treatment := oracle.ParseTrafficSince(log, actStart)
 	// A restart that failed part way still leaves the windows before it complete; anything else that
-	// failed leaves nothing proven.
+	// failed leaves nothing proven. What was measured until then is still said: a failed upgrade's
+	// outage is what a user would see (#57).
 	if actErr != nil && done == 0 {
+		if treatment.Failed > 0 {
+			return inconclusive(res, fmt.Sprintf("%s failed; until then %d of %d requests failed, longest outage %s",
+				operation, treatment.Failed, treatment.Total, outageText(treatment.LongestOutage)), actErr)
+		}
 		return inconclusive(res, operation+" failed", actErr)
+	}
+	// The traffic must go on after the operation, through the tail: a traffic pod that stopped
+	// sending part way would leave a PASS with nothing measured at the end (#57).
+	if tail := int64(trafficTail / time.Second); tail >= 2 && actEndKnown {
+		if lastSent, ok := lastSecond(log); !ok || lastSent-actEnd < tail/2 {
+			return inconclusive(res, "the traffic stopped before the end of "+operation,
+				fmt.Errorf("the last request was sent %ds after the operation ended, in a %ds tail", max(0, lastSent-actEnd), tail))
+		}
 	}
 	if recheckErr != nil {
 		return inconclusive(res, "could not read the endpoints of "+service+" again after "+operation, recheckErr)
@@ -375,6 +412,33 @@ func (ZeroDowntime) target(ctx context.Context, env *Env, ns string) (string, er
 	return pickTarget(services, outside)
 }
 
+// lastSecond is the second, in the traffic pod's clock, of the last request in log.
+func lastSecond(log string) (int64, bool) {
+	lines := strings.Split(strings.TrimSpace(log), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t, ok := oracle.TrafficSecond(lines[i]); ok {
+			return t, true
+		}
+	}
+	return 0, false
+}
+
+// notPlainHTTP reports whether a Service port says it speaks something other than plain HTTP/1:
+// an appProtocol that is not http, a name with the word https, tls, grpc or h2c ("grpc-api",
+// "https"), or port 443 or 8443.
+func notPlainHTTP(p kube.ServicePort) bool {
+	if ap := strings.ToLower(strings.TrimPrefix(p.AppProtocol, "kubernetes.io/")); ap != "" && ap != "http" {
+		return true
+	}
+	words := strings.FieldsFunc(strings.ToLower(p.Name), func(r rune) bool { return r == '-' || r == '_' || r == '.' })
+	for _, w := range words {
+		if w == "https" || w == "tls" || w == "grpc" || w == "grpcs" || w == "h2" || w == "h2c" {
+			return true
+		}
+	}
+	return p.Port == 443 || p.Port == 8443
+}
+
 // pickTarget returns "service:port" for a port named http or web, then a common HTTP port number,
 // then any port with http in its name. Services whose traffic would not stay on the release's pods
 // are skipped: ExternalName (an outside host), headless (no port translation, so a request can
@@ -384,6 +448,10 @@ func pickTarget(services []kube.Service, outside map[string][]string) (string, e
 	score := func(p kube.ServicePort) int {
 		switch {
 		case p.Protocol != "" && p.Protocol != "TCP":
+			return 0
+		// The requests are plain http://. A port that speaks TLS or gRPC would only fail them, and
+		// make the run INCONCLUSIVE where SKIPPED is right (#57).
+		case notPlainHTTP(p):
 			return 0
 		case p.Name == "http" || p.Name == "web":
 			return 3

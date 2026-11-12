@@ -20,10 +20,14 @@ const SchemaVersion = 1
 
 // Report is everything a run produced.
 type Report struct {
-	SchemaVersion int      `json:"schemaVersion"`
-	Chart         string   `json:"chart"`
-	ValuesFiles   []string `json:"valuesFiles"`
-	SetKeys       []string `json:"setKeys"` // keys only, never values
+	SchemaVersion int `json:"schemaVersion"`
+	// Verdict is Worst(), the worst result of the run, so a reader of report.json does not have to
+	// work it out. test and matrix exit by it. scan exits by it only with --strict: without it,
+	// a FAIL is a candidate to confirm and the exit code is 0. Write sets it.
+	Verdict     string   `json:"verdict"`
+	Chart       string   `json:"chart"`
+	ValuesFiles []string `json:"valuesFiles"`
+	SetKeys     []string `json:"setKeys"` // keys only, never values
 	// ExpectedRotation is what --expected-rotation allowed, so a reader sees what was not reported.
 	ExpectedRotation []string          `json:"expectedRotation,omitempty"`
 	HelmVersion      string            `json:"helmVersion"`
@@ -66,6 +70,19 @@ func (r *Report) Write(dir string) error {
 	// Report files are shared. Mask credentials, local paths and secret values in one place, so no
 	// field reaches any of the files around the runner's masking.
 	r.redact()
+	r.Verdict = r.Worst()
+	// An empty list is [], not null, so a reader can iterate every list without a check.
+	for _, list := range []*[]string{&r.ValuesFiles, &r.SetKeys} {
+		if *list == nil {
+			*list = []string{}
+		}
+	}
+	if r.Results == nil {
+		r.Results = []scenario.Result{}
+	}
+	if r.Commands == nil {
+		r.Commands = []execx.Command{}
+	}
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
@@ -101,6 +118,11 @@ func (r *Report) redact() {
 	for i := range r.Results {
 		res := &r.Results[i]
 		res.Summary = hide(res.Summary)
+		if res.PodSecurity != nil {
+			for k, v := range res.PodSecurity.Violations {
+				res.PodSecurity.Violations[k] = hide(v)
+			}
+		}
 		for j := range res.Findings {
 			f := &res.Findings[j]
 			f.Title, f.Impact, f.Fix = hide(f.Title), hide(f.Impact), hide(f.Fix)
@@ -133,6 +155,30 @@ func (r *Report) Markdown() string {
 	b.WriteString("| Scenario | Verdict | Summary |\n|---|---|---|\n")
 	for _, res := range r.Results {
 		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", res.Scenario, res.Verdict, escape(res.Summary))
+	}
+
+	// The Pod Security level is information about the chart, not a finding (#115).
+	var levels []scenario.Result
+	for _, res := range r.Results {
+		if res.PodSecurity != nil {
+			levels = append(levels, res)
+		}
+	}
+	if len(levels) > 0 {
+		b.WriteString("\n## Pod Security (information, not a finding)\n\nThe level the release's pods reach, as the API server rates them; nothing was enforced.\n\n")
+		for _, res := range levels {
+			ps := res.PodSecurity
+			fmt.Fprintf(&b, "- `%s`: **%s**", res.Scenario, ps.Level)
+			if len(ps.Violations) > 0 {
+				next := map[string]string{"baseline": "restricted", "privileged": "baseline"}[ps.Level]
+				var lines []string
+				for _, v := range ps.Violations {
+					lines = append(lines, escape(v))
+				}
+				fmt.Fprintf(&b, ". Not %s: %s", next, strings.Join(lines, "; "))
+			}
+			b.WriteString("\n")
+		}
 	}
 
 	for _, res := range r.Results {

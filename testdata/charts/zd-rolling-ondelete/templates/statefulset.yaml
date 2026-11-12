@@ -1,0 +1,23 @@
+# OnDelete: a rolling restart changes the template but replaces no pod, and kubectl rollout status
+# refuses the StatefulSet. It serves no Service, so the traffic does not depend on it.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-cache
+spec:
+  replicas: 1
+  serviceName: {{ .Release.Name }}-cache
+  updateStrategy: {type: OnDelete}
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-cache}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-cache}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65535, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: cache
+          image: registry.k8s.io/pause:3.10
+          resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {cpu: 50m, memory: 32Mi}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}

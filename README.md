@@ -19,7 +19,7 @@ None of these produce an invalid manifest, so no linter flags them. Each one is 
 
 ## How it works
 
-1. **Install** the chart into an ephemeral [kind](https://kind.sigs.k8s.io/) cluster with each values file you give it.
+1. **Install** the chart into an ephemeral [kind](https://kind.sigs.k8s.io/) cluster with the values files you give it, layered in order as helm does.
 2. **Run scenarios** against the live release. Each scenario is a small script: act (upgrade, delete, rotate, connect, flood), then assert on the cluster's state.
 3. **Report** every failure with the command that reproduces it, the evidence (events, logs, rendered diff), the impact, and a suggested patch.
 
@@ -44,14 +44,14 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 
 ## Found in public charts
 
-Every row was reproduced with Helmbulance before it was listed: on a kind cluster, and for `gitops-render` by rendering the chart without cluster access, as Argo CD does. Status on 29 October 2026.
+Every row was reproduced with Helmbulance before it was listed: on a kind cluster, and for `gitops-render` by rendering the chart without cluster access, as Argo CD does. Status on 6 November 2026.
 
 **Reported by us**
 
 | Chart | What broke | Found by | Upstream |
 |---|---|---|---|
 | SeaweedFS | The first `helm upgrade` after install restarted the filer and the S3 gateway although nothing changed. | `upgrade-without-values` (HB-UV-003) | [#11719](https://github.com/seaweedfs/seaweedfs/issues/11719), fix [#11720](https://github.com/seaweedfs/seaweedfs/pull/11720) merged |
-| JupyterHub | The same restart, for the hub and the proxy. | `upgrade-without-values` (HB-UV-003) | [#3996](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/3996), fix [#3997](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/pull/3997) open |
+| JupyterHub | The same restart, for the hub and the proxy. | `upgrade-without-values` (HB-UV-003) | [#3996](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/3996), fix [#3997](https://github.com/jupyterhub/zero-to-jupyterhub-k8s/pull/3997) merged |
 | Semaphore | The same restart. | `upgrade-without-values` (HB-UV-003) | [#34](https://github.com/semaphoreui/charts/issues/34), fix [#35](https://github.com/semaphoreui/charts/pull/35) open |
 | yugabyte | Patch release 2026.1.2 changes a StatefulSet selector, so with the default `oldNamingStyle: true` every upgrade from 2026.1.0 or 2026.1.1 fails. | `scan` (HB-SCAN-001), confirmed by `chart-upgrade` (HB-CU-001) | [#240](https://github.com/yugabyte/charts/issues/240) open |
 | SeaweedFS | A number or boolean written without quotes in `extraEnvironmentVars` (`WEED_MYSQL_PORT: 3306`) rendered as `valueFrom` and failed the install. | found by hand; caught by `scan` (HB-SCAN-004) | fix [#12137](https://github.com/seaweedfs/seaweedfs/pull/12137) merged |
@@ -103,7 +103,7 @@ Helmbulance runs entirely on your machine or in your CI. There is no server and 
 
 ## Try it
 
-Requires Go, Docker, kind, helm and kubectl.
+Requires Go, Docker, kind, helm and kubectl. CI tests with kind v0.33.0, Helm v4.3.0 and v3.22.0 and kubectl v1.37.1, and `matrix` needs kind v0.33 for its node images. The [GitHub Action](docs/github-action.md) runs the same checks in CI; the [decisions](docs/decisions/) record what is in scope and why.
 
 ```sh
 go build -o bin/helmbulance ./cmd/helmbulance
@@ -125,7 +125,7 @@ The fixtures in `testdata/charts/` show what it finds: each defect has a fixed t
 
 ## Contributing
 
-Issues and ideas are welcome, especially failures you have seen in production that a scenario could catch. Open an issue describing what happened and how you found out.
+Issues and ideas are welcome, especially failures you have seen in production that a scenario could catch. Open an issue describing what happened and how you found out. To add a scenario yourself, start with [writing a scenario](docs/writing-a-scenario.md).
 
 ## Team
 
