@@ -1,0 +1,5 @@
+apiVersion: v2
+name: existing-secret-stateful
+description: "Helmbulance fixture. With --set existingSecret the StatefulSet reads that Secret; without it the chart generates a password. An upgrade that drops the --set moves the StatefulSet, which keeps data, to a new password (#54)."
+type: application
+version: 0.1.0

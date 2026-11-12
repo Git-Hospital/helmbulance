@@ -41,7 +41,7 @@ func TestRegenerated(t *testing.T) {
 	cm := object{Kind: "ConfigMap", Name: "plain", Doc: map[string]any{"data": map[string]any{"k": "1"}}}
 	a, b = append(a, cm), append(b, object{Kind: "ConfigMap", Name: "plain", Doc: map[string]any{"data": map[string]any{"k": "2"}}})
 
-	onUpgrade, onSync := regenerated(a, b, u, func(source string) bool { return strings.HasSuffix(source, "/looked-up.yaml") })
+	onUpgrade, onSync, _ := regenerated(a, b, u, func(source string) bool { return strings.HasSuffix(source, "/looked-up.yaml") })
 	names := func(lines []string) []string {
 		var out []string
 		for _, l := range lines {
@@ -66,7 +66,7 @@ func TestRegenerated(t *testing.T) {
 
 	// A chart that refuses to render as an upgrade (Bitnami's "PASSWORDS ERROR"): hooks are still
 	// sorted by their annotation, every other Secret goes to HB-SCAN-003 as before #107.
-	onUpgrade, onSync = regenerated(a, b, nil, func(source string) bool { return strings.HasSuffix(source, "/looked-up.yaml") })
+	onUpgrade, onSync, _ = regenerated(a, b, nil, func(source string) bool { return strings.HasSuffix(source, "/looked-up.yaml") })
 	if got, want := names(onUpgrade), []string{"both", "install-only", "plain"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("no upgrade render: onUpgrade = %v, want %v", got, want)
 	}

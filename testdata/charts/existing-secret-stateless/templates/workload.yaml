@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-db}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-db}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65535}
+      containers:
+        - name: db
+          image: registry.k8s.io/pause:3.10
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                # optional, so the pod starts although the fixture never creates the existing Secret
+                secretKeyRef: {name: {{ .Values.existingSecret | default (printf "%s-db" .Release.Name) | quote }}, key: password, optional: true}

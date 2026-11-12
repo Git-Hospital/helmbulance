@@ -46,6 +46,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		cleanUp(ctx, env, release, ns)
 	}()
 
+	// Runs before the cleanup above, while the release still exists (#115).
+	defer recordPodSecurity(ctx, env, ns, &res)
+
 	if err := startClean(ctx, env, release, ns); err != nil {
 		return inconclusive(res, "could not clear what an earlier run left", err)
 	}
@@ -93,6 +96,13 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 
 	// Treatment: the version under test.
 	mark = len(env.Runner.Transcript())
+	// Who reads which key on the earlier version, so a workload the new version points at a new
+	// key can be told from one that only gained a key (#54).
+	readersBefore, err := env.Kube.SecretConsumers(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not map Secret consumers before the upgrade: %v\n", err)
+		readersBefore = nil
+	}
 	upgradeErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values)
 	repro = append(repro, execx.ReproLine(env.Runner.Transcript()[mark].Line))
 	// A new version whose pods crash ends in the same `--wait` timeout as a slow machine. The
@@ -102,8 +112,8 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		if crashes := crashesAfterTimeout(ctx, env, ns, podsBefore, containersBefore, containersKnown); len(crashes) > 0 {
 			return upgradeFails(res, fromV, repro,
 				append([]string{"`helm upgrade --wait` timed out while containers of the new version crashed or could not start: " + helmMessage(upgradeErr)}, crashes...),
-				"Read the crashed container's logs (`kubectl logs --previous`) and the pod events in the "+
-					"failure bundle. Typical causes are a setting the new version requires, a changed command "+
+				"Keep the cluster with --keep-cluster, run the Reproduce commands on it, then read the crashed container's logs (`kubectl logs --previous`) and the pod events "+
+					"(`kubectl get events`). Typical causes are a setting the new version requires, a changed command "+
 					"or port, a probe that fails, or a Secret or ConfigMap key the new version reads but the "+
 					"chart does not create.")
 		}
@@ -145,6 +155,8 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	rest, moved := oracle.Moved(control, upgraded, withoutRefs(oracle.Diff(control, upgraded), regenerated))
 	moved, back := unpairStillRead(moved, consumers)
 	changes, added := splitAdded(append(rest, back...))
+	switched, added := switchedTo(added, readersBefore, consumers, stateful)
+	changes = append(changes, switched...)
 	changes, rotated := splitExpected(changes, env.ExpectedRotation)
 	if len(changes) > 0 {
 		res.Findings = append(res.Findings, Finding{
@@ -153,7 +165,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 			Severity: worstSeverity(changes, consumers, stateful, statefulKnown),
 			Evidence: describe(changes, consumers),
 			Impact: "After the upgrade the application gets different credentials or keys than the " +
-				"ones its data was created with, or loses them.",
+				"ones its data was created with, or loses them." + switchedImpact(switched, "such as a key the new version reads in place of the old one"),
 			Fix: "Keep the Secret names and keys of earlier versions, or migrate the stored value " +
 				"(read the old Secret with `lookup` and carry it over) and say so in the release notes.",
 			Reproduce: repro,
@@ -168,7 +180,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 			Severity:  "high",
 			Evidence:  unhealthy,
 			Impact:    "The upgrade completed, but parts of the application are not ready or keep restarting.",
-			Fix:       "Read the pod logs and events in the failure bundle; typical causes are a removed setting the app still needs, a migration that fails, or a changed port or probe.",
+			Fix:       "Keep the cluster with --keep-cluster, run the Reproduce commands on it, then read the pod logs and events (`kubectl logs`, `kubectl get events`); typical causes are a removed setting the app still needs, a migration that fails, or a changed port or probe.",
 			Reproduce: repro,
 		})
 	}
