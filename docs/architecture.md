@@ -93,6 +93,7 @@ There is no separate chart model in v0.1. The scenarios read what the chart crea
 **v0.1:**
 - kind, with its own default node image unless `--node-image` is given. CI tests with kind v0.33.0, and `matrix` pins node images built for v0.33, so `matrix` needs it. There is no kind version check (#55). kind's default CNI, kindnet, enforces NetworkPolicy through kube-network-policies.
 - kind's default `standard` StorageClass (local-path, reclaim policy Delete). The reinstall summary says when a volume went with the release because of it.
+- The Pod Security level the release's pods reach (restricted, baseline or privileged) is reported as information, with the API server's lines for what keeps them from the next stricter level. It is read at the end of each scenario, while the release exists, with a server-side dry run of the `enforce` label (`kubectl label --dry-run=server`), so the namespace is never labelled and no warning reaches helm's stderr, which `matrix` reads. It is no finding and changes no verdict. Enforcing a level would stop many charts from installing and change what is measured; `warn` and `audit` labels are not set, and kind writes no audit log by default (#115).
 - No ingress controller and no metrics-server in v0.1, because no v0.1 scenario needs them. When an HTTP entry point is needed, it will be a Gateway API implementation (ingress-nginx was retired in March 2026).
 - kind's defaults for the API server address (`127.0.0.1`); Helmbulance adds no port mappings.
 
