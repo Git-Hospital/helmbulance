@@ -1,7 +1,6 @@
 package oracle
 
 import (
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -28,8 +27,27 @@ type TrafficStats struct {
 	Reasons map[string]int
 }
 
+// statusText names the status codes a traffic check is likely to see, with the names net/http
+// uses. It is a table and not http.StatusText so that this module does not import net/http only
+// for the names: nothing else here uses that package (#163). A code that is not listed is
+// reported by its number alone.
+var statusText = map[int]string{
+	400: "Bad Request",
+	401: "Unauthorized",
+	403: "Forbidden",
+	404: "Not Found",
+	405: "Method Not Allowed",
+	408: "Request Timeout",
+	421: "Misdirected Request",
+	429: "Too Many Requests",
+	500: "Internal Server Error",
+	502: "Bad Gateway",
+	503: "Service Unavailable",
+	504: "Gateway Timeout",
+}
+
 // FailureReason turns what busybox wget printed for a failed request into a short reason:
-// "HTTP 404 Not Found" (the code with Go's name for it, not the server's phrase), "connection refused", "name not resolved", "timed out", "connection
+// "HTTP 404 Not Found" (the code with its standard name, not the server's phrase), "connection refused", "name not resolved", "timed out", "connection
 // reset", or "" when it says nothing known. Only these words reach a report, never wget's text,
 // which can name a host.
 func FailureReason(wget string) string {
@@ -40,7 +58,7 @@ func FailureReason(wget string) string {
 		// missing ("HTTP/1.1 400 ") or carry anything, such as a URL.
 		if f := strings.Fields(status); len(f) >= 2 && strings.HasPrefix(f[0], "HTTP/") {
 			if code, err := strconv.Atoi(f[1]); err == nil && code >= 100 && code <= 999 {
-				return strings.TrimSpace("HTTP " + f[1] + " " + http.StatusText(code))
+				return strings.TrimSpace("HTTP " + f[1] + " " + statusText[code])
 			}
 		}
 		return "an HTTP error"
