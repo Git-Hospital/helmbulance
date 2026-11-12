@@ -510,6 +510,60 @@ ca:
 	}
 }
 
+// Second review of #122, checked with Helm v4.3.0: helm 4 merges every document of a values file,
+// resolves aliases and merge keys, and reads 012345670 as octal, printing 2.739128e+06. Key names
+// that hold a key themselves leak unless they are named, and ssl.key is TLS like tls.key.
+func TestFileSecretsDocumentsAliasesKeysAndOctal(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte(`
+shared: &pw AliasSecret-3c3c
+base: &base
+  password: MergedSecret-4d4d
+db:
+  password: *pw
+  <<: *base
+airflow:
+  fernetKey: Fernet-5e5e
+  jwtKey: Jwt-6f6f
+storage:
+  accountKey: Account-7a7a
+  connectionString: Conn-8b8b
+ssl:
+  key: SslKey-9c9c
+env:
+  - name: STRIPE_KEY
+    value: Stripe-0d0d
+  - name: SORT_ORDER
+    value: ascending-order
+pin:
+  apiToken: 012345670
+auth:
+  userPasswordKey: user-password-entry
+  adminTokenKey: admin-token-entry
+tolerations:
+  - key: dedicated-node
+---
+db:
+  password: SecondDoc-1e1e
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := fileSecrets([]string{values})
+	for _, want := range []string{
+		"AliasSecret-3c3c", "MergedSecret-4d4d", "Fernet-5e5e", "Jwt-6f6f", "Account-7a7a", "Conn-8b8b",
+		"SslKey-9c9c", "Stripe-0d0d", "SecondDoc-1e1e", "012345670", "2.739128e+06", "2739128",
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("fileSecrets is missing %q: %q", want, got)
+		}
+	}
+	for _, not := range []string{"12345670", "1.234567e+07", "ascending-order", "user-password-entry", "admin-token-entry", "dedicated-node"} {
+		if slices.Contains(got, not) {
+			t.Errorf("fileSecrets hides %q, which is not a secret or not how helm prints it: %q", not, got)
+		}
+	}
+}
+
 // After an interrupt no further scenario starts: each one left is INCONCLUSIVE "not run", so the
 // sandbox cluster is deleted at once instead of after every remaining scenario's cleanup (#58).
 func TestRunEachStopsStartingAfterAnInterrupt(t *testing.T) {

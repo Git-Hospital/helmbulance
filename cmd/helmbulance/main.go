@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -362,11 +363,16 @@ func fileSecrets(files []string) []string {
 			if err != nil {
 				continue
 			}
-			var doc yaml.Node
-			if yaml.Unmarshal(b, &doc) != nil {
-				continue
+			// helm reads every document of a values file, so a later one can hold a password too
+			// (review of #122). A document that cannot be parsed ends the file; helm reports it.
+			dec := yaml.NewDecoder(bytes.NewReader(b))
+			for {
+				var doc yaml.Node
+				if dec.Decode(&doc) != nil {
+					break
+				}
+				out = secretScalars(&doc, "", out)
 			}
-			out = secretScalars(&doc, "", out)
 		}
 	}
 	return out
@@ -387,13 +393,18 @@ func secretScalars(n *yaml.Node, parent string, out []string) []string {
 	case yaml.MappingNode:
 		envSecret := false
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			if k, v := n.Content[i], n.Content[i+1]; k.Value == "name" && v.Kind == yaml.ScalarNode && oracle.ValuesKeyClass(v.Value) != oracle.ClassOther {
+			if k, v := n.Content[i], resolveAlias(n.Content[i+1]); k.Value == "name" && v.Kind == yaml.ScalarNode && envSecretName(v.Value) {
 				envSecret = true
 			}
 		}
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			k, v := n.Content[i], n.Content[i+1]
-			secret := secretKey(k.Value) || oracle.KeyClass(parent+"."+k.Value) == oracle.ClassTLS
+			k, v := n.Content[i], resolveAlias(n.Content[i+1])
+			if k.Value == "<<" {
+				// A merge key puts the aliased mapping's keys into this one, under the same parent.
+				out = secretScalars(v, parent, out)
+				continue
+			}
+			secret := secretKey(k.Value) || tlsKey(parent, k.Value)
 			switch {
 			case v.Kind == yaml.ScalarNode && (secret || (envSecret && k.Value == "value")):
 				out = append(out, scalarForms(v)...)
@@ -402,7 +413,7 @@ func secretScalars(n *yaml.Node, parent string, out []string) []string {
 				// A list under a credential key holds credentials too, as bitnami/mongodb's
 				// auth.passwords does (review of #122).
 				for _, item := range v.Content {
-					if item.Kind == yaml.ScalarNode {
+					if item = resolveAlias(item); item.Kind == yaml.ScalarNode {
 						out = append(out, scalarForms(item)...)
 					}
 				}
@@ -421,6 +432,9 @@ func secretScalars(n *yaml.Node, parent string, out []string) []string {
 // adminPasswordKey) names a key inside a Secret; apiKey, secretKey and privateKey are keys
 // themselves.
 func secretKey(key string) bool {
+	if keyNames[strings.ToLower(key)] {
+		return true
+	}
 	if oracle.ValuesKeyClass(key) == oracle.ClassOther {
 		return false
 	}
@@ -438,10 +452,53 @@ func secretKey(key string) bool {
 	case "apikey", "secretkey", "privatekey", "accesskey", "encryptionkey", "signingkey", "masterkey":
 		return true
 	}
-	if strings.HasSuffix(k, "key") && oracle.ValuesKeyClass(strings.TrimSuffix(k, "key")) != oracle.ClassOther {
-		return false
+	// userPasswordKey and adminTokenKey name a key in a Secret; jwtKey is the key itself.
+	if trimmed, ok := strings.CutSuffix(k, "key"); ok {
+		for _, w := range []string{"password", "passwd", "token", "secret", "credential"} {
+			if strings.Contains(trimmed, w) {
+				return false
+			}
+		}
 	}
 	return true
+}
+
+// keyNames are values keys that hold a key or a connection string although ValuesKeyClass does
+// not class them (review of #122): fernetKey is Airflow's, accountKey Azure Storage's.
+var keyNames = map[string]bool{
+	"fernetkey": true, "accountkey": true, "storagekey": true, "storageaccountkey": true, "sharedkey": true,
+	"hmackey": true, "sessionkey": true, "cookiekey": true, "licensekey": true, "connectionstring": true,
+}
+
+// tlsParents are the parents under which a key named key or crt is TLS material: tls.key and
+// ca.key as before, and ssl.key or https.key. A list, so that a toleration's key stays readable.
+var tlsParents = map[string]bool{
+	"tls": true, "ssl": true, "ca": true, "https": true, "mtls": true, "cert": true, "certs": true,
+	"certificate": true, "certificates": true, "x509": true,
+}
+
+func tlsKey(parent, key string) bool {
+	return oracle.KeyClass(parent+"."+key) == oracle.ClassTLS ||
+		(strings.EqualFold(key, "key") && tlsParents[strings.ToLower(parent)])
+}
+
+// envSecretName reports whether an env item's name marks its value as a secret: a credential name
+// such as DB_PASSWORD, or a name that ends in KEY (STRIPE_KEY, AWS_SECRET_ACCESS_KEY). An env
+// value names no key in a Secret; that is valueFrom.
+func envSecretName(name string) bool {
+	if oracle.ValuesKeyClass(name) != oracle.ClassOther {
+		return true
+	}
+	n := strings.ToUpper(name)
+	return strings.HasSuffix(n, "_KEY") || strings.HasSuffix(n, "APIKEY")
+}
+
+// resolveAlias follows *anchor to the node it names, so password: *pw is read like the value.
+func resolveAlias(n *yaml.Node) *yaml.Node {
+	for n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	return n
 }
 
 // scalarForms is a scalar as written, and a number also as helm prints it once it has read the
@@ -449,11 +506,14 @@ func secretKey(key string) bool {
 func scalarForms(v *yaml.Node) []string {
 	forms := []string{v.Value}
 	if v.Tag == "!!int" || v.Tag == "!!float" {
-		f, err := strconv.ParseFloat(v.Value, 64)
-		if err != nil {
-			if i, ierr := strconv.ParseInt(v.Value, 0, 64); ierr == nil {
-				f, err = float64(i), nil
-			}
+		// An integer first, with its base: helm reads 012345670 as octal, so 2739128 is printed, and
+		// ParseFloat would take it as decimal (review of #122).
+		var f float64
+		i, err := strconv.ParseInt(v.Value, 0, 64)
+		if err == nil {
+			f = float64(i)
+		} else {
+			f, err = strconv.ParseFloat(v.Value, 64)
 		}
 		if err == nil {
 			forms = append(forms, fmt.Sprint(f), strconv.FormatFloat(f, 'f', -1, 64))
