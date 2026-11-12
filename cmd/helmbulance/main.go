@@ -308,9 +308,16 @@ func refuseRemote(allow bool, refs ...string) bool {
 }
 
 // refuseMissing stops a run on a ref that helm reads only as a path and that is not on disk. That
-// is a typo, and a run on it would only report that it could not render the chart (#50).
+// is a typo, and a run on it would only report that it could not render the chart (#50). A ref
+// that starts with '-' is stopped too, on disk or not: helm would read it as a flag in the chart's
+// place.
 func refuseMissing(refs ...string) bool {
 	for _, ref := range refs {
+		if strings.HasPrefix(ref, "-") {
+			r := execx.RedactURLs(ref)
+			fmt.Fprintf(os.Stderr, "chart or --from %s starts with '-', which helm reads as a flag; give a directory of that name as ./%s\n", r, r)
+			return true
+		}
 		if ref != "" && !helm.IsLocal(ref) && helm.IsPath(ref) {
 			fmt.Fprintf(os.Stderr, "path not found: %s\n", ref)
 			return true
