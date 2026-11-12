@@ -32,6 +32,8 @@ type rollbackFake struct {
 	// secrets is what `kubectl get secrets` prints in each phase, "v1" being the install; the
 	// release renders the Secret "app". No Secrets by default.
 	secrets map[string]string
+	// jobs is what `kubectl get jobs` prints in each phase. No Jobs by default.
+	jobs map[string]string
 }
 
 // runRollback runs the rollback scenario against a fake helm and kubectl. The fake helm keeps the
@@ -40,7 +42,7 @@ type rollbackFake struct {
 func runRollback(t *testing.T, f rollbackFake) (Result, []string) {
 	t.Helper()
 	bin := t.TempDir()
-	for kind, byPhase := range map[string]map[string]string{"pods": f.pods, "secrets": f.secrets} {
+	for kind, byPhase := range map[string]map[string]string{"pods": f.pods, "secrets": f.secrets, "jobs": f.jobs} {
 		for phase, out := range byPhase {
 			if err := os.WriteFile(filepath.Join(bin, kind+"."+phase), []byte(out), 0o644); err != nil {
 				t.Fatal(err)
@@ -87,8 +89,8 @@ exit 0
 `
 	kubectlScript := `#!/bin/sh
 case "$*" in
-  *"get pods"*|*"get secrets"*)
-    what=pods; case "$*" in *"get secrets"*) what=secrets ;; esac
+  *"get pods"*|*"get secrets"*|*"get jobs"*)
+    what=pods; case "$*" in *"get secrets"*) what=secrets ;; *"get jobs"*) what=jobs ;; esac
     f="` + bin + `/$what.$(cat "` + phase + `" 2>/dev/null)"
     if [ -f "$f" ]; then cat "$f"; else echo '{"items":[]}'; fi ;;
   *) echo '{"items":[]}' ;;
@@ -332,5 +334,62 @@ func TestRollbackHookThatFailsWithoutRestartingIsHBRB001(t *testing.T) {
 	}
 	if res := run(items(hookPod("undo-a", 0))); res.Verdict != Inconclusive {
 		t.Errorf("hook pod that exited 0: verdict = %s with %+v, want INCONCLUSIVE", res.Verdict, res.Findings)
+	}
+}
+
+// hookJobPod is a pod of the hook Job job whose one container ended with exit, the pod being in
+// phase. A sidecar that is stopped once the hook is done ends with 143 in a Succeeded pod.
+func hookJobPod(job, name, phase string, exit int) string {
+	return fmt.Sprintf(`{"metadata":{"name":%q,"uid":%q,"ownerReferences":[{"kind":"Job","name":%q}]},"status":{"phase":%q,"containerStatuses":[{"name":"hook","restartCount":0,"state":{"terminated":{"reason":"Error","exitCode":%d}}}]}}`, name, name, job, phase, exit)
+}
+
+func completeJob(name string) string {
+	return `{"metadata":{"name":"` + name + `"},"status":{"succeeded":1,"failed":1,"conditions":[{"type":"Complete","status":"True"}]}}`
+}
+
+// A hook pod that exited with an error is no HB-RB-001 when its Job completed after all, when the
+// pod Succeeded, or when the hook is not a rollback hook: the rollback timed out for another
+// reason, so INCONCLUSIVE (#130 review).
+func TestRollbackHookExitsThatAreNoFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, hook, pods, jobs string
+	}{
+		{"pre-rollback Job completed on its second pod", "pre-rollback",
+			items(hookJobPod("undo", "undo-a", "Failed", 1), hookJobPod("undo", "undo-b", "Succeeded", 0)), items(completeJob("undo"))},
+		{"pre-upgrade Job whose first pod failed", "pre-upgrade",
+			items(hookJobPod("undo", "undo-a", "Failed", 1)), items()},
+		{"Succeeded hook pod whose sidecar exited 143", "pre-rollback",
+			items(hookJobPod("undo", "undo-a", "Succeeded", 143)), items()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, _ := runRollback(t, rollbackFake{
+				rollbackErr: rollbackTimeout,
+				hooks:       "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: undo\n  annotations:\n    helm.sh/hook: " + tc.hook + "\n",
+				pods:        map[string]string{"back": tc.pods},
+				jobs:        map[string]string{"back": tc.jobs},
+			})
+			if res.Verdict != Inconclusive || len(res.Findings) > 0 {
+				t.Errorf("verdict = %s with %+v (%s), want INCONCLUSIVE", res.Verdict, res.Findings, res.Summary)
+			}
+		})
+	}
+}
+
+// A failed pre-upgrade hook pod left from the upgrade does not hide the earlier version's
+// crash-looping containers: still HB-RB-002, with those containers as evidence.
+func TestRollbackOldHookPodDoesNotHideHBRB002(t *testing.T) {
+	res, _ := runRollback(t, rollbackFake{
+		rollbackErr: rollbackTimeout,
+		hooks:       "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: migrate\n  annotations:\n    helm.sh/hook: pre-upgrade\n",
+		pods: map[string]string{
+			"control": items(podJSON("db", 0, "")),
+			"back":    items(hookJobPod("migrate", "migrate-a", "Failed", 1), podJSON("db2", 3, "CrashLoopBackOff")),
+		},
+	})
+	if res.Verdict != Fail || len(res.Findings) != 1 || res.Findings[0].ID != "HB-RB-002" {
+		t.Fatalf("verdict = %s with %+v (%s), want FAIL with HB-RB-002", res.Verdict, res.Findings, res.Summary)
+	}
+	if !strings.Contains(strings.Join(res.Findings[0].Evidence, " "), "pod `web-db2`") {
+		t.Errorf("evidence = %q, want the crashing pod", res.Findings[0].Evidence)
 	}
 }

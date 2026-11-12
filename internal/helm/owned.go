@@ -84,14 +84,15 @@ type object struct {
 	Items []object `yaml:"items"`
 }
 
-// HookJobs names the release's hook Jobs in ns, so their pods are not mistaken for
-// application containers when a rollback hook fails.
-func (c *Client) HookJobs(ctx context.Context, release, ns string) (map[string]bool, error) {
+// HookJobs maps the release's hook Jobs in ns, as "Job/<name>", to their helm.sh/hook value, such
+// as "pre-rollback" or "pre-upgrade,post-install". Their pods are then not mistaken for
+// application containers, and a failed hook is told apart from a hook of another kind.
+func (c *Client) HookJobs(ctx context.Context, release, ns string) (map[string]string, error) {
 	out, err := c.run(ctx, append([]string{"get", "hooks", release}, c.base(ns)...)...)
 	if err != nil {
 		return nil, err
 	}
-	jobs := map[string]bool{}
+	jobs := map[string]string{}
 	for _, text := range docSeparator.Split(string(out), -1) {
 		if strings.TrimSpace(text) == "" {
 			continue
@@ -110,7 +111,7 @@ func (c *Client) HookJobs(ctx context.Context, release, ns string) (map[string]b
 		if doc.Kind == "Job" && doc.Metadata.Name != "" &&
 			(doc.Metadata.Namespace == "" || doc.Metadata.Namespace == ns) &&
 			doc.Metadata.Annotations["helm.sh/hook"] != "" {
-			jobs["Job/"+doc.Metadata.Name] = true
+			jobs["Job/"+doc.Metadata.Name] = doc.Metadata.Annotations["helm.sh/hook"]
 		}
 	}
 	return jobs, nil

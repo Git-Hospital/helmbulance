@@ -115,7 +115,7 @@ func TestHookJobsOnlyNamesHooksInReleaseNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := c.HookJobs(t.Context(), "hb", "ns")
-	if err != nil || !reflect.DeepEqual(got, map[string]bool{"Job/undo": true, "Job/after": true}) {
+	if err != nil || !reflect.DeepEqual(got, map[string]string{"Job/undo": "pre-rollback", "Job/after": "post-rollback"}) {
 		t.Fatalf("HookJobs = %v, %v", got, err)
 	}
 }

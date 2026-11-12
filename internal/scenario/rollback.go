@@ -128,15 +128,28 @@ func (s Rollback) Run(ctx context.Context, env *Env) (res Result) {
 			if hookErr != nil {
 				fmt.Fprintf(env.Log, "could not identify rollback hook Jobs: %v\n", hookErr)
 			}
+			// A Complete Job's failed pods were attempts a later pod made good, so they are no
+			// crash. Without that list a pod that exited with an error proves nothing.
+			complete, completeErr := env.Kube.CompleteJobs(ctx, ns)
+			if completeErr != nil {
+				fmt.Fprintf(env.Log, "could not read which Jobs completed: %v\n", completeErr)
+			}
 			var crashes, hookCrashes []string
 			if hookErr == nil {
 				crashes = ReadCrashes(ctx, env.Kube, ns, env.Log, func(containers []kube.Container) []string {
-					hooks := slices.DeleteFunc(slices.Clone(containers), func(c kube.Container) bool { return !hookJobs[c.Owner] })
-					hookCrashes = append(crashedSince(hooks, containersBefore, podsBefore, containersKnown), hookExits(hooks, podsBefore)...)
+					// Only the rollback's own hooks can make the rollback fail; a pre-upgrade hook
+					// pod left from the upgrade says nothing about it.
+					hooks := slices.DeleteFunc(slices.Clone(containers), func(c kube.Container) bool {
+						return !rollbackHook(hookJobs[c.Owner]) || complete[c.Owner]
+					})
+					hookCrashes = crashedSince(hooks, containersBefore, podsBefore, containersKnown)
+					if completeErr == nil {
+						hookCrashes = append(hookCrashes, hookExits(hooks, podsBefore)...)
+					}
 					if len(hookCrashes) > 0 {
 						return hookCrashes
 					}
-					containers = slices.DeleteFunc(containers, func(c kube.Container) bool { return hookJobs[c.Owner] })
+					containers = slices.DeleteFunc(containers, func(c kube.Container) bool { return hookJobs[c.Owner] != "" })
 					return crashedSince(containers, containersBefore, podsBefore, containersKnown)
 				})
 			}
@@ -226,10 +239,22 @@ func latestRevision(ctx context.Context, env *Env, release, ns string) (int, err
 	return revs[len(revs)-1].Revision, nil
 }
 
+// rollbackHook tells whether a helm.sh/hook value, such as "pre-upgrade,pre-rollback", names a
+// rollback hook.
+func rollbackHook(kinds string) bool {
+	for _, k := range strings.Split(kinds, ",") {
+		if k = strings.TrimSpace(k); k == "pre-rollback" || k == "post-rollback" {
+			return true
+		}
+	}
+	return false
+}
+
 // hookExits lists the containers of hook pods started since before the upgrade whose run ended in
 // an error without a restart. A hook Job with `restartPolicy: Never` retries in a new pod each
 // time, so its failed pods have no restart count and no waiting reason, and crashedSince does not
-// list them.
+// list them. A pod that Succeeded is left out: a sidecar stopped with 143 once the hook was done
+// is no failure. The caller leaves out the hooks of Jobs that completed.
 func hookExits(hooks []kube.Container, before []kube.Pod) []string {
 	old := map[string]bool{}
 	for _, p := range before {
@@ -237,7 +262,7 @@ func hookExits(hooks []kube.Container, before []kube.Pod) []string {
 	}
 	var failed []string
 	for _, c := range hooks {
-		if !old[c.PodUID] && c.Restarts == 0 && c.Waiting == "" && c.LastReason != "" && c.LastExit != 0 {
+		if !old[c.PodUID] && c.PodPhase != "Succeeded" && c.Restarts == 0 && c.Waiting == "" && c.LastReason != "" && c.LastExit != 0 {
 			failed = append(failed, describeContainer(c))
 		}
 	}
