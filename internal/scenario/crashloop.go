@@ -163,7 +163,7 @@ func ReadCrashes(ctx context.Context, k *kube.Client, ns string, log io.Writer, 
 
 // logStates writes what each container was doing when no read listed a crash, so a timeout that
 // stays INCONCLUSIVE says why in the run's log: still pulling its image, running, or between two
-// crashes (matrix-crashes-on-1-37 on Helm 3, 12 November).
+// crashes (matrix-crashes-on-1-37 under Helm 3 and 4, 12 November).
 func logStates(log io.Writer, containers []kube.Container) {
 	if len(containers) == 0 {
 		fmt.Fprintln(log, "after the timeout the release has no containers yet")

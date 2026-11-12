@@ -384,7 +384,7 @@ esac
 }
 
 // A timeout that stays INCONCLUSIVE because no read listed a crash says in the log what each
-// container was doing, so a flaky fixture explains itself (matrix-crashes-on-1-37 on Helm 3).
+// container was doing, so a flaky fixture explains itself (matrix-crashes-on-1-37, 12 November).
 func TestLogStatesSaysWhatTheContainersWereDoing(t *testing.T) {
 	var b strings.Builder
 	logStates(&b, []kube.Container{

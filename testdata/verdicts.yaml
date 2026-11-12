@@ -758,9 +758,9 @@ cases:
   # Its container exits 1 at start on 1.37 and runs on 1.36, so the install's --wait times out on a
   # crash loop on 1.37 only: HB-K8S-002 there, not INCONCLUSIVE (#49, #78). Its twin is the same
   # chart on 1.36 alone. A crash on every version tested is INCONCLUSIVE, which the unit tests cover.
-  # 2m, not 1m: Helm 3 waits out the whole timeout, and in CI a 1m wait sometimes ended before the
-  # container waited in CrashLoopBackOff, so no read saw a crash and 1.37 was INCONCLUSIVE (three
-  # runs on 12 November). Helm 4 stops at the first failed pod, so the longer wait costs it nothing.
+  # 2m, not 1m: in CI a 1m wait sometimes ended before the container waited in CrashLoopBackOff, so
+  # none of the three reads saw a crash and 1.37 was INCONCLUSIVE, under Helm 4 and Helm 3 alike
+  # (three runs on 12 November). That fits a slow image pull; the cause is open in its own issue.
   - name: matrix-crashes-on-1-37
     pair: k8s-crash
     role: defect
