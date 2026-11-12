@@ -3,7 +3,7 @@ package scenario
 import (
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 func TestChangeSeverity(t *testing.T) {
@@ -81,5 +81,66 @@ func TestDescribeNamesTheClass(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("describe[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// An added credential key counts as a switch only when a workload with persistent data reads it
+// after the upgrade and did not before (#54).
+func TestSwitchedTo(t *testing.T) {
+	added := []oracle.Change{
+		{Ref: "app-db/password", Kind: oracle.Added},  // StatefulSet/db moves to it
+		{Ref: "app-db/api-token", Kind: oracle.Added}, // read by db before too
+		{Ref: "app-web/password", Kind: oracle.Added}, // read by a Deployment without data
+		{Ref: "app-db/config", Kind: oracle.Added},    // not a credential
+	}
+	before := map[string][]string{"app-db/api-token": {"StatefulSet/db"}, "pre-made/password": {"StatefulSet/db"}}
+	after := map[string][]string{"app-db/password": {"StatefulSet/db"}, "app-db/api-token": {"StatefulSet/db"},
+		"app-web/password": {"Deployment/web"}, "app-db/config": {"StatefulSet/db"}}
+	stateful := map[string]bool{"StatefulSet/db": true}
+	switched, rest := switchedTo(added, before, after, stateful)
+	if len(switched) != 1 || switched[0].Ref != "app-db/password" || len(rest) != 3 {
+		t.Errorf("switched %v, rest %v; want only app-db/password switched", switched, rest)
+	}
+	if switched, rest := switchedTo(added, nil, after, stateful); len(switched) != 0 || len(rest) != 4 {
+		t.Errorf("without the readers from before: switched %v, rest %v; want none switched", switched, rest)
+	}
+}
+
+// A new key that a workload reads for the first time is a switch only when that workload existed
+// before and stopped reading a key, or a whole Secret, it read then (review of #143).
+func TestSwitchedToNeedsAKeyTheWorkloadStoppedReading(t *testing.T) {
+	stateful := map[string]bool{"StatefulSet/db": true, "StatefulSet/cache": true}
+	for name, c := range map[string]struct {
+		before, after map[string][]string
+		switched      bool
+	}{
+		// v2 adds a StatefulSet with its own volume: its data is created with the new value.
+		"a new workload": {
+			before: map[string][]string{"app/password": {"StatefulSet/db"}},
+			after:  map[string][]string{"app/password": {"StatefulSet/db"}, "app/password-v2": {"StatefulSet/cache"}},
+		},
+		// db keeps the key it read and reads the new one as well: nothing moved.
+		"reads both": {
+			before: map[string][]string{"app/password": {"StatefulSet/db"}},
+			after:  map[string][]string{"app/password": {"StatefulSet/db"}, "app/password-v2": {"StatefulSet/db"}},
+		},
+		"moved from one key to the other": {
+			before:   map[string][]string{"app/password": {"StatefulSet/db"}},
+			after:    map[string][]string{"app/password-v2": {"StatefulSet/db"}},
+			switched: true,
+		},
+		// envFrom: secretRef {{ existingSecret | default generated }} with existingSecret dropped.
+		"moved from a whole pre-made Secret": {
+			before:   map[string][]string{"pre-made/*": {"StatefulSet/db"}},
+			after:    map[string][]string{"app/password-v2": {"StatefulSet/db"}},
+			switched: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			switched, _ := switchedTo([]oracle.Change{{Ref: "app/password-v2", Kind: oracle.Added}}, c.before, c.after, stateful)
+			if got := len(switched) == 1; got != c.switched {
+				t.Errorf("switched = %v, want %v", switched, c.switched)
+			}
+		})
 	}
 }

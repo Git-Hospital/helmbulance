@@ -7,8 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
 
 const (
@@ -63,7 +64,7 @@ func writeCluster(t *testing.T, kc string) {
 	if err := os.WriteFile(c.Kubeconfig, []byte(kindConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.record(); err != nil {
+	if _, err := c.record(); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(c.Kubeconfig, []byte(kc), 0o600); err != nil {
@@ -278,4 +279,258 @@ func TestUnrecordedWithNoClusters(t *testing.T) {
 	if got, err := Unrecorded(t.Context(), &execx.Runner{}); err != nil || len(got) != 0 {
 		t.Errorf("Unrecorded = %v, %v; want none", got, err)
 	}
+}
+
+// Open checks the file once, but helm and kubectl read it again on every call. They get a pinned
+// copy with the sandbox's context, cluster and user only, so a use-context or a merge into the
+// kept file during the run cannot send them to another cluster (#47).
+func TestOpenGivesAPinnedOneContextCopy(t *testing.T) {
+	writeCluster(t, merged("kind-prod", sandbox))
+	c, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := filepath.Join(filepath.Dir(c.Kubeconfig), "kubeconfig")
+	if c.Kubeconfig == orig {
+		t.Fatalf("Open returned the shared kubeconfig %s, want a pinned copy", c.Kubeconfig)
+	}
+	b, err := os.ReadFile(c.Kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	for _, want := range []string{"current-context: " + sandbox, sandboxCA, "client-key-data: S0VZ"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("pinned copy lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "kind-prod") || strings.Contains(text, otherCA) {
+		t.Errorf("pinned copy keeps the other cluster:\n%s", text)
+	}
+	if fi, err := os.Stat(c.Kubeconfig); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("pinned copy mode %v, %v; want 0600", fi.Mode().Perm(), err)
+	}
+	// A use-context on the shared file after Open changes nothing for the run.
+	if err := os.WriteFile(orig, []byte(merged("kind-prod", "kind-prod")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fp, err := caFingerprint(c.Kubeconfig, name); err != nil || fp == "" {
+		t.Errorf("the pinned copy after a use-context on the shared file: %q, %v; want it to still name the sandbox", fp, err)
+	}
+}
+
+// While one run opens the cluster, another that reads the pinned copy sees a whole file, never an
+// empty one: an empty kubeconfig sends helm and kubectl to http://localhost:8080 (security review
+// of #142).
+func TestPinnedCopyIsNeverEmptyWhileItIsRewritten(t *testing.T) {
+	writeCluster(t, kindConfig)
+	c, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if _, err := Open(name); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}
+	}()
+	empty, missing := 0, 0
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
+		b, err := os.ReadFile(c.Kubeconfig)
+		switch {
+		case err != nil:
+			missing++
+		case len(b) == 0:
+			empty++
+		}
+	}
+	close(stop)
+	<-done
+	if empty > 0 || missing > 0 {
+		t.Errorf("read the pinned copy empty %d and missing %d times while it was rewritten", empty, missing)
+	}
+}
+
+// Over plain http, or with no server, TLS never runs and the CA proves nothing (security review of
+// #142).
+func TestOpenRefusesAServerWithoutTLS(t *testing.T) {
+	for _, server := range []string{"server: http://127.0.0.1:18089", ""} {
+		kc := strings.Replace(kindConfig, "server: https://127.0.0.1:41111", server, 1)
+		if kc == kindConfig {
+			t.Fatal("the fixture's server line changed")
+		}
+		refused(t, kc, "has no https server")
+	}
+}
+
+// The pinned copy hands the user entry to helm and kubectl as it is, so anything but the client
+// certificate and key kind writes is refused: an exec or auth-provider block would run a command
+// on every call, and a token or another identity would act as someone else (#155).
+func TestOpenRefusesUserEntriesKindNeverWrites(t *testing.T) {
+	const key = "    client-key-data: S0VZ\n"
+	for _, tc := range []struct{ add, why string }{
+		{"    exec:\n      apiVersion: client.authentication.k8s.io/v1\n      command: /bin/sh\n      args: [-c, 'touch /tmp/pwned']\n", "has exec, which kind never writes"},
+		{"    auth-provider:\n      name: oidc\n", "has auth-provider"},
+		{"    token: abc\n", "has token"},
+		{"    tokenFile: /var/run/token\n", "has tokenFile"},
+		{"    username: admin\n    password: admin\n", "has password, username"},
+		{"    as: system:admin\n", "has as"},
+		{"    client-certificate: /etc/cert.pem\n", "has client-certificate,"},
+		{"  extra: 1\n", "has extra"},
+	} {
+		kc := strings.Replace(kindConfig, key, key+tc.add, 1)
+		if kc == kindConfig {
+			t.Fatal("the fixture's client-key-data line changed")
+		}
+		refused(t, kc, tc.why)
+	}
+	refused(t, strings.Replace(kindConfig, "  user:\n    client-certificate-data: Q0VSVA==\n"+key, "  user: oops\n", 1), "is not a mapping")
+}
+
+// The context and cluster entries are copied as they are too, so they hold only what kind writes:
+// a proxy-url would send the run through another host (security review of #156). The user must
+// have both of kind's keys, or kubectl asks for a password.
+func TestOpenRefusesClusterAndContextEntriesKindNeverWrites(t *testing.T) {
+	for _, tc := range []struct{ old, new, why string }{
+		{"    server: https://127.0.0.1:41111\n", "    server: https://127.0.0.1:41111\n    proxy-url: http://127.0.0.1:47999\n", `cluster "kind-helmbulance-1a2b3c4d" has proxy-url`},
+		{"    server: https://127.0.0.1:41111\n", "    server: https://127.0.0.1:41111\n    tls-server-name: other\n", "has tls-server-name"},
+		{"    user: " + sandbox + "\n", "    user: " + sandbox + "\n    namespace: kube-system\n", `context "kind-helmbulance-1a2b3c4d" has namespace`},
+		{"    client-key-data: S0VZ\n", "", "has no client-key-data, which kind always writes"},
+		{"  user:\n    client-certificate-data: Q0VSVA==\n    client-key-data: S0VZ\n", "  user: null\n", "is not a mapping"},
+	} {
+		kc := strings.Replace(kindConfig, tc.old, tc.new, 1)
+		if kc == kindConfig {
+			t.Fatalf("the fixture has no %q", tc.old)
+		}
+		refused(t, kc, tc.why)
+	}
+}
+
+// reserved is the cluster NewCluster would reserve, under the fixed name the fixtures use.
+func reserved(t *testing.T) *Cluster {
+	t.Helper()
+	c, err := clusterFiles(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(c.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// A new cluster gets the pinned copy too, not the file kind wrote: helm and kubectl read it on
+// every call, so a use-context or a merge into that file during the run would reach them
+// (security review of #156; Open has done this since #47).
+func TestCreateGivesAPinnedCopy(t *testing.T) {
+	fakeKind(t, merged("kind-prod", sandbox), 0)
+	c := reserved(t)
+	if err := c.Create(t.Context(), &execx.Runner{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(c.Kubeconfig) != "kubeconfig.pinned" {
+		t.Fatalf("Kubeconfig = %s, want the pinned copy", c.Kubeconfig)
+	}
+	b, err := os.ReadFile(c.Kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "kind-prod") {
+		t.Errorf("the pinned copy keeps the other cluster:\n%s", b)
+	}
+	kept := filepath.Join(filepath.Dir(c.Kubeconfig), "kubeconfig")
+	if err := os.WriteFile(kept, []byte(merged("kind-prod", "kind-prod")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := caFingerprint(c.Kubeconfig, name); err != nil {
+		t.Errorf("the pinned copy after a use-context on the kept file: %v", err)
+	}
+}
+
+// The file kind wrote goes through the same entry checks, and a cluster that fails them is deleted.
+func TestCreateDeletesAClusterWhoseKubeconfigHasAnExecUser(t *testing.T) {
+	const key = "    client-key-data: S0VZ\n"
+	calls := fakeKind(t, strings.Replace(kindConfig, key, key+"    exec:\n      command: /bin/sh\n", 1), 0)
+	c := reserved(t)
+	if err := c.Create(t.Context(), &execx.Runner{}, ""); err == nil || !strings.Contains(err.Error(), "has exec") {
+		t.Fatalf("Create = %v, want an error with %q", err, "has exec")
+	}
+	if b, _ := os.ReadFile(calls); !strings.Contains(string(b), "delete cluster --name "+name) {
+		t.Errorf("kind calls:\n%s\nwant a delete of %s", b, name)
+	}
+}
+
+// pin takes the sandbox's context by its name, not the file's current-context: a use-context
+// between Open's check and pin must not decide what the copy holds (review of #142).
+func TestPinSelectsTheContextByName(t *testing.T) {
+	dir := t.TempDir()
+	kept := filepath.Join(dir, "kubeconfig")
+	if err := os.WriteFile(kept, []byte(merged("kind-prod", "kind-prod")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := pin(kept, sandbox, func(string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(b); !strings.Contains(text, "current-context: "+sandbox) || !strings.Contains(text, sandboxCA) ||
+		strings.Contains(text, "kind-prod") || strings.Contains(text, otherCA) {
+		t.Errorf("pinned copy of a file on kind-prod:\n%s\nwant the sandbox's context, cluster and user only", text)
+	}
+}
+
+// A copy that fails its check is never renamed into place: the copy a run already uses stays as it
+// was, and no temporary file is left (review of #142).
+func TestPinKeepsTheOldCopyWhenTheNewOneFailsItsCheck(t *testing.T) {
+	dir := t.TempDir()
+	kept := filepath.Join(dir, "kubeconfig")
+	if err := os.WriteFile(kept, []byte(kindConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := pin(kept, sandbox, func(string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	good, _ := os.ReadFile(pinned)
+	// The kept file changes between Open's check and pin: another CA.
+	if err := os.WriteFile(kept, []byte(strings.ReplaceAll(kindConfig, sandboxCA, otherCA)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = pin(kept, sandbox, func(p string) error {
+		if !strings.Contains(string(mustRead(t, p)), sandboxCA) {
+			return fmt.Errorf("does not match the recorded CA")
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("pin accepted a copy that failed its check")
+	}
+	if now, _ := os.ReadFile(pinned); string(now) != string(good) {
+		t.Errorf("the pinned copy was replaced by one that failed its check:\n%s", now)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".kubeconfig.pinned-*")); len(left) > 0 {
+		t.Errorf("temporary files left: %v", left)
+	}
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

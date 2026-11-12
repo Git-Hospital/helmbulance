@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/sandbox"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/sandbox"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // NodeImages are the kind node images for kind v0.33, pinned by digest.
@@ -58,8 +58,17 @@ type Options struct {
 // Helm's own "WARNING:" notices (a group-readable kubeconfig) are not API warnings.
 var warningLine = regexp.MustCompile(`warnings\.go:\d+\] (.*)|^Warning: (.*)`)
 
-// deprecation matches a warning about an API version that is deprecated or removed.
-var deprecation = regexp.MustCompile(`(?i)\bdeprecated\b|\bunavailable in\b|\bremoved in\b`)
+// deprecation matches the API server's warning about an API version that is deprecated or removed,
+// "<group/version> <Kind> is deprecated in v1.N+[, unavailable in v1.M+][; use …]". For a CRD version
+// marked deprecated the default warning has no Kubernetes version, "<group/version> <Kind> is
+// deprecated[; use …]", and the version goes away when the operator stops serving it, so it counts
+// too. A warning about a field or an annotation, "metadata.annotations[…]: deprecated since v1.19,
+// non-functional in v1.25+", is not one: the object still installs, so it is HB-K8S-004 (#56).
+var deprecation = regexp.MustCompile(`^(API warning: )?\S+ \S+ is (deprecated|removed|unavailable)( in v\d|;|$)`)
+
+// kubeVersionRefused matches helm refusing a chart whose Chart.yaml kubeVersion excludes the
+// cluster: "chart requires kubeVersion: >=1.36.0-0 which is incompatible with Kubernetes v1.34.11".
+var kubeVersionRefused = regexp.MustCompile(`chart requires kubeVersion: (.*?) which is incompatible with Kubernetes`)
 
 // Run checks the chart on one Kubernetes version and removes the cluster afterwards.
 func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
@@ -92,17 +101,13 @@ func Run(ctx context.Context, version string, o Options) (res scenario.Result) {
 
 	mark := len(o.Runner.Transcript())
 	stderr, err := h.InstallCapture(ctx, release, ns, o.Chart, o.Values)
-	repro := []string{"kind create cluster --image " + image, reproLine(o.Runner.Transcript()[mark].Line)}
+	repro := []string{"kind create cluster --image " + image, execx.ReproLine(o.Runner.Transcript()[mark].Line)}
 	warnings := apiWarnings(stderr)
 
 	if err != nil {
 		var crashes []string
 		if scenario.TimedOutWaiting(ctx, err) {
-			containers, readErr := k.Containers(ctx, ns)
-			if readErr != nil {
-				fmt.Fprintf(o.Log, "could not read containers after the timeout: %v\n", readErr)
-			}
-			crashes = scenario.StartFailures(containers)
+			crashes = scenario.ReadCrashes(ctx, k, ns, o.Log, scenario.StartFailures)
 		}
 		return installFailed(ctx, res, version, err, crashes, warnings, repro)
 	}
@@ -283,6 +288,13 @@ func installFailed(ctx context.Context, res scenario.Result, version string, err
 		res.Summary = "the install did not finish on Kubernetes " + version + ": " + helmMessage(err)
 		return res
 	}
+	// The chart says it does not support this version, and helm keeps to that: not a defect of the
+	// chart on this version, and nothing was tested (#56).
+	if m := kubeVersionRefused.FindStringSubmatch(err.Error()); m != nil {
+		res.Verdict = scenario.Skipped
+		res.Summary = "the chart's kubeVersion (" + m[1] + ") excludes Kubernetes " + version + ", so helm does not install it there"
+		return res
+	}
 	res.Verdict = scenario.Fail
 	res.Summary = "does not install on Kubernetes " + version
 	res.Findings = append(res.Findings, scenario.Finding{
@@ -402,16 +414,6 @@ func notReady(pods []kube.Pod) []string {
 		}
 	}
 	return bad
-}
-
-func reproLine(line string) string {
-	fields := strings.Fields(line)
-	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] == "--kubeconfig" {
-			fields[i+1] = "$KUBECONFIG"
-		}
-	}
-	return strings.Join(fields, " ")
 }
 
 func helmMessage(err error) string {

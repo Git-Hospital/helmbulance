@@ -6,8 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // ChartUpgrade installs an earlier version of the chart and upgrades it to the chart under test,
@@ -30,8 +31,8 @@ func (ChartUpgrade) Description() string {
 func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	res.Scenario = s.Name()
 	if env.FromVersion == "" {
-		res.Verdict = Inconclusive
-		res.Summary = "skipped: give --from-version to say which version users upgrade from"
+		res.Verdict = Skipped
+		res.Summary = "no earlier version: give --from-version to say which version users upgrade from"
 		return res
 	}
 	from := env.From
@@ -42,13 +43,11 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	defer func() {
 		ctx, cancel := cleanupContext(ctx)
 		defer cancel()
-		if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
-		if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
-			fmt.Fprintf(env.Log, "cleanup: %v\n", err)
-		}
+		cleanUp(ctx, env, release, ns)
 	}()
+
+	// Runs before the cleanup above, while the release still exists (#115).
+	defer recordPodSecurity(ctx, env, ns, &res)
 
 	if err := startClean(ctx, env, release, ns); err != nil {
 		return inconclusive(res, "could not clear what an earlier run left", err)
@@ -57,7 +56,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	if err := env.Helm.Install(ctx, release, ns, from, env.Values, "--version", env.FromVersion); err != nil {
 		return inconclusive(res, "the earlier version did not install", err)
 	}
-	repro := []string{reproLine(env.Runner.Transcript()[mark].Line)}
+	repro := []string{execx.ReproLine(env.Runner.Transcript()[mark].Line)}
 	// fromV is the version helm resolved, which differs from --from-version for a range like ~1.2.
 	fromV, err := installedFrom(ctx, env, release, ns)
 	if err != nil {
@@ -97,8 +96,15 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 
 	// Treatment: the version under test.
 	mark = len(env.Runner.Transcript())
+	// Who reads which key on the earlier version, so a workload the new version points at a new
+	// key can be told from one that only gained a key (#54).
+	readersBefore, err := env.Kube.SecretConsumers(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not map Secret consumers before the upgrade: %v\n", err)
+		readersBefore = nil
+	}
 	upgradeErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values)
-	repro = append(repro, reproLine(env.Runner.Transcript()[mark].Line))
+	repro = append(repro, execx.ReproLine(env.Runner.Transcript()[mark].Line))
 	// A new version whose pods crash ends in the same `--wait` timeout as a slow machine. The
 	// release was applied, so its containers say which it was: a crash or a container that cannot
 	// start is the chart's failure (D4); anything else stays INCONCLUSIVE (#28).
@@ -106,8 +112,8 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		if crashes := crashesAfterTimeout(ctx, env, ns, podsBefore, containersBefore, containersKnown); len(crashes) > 0 {
 			return upgradeFails(res, fromV, repro,
 				append([]string{"`helm upgrade --wait` timed out while containers of the new version crashed or could not start: " + helmMessage(upgradeErr)}, crashes...),
-				"Read the crashed container's logs (`kubectl logs --previous`) and the pod events in the "+
-					"failure bundle. Typical causes are a setting the new version requires, a changed command "+
+				"Keep the cluster with --keep-cluster, run the Reproduce commands on it, then read the crashed container's logs (`kubectl logs --previous`) and the pod events "+
+					"(`kubectl get events`). Typical causes are a setting the new version requires, a changed command "+
 					"or port, a probe that fails, or a Secret or ConfigMap key the new version reads but the "+
 					"chart does not create.")
 		}
@@ -149,6 +155,8 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	rest, moved := oracle.Moved(control, upgraded, withoutRefs(oracle.Diff(control, upgraded), regenerated))
 	moved, back := unpairStillRead(moved, consumers)
 	changes, added := splitAdded(append(rest, back...))
+	switched, added := switchedTo(added, readersBefore, consumers, stateful)
+	changes = append(changes, switched...)
 	changes, rotated := splitExpected(changes, env.ExpectedRotation)
 	if len(changes) > 0 {
 		res.Findings = append(res.Findings, Finding{
@@ -157,14 +165,14 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 			Severity: worstSeverity(changes, consumers, stateful, statefulKnown),
 			Evidence: describe(changes, consumers),
 			Impact: "After the upgrade the application gets different credentials or keys than the " +
-				"ones its data was created with, or loses them.",
+				"ones its data was created with, or loses them." + switchedImpact(switched, "such as a key the new version reads in place of the old one"),
 			Fix: "Keep the Secret names and keys of earlier versions, or migrate the stored value " +
 				"(read the old Secret with `lookup` and carry it over) and say so in the release notes.",
 			Reproduce: repro,
 		})
 	}
 
-	unhealthy, healthErr := unhealthyAfter(ctx, env, podsBefore, podsUpgraded, jobsBefore)
+	unhealthy, healthErr := unhealthyAfter(ctx, env, ns, podsBefore, podsUpgraded, jobsBefore)
 	if len(unhealthy) > 0 {
 		res.Findings = append(res.Findings, Finding{
 			ID:        "HB-CU-003",
@@ -172,7 +180,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 			Severity:  "high",
 			Evidence:  unhealthy,
 			Impact:    "The upgrade completed, but parts of the application are not ready or keep restarting.",
-			Fix:       "Read the pod logs and events in the failure bundle; typical causes are a removed setting the app still needs, a migration that fails, or a changed port or probe.",
+			Fix:       "Keep the cluster with --keep-cluster, run the Reproduce commands on it, then read the pod logs and events (`kubectl logs`, `kubectl get events`); typical causes are a removed setting the app still needs, a migration that fails, or a changed port or probe.",
 			Reproduce: repro,
 		})
 	}
@@ -194,6 +202,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		note("keys added by the new version, not a finding", describe(added, consumers)),
 		note("values moved to another key, not a finding", describe(moved, consumers)),
 		note("rotated as expected (--expected-rotation)", describe(rotated, consumers)),
+		note("not compared, since they change on every upgrade of "+fromV+" too (upgrade-without-values)", describe(regenerated, consumers)),
 		unknownStatefulNote(statefulKnown, changes),
 		secrets.notComparedNote())
 	if healthErr != nil {
@@ -236,7 +245,7 @@ func upgradeFails(res Result, fromV string, repro, evidence []string, fix string
 // that sees it (upgraded, read as soon as helm --wait returned, or else the first Settle read), and
 // no lower than its workload's pods before the upgrade, since restarts during its own startup are
 // not the upgrade's doing; matrix counts the same way.
-func unhealthyAfter(ctx context.Context, env *Env, before, upgraded []kube.Pod, jobsBefore []string) ([]string, error) {
+func unhealthyAfter(ctx context.Context, env *Env, ns string, before, upgraded []kube.Pod, jobsBefore []string) ([]string, error) {
 	baseline := map[string]int{}
 	// A new pod starts no lower than its workload's pods did before the upgrade: a pod that crashes
 	// once on its first start in both versions is the app's startup, however early it is read.
@@ -254,12 +263,12 @@ func unhealthyAfter(ctx context.Context, env *Env, before, upgraded []kube.Pod, 
 	}
 	firstSeen(upgraded)
 	return Settle(ctx, func() ([]string, error) {
-		pods, err := env.Kube.Pods(ctx, chartUpgradeNamespace)
+		pods, err := env.Kube.Pods(ctx, ns)
 		if err != nil {
 			return nil, fmt.Errorf("could not read pods: %w", err)
 		}
 		firstSeen(pods)
-		jobs, err := env.Kube.FailedJobs(ctx, chartUpgradeNamespace)
+		jobs, err := env.Kube.FailedJobs(ctx, ns)
 		if err != nil {
 			return nil, fmt.Errorf("could not read Jobs: %w", err)
 		}

@@ -3,13 +3,15 @@ package scenario
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strings"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // Verdicts. A scenario that cannot finish (install fails, timeout) is Inconclusive, never Fail:
@@ -68,6 +70,16 @@ type Result struct {
 	// whose --wait timed out with no crash: its findings say nothing about whether the chart runs.
 	// matrix reads it across versions; it is not part of the report.
 	HealthUnchecked bool `json:"-"`
+	// PodSecurity is the Pod Security level the release's pods reached, as information: it is no
+	// finding and changes no verdict (#115). nil when it was not read.
+	PodSecurity *PodSecurity `json:"podSecurity,omitempty"`
+}
+
+// PodSecurity is the level a release's pods reach (restricted, baseline or privileged) and the API
+// server's lines for the pods that keep them from the next stricter level.
+type PodSecurity struct {
+	Level      string   `json:"level"`
+	Violations []string `json:"violations,omitempty"`
 }
 
 // Scenario is one day-two situation tested against a live release.
@@ -86,12 +98,62 @@ func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 }
 
+// recordPodSecurity reads the Pod Security level the release's pods reach and puts it in res. A
+// scenario defers it after its cleanup, so it runs first, while the release still exists. It reads
+// nothing after an interrupt or a SKIPPED run, and a read that fails is logged, not reported.
+func recordPodSecurity(ctx context.Context, env *Env, ns string, res *Result) {
+	if ctx.Err() != nil || res.Verdict == Skipped {
+		return
+	}
+	level, violations, err := env.Kube.PodSecurityLevel(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not read the Pod Security level: %v\n", err)
+		return
+	}
+	if level != "" {
+		res.PodSecurity = &PodSecurity{Level: level, Violations: violations}
+	}
+}
+
 // startClean removes what an earlier run left under these fixed names, when it was killed before
 // its cleanup (kill -9, a second Ctrl-C), so the next run on a reused --cluster starts from nothing
 // (#11). The uninstall comes first for the release's cluster-scoped objects, and fails harmlessly
 // when there is no release; deleting the namespace takes the rest, Helm's release record included.
-// --cluster only accepts a sandbox Helmbulance created, so these names are its own.
+// --cluster only accepts a sandbox Helmbulance created, so these names are its own. Last go the
+// cluster-scoped objects any scenario's release kept, since the run that left them may have been
+// killed before its own cleanup (#52).
 func startClean(ctx context.Context, env *Env, release, ns string) error {
 	_ = env.Helm.Uninstall(ctx, release, ns)
-	return env.Kube.DeleteNamespace(ctx, ns)
+	if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
+		return err
+	}
+	return deleteKept(ctx, env, func(ns string) bool { return strings.HasPrefix(ns, "hb-") })
+}
+
+// cleanUp removes the scenario's release and namespace, and the cluster-scoped objects the release
+// kept with helm.sh/resource-policy: keep, which outlive both: the next scenario installs under
+// another release name, and Helm refuses an object that names the old one (#52). It runs to the
+// end and logs what fails, so one error does not leave the rest behind.
+func cleanUp(ctx context.Context, env *Env, release, ns string) {
+	if err := env.Helm.Uninstall(ctx, release, ns); err != nil {
+		fmt.Fprintf(env.Log, "cleanup: %v\n", err)
+	}
+	if err := env.Kube.DeleteNamespace(ctx, ns); err != nil {
+		fmt.Fprintf(env.Log, "cleanup: %v\n", err)
+	}
+	if err := deleteKept(ctx, env, func(n string) bool { return n == ns }); err != nil {
+		fmt.Fprintf(env.Log, "cleanup: %v\n", err)
+	}
+}
+
+// deleteKept deletes the cluster-scoped objects Helm made for a release in a namespace mine accepts.
+func deleteKept(ctx context.Context, env *Env, mine func(ns string) bool) error {
+	refs, err := env.Kube.HelmClusterObjects(ctx, mine)
+	if err != nil {
+		return err
+	}
+	if len(refs) > 0 {
+		fmt.Fprintf(env.Log, "deleting cluster-scoped objects a release kept: %s\n", strings.Join(refs, ", "))
+	}
+	return env.Kube.DeleteObjects(ctx, refs)
 }

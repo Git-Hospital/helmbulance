@@ -16,9 +16,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // Options is what a scan needs.
@@ -46,6 +46,7 @@ func Run(ctx context.Context, o Options) []scenario.Result {
 type object struct {
 	Kind, Name, Source string
 	Hook               bool
+	HookEvents         string // the helm.sh/hook annotation, for a hook
 	Doc                map[string]any
 }
 
@@ -75,8 +76,8 @@ func render(ctx context.Context, o Options, chart string, extra ...string) ([]ob
 		}
 		meta, _ := doc["metadata"].(map[string]any)
 		ann, _ := meta["annotations"].(map[string]any)
-		_, hook := ann["helm.sh/hook"]
-		obj := object{Kind: str(doc["kind"]), Name: str(meta["name"]), Hook: hook, Doc: doc}
+		events, hook := ann["helm.sh/hook"]
+		obj := object{Kind: str(doc["kind"]), Name: str(meta["name"]), Hook: hook, HookEvents: str(events), Doc: doc}
 		if m := sourceLine.FindStringSubmatch(raw); m != nil {
 			obj.Source = m[1]
 		}
@@ -110,27 +111,9 @@ func immutableFields(ctx context.Context, o Options) (res scenario.Result) {
 		res.Summary = "could not render the chart: " + err.Error()
 		return res
 	}
-	byKey := map[string]object{}
-	for _, c := range cur {
-		byKey[c.Kind+"/"+c.Name] = c
-	}
-	var evidence []string
-	for _, a := range old {
-		b, ok := byKey[a.Kind+"/"+a.Name]
-		if !ok || a.Hook || b.Hook {
-			continue
-		}
-		// A Job named after .Release.Revision gets a new name on every real upgrade; both renders
-		// here use revision 1, so comparing them would be a false alarm.
-		if a.Kind == "Job" && sourceContains(o.Chart, b.Source, "Release.Revision") {
-			continue
-		}
-		for _, field := range immutablePaths(a.Kind) {
-			if !reflect.DeepEqual(dig(a.Doc, field), dig(b.Doc, field)) {
-				evidence = append(evidence, fmt.Sprintf("`%s/%s` %s changes (%s)", a.Kind, a.Name, strings.Join(field, "."), b.Source))
-			}
-		}
-	}
+	evidence := immutableChanges(old, cur, func(source string) bool {
+		return sourceContains(o.Chart, source, "Release.Revision")
+	})
 	if len(evidence) == 0 {
 		res.Verdict = scenario.Pass
 		res.Summary = "no immutable field changes from " + o.FromVersion
@@ -151,11 +134,58 @@ func immutableFields(ctx context.Context, o Options) (res scenario.Result) {
 	return res
 }
 
+// withHelpers is text followed by the bodies of the helpers it includes, and of the helpers those
+// include, each once.
+func withHelpers(text string, helpers map[string]string) string {
+	seen := map[string]bool{}
+	out := text
+	for todo := text; todo != ""; {
+		var next string
+		for _, inc := range includeOf.FindAllStringSubmatch(todo, -1) {
+			if body, ok := helpers[inc[1]]; ok && !seen[inc[1]] {
+				seen[inc[1]] = true
+				out += "\n" + body
+				next += "\n" + body
+			}
+		}
+		todo = next
+	}
+	return out
+}
+
 func fromFlag(from string) string {
 	if from == "" {
 		return ""
 	}
 	return " --from " + from
+}
+
+// immutableChanges lists the immutable fields that differ between an object of the earlier
+// version (old) and the same object in the chart under test (cur). byRevision reports whether a
+// template names its object after .Release.Revision.
+func immutableChanges(old, cur []object, byRevision func(source string) bool) []string {
+	byKey := map[string]object{}
+	for _, c := range cur {
+		byKey[c.Kind+"/"+c.Name] = c
+	}
+	var evidence []string
+	for _, a := range old {
+		b, ok := byKey[a.Kind+"/"+a.Name]
+		if !ok || a.Hook || b.Hook {
+			continue
+		}
+		// A Job named after .Release.Revision gets a new name on every real upgrade; both renders
+		// here use revision 1, so comparing them would be a false alarm.
+		if a.Kind == "Job" && byRevision(b.Source) {
+			continue
+		}
+		for _, field := range immutablePaths(a.Kind) {
+			if !reflect.DeepEqual(withDefault(a.Kind, field, dig(a.Doc, field)), withDefault(a.Kind, field, dig(b.Doc, field))) {
+				evidence = append(evidence, fmt.Sprintf("`%s/%s` %s changes (%s)", a.Kind, a.Name, strings.Join(field, "."), b.Source))
+			}
+		}
+	}
+	return evidence
 }
 
 func immutablePaths(kind string) [][]string {
@@ -168,13 +198,34 @@ func immutablePaths(kind string) [][]string {
 		return [][]string{{"spec", "template"}}
 	case "PersistentVolumeClaim":
 		return [][]string{{"spec", "accessModes"}, {"spec", "storageClassName"}}
+	case "RoleBinding", "ClusterRoleBinding":
+		return [][]string{{"roleRef"}}
+	case "Service":
+		return [][]string{{"spec", "clusterIP"}}
 	}
 	return nil
 }
 
+// apiDefaults are the values the API server fills in for an immutable field left out, so that
+// writing the default out in one version and leaving it out in the other is not a change (#56).
+var apiDefaults = map[string]any{
+	"StatefulSet spec.podManagementPolicy": "OrderedReady",
+	"Service spec.clusterIP":               "", // assigned by the API server
+}
+
+func withDefault(kind string, field []string, v any) any {
+	if d, ok := apiDefaults[kind+" "+strings.Join(field, ".")]; ok && v == nil {
+		return d
+	}
+	return v
+}
+
 var (
-	randomFn   = regexp.MustCompile(`\b(randAlphaNum|randAlpha|randAscii|randNumeric|randBytes|uuidv4|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b`)
-	checksumOf = regexp.MustCompile(`include\s*\(\s*print\s+\$?\.Template\.BasePath\s+"([^"]+)"\s*\)[^}]*?sha256sum`)
+	randomFn = regexp.MustCompile(`\b(randAlphaNum|randAlpha|randAscii|randNumeric|randBytes|uuidv4|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b`)
+	// checksumOf matches the two ways a template names another for its checksum:
+	// include (print $.Template.BasePath "/secret.yaml") and
+	// include (printf "%s/secret.yaml" $.Template.BasePath), each piped to sha256sum (#56).
+	checksumOf = regexp.MustCompile(`include\s*\(\s*(?:print\s+\$?\.Template\.BasePath\s+"([^"]+)"|printf\s+"%s([^"]+)"\s+\$?\.Template\.BasePath)\s*\)[^}]*?sha256sum`)
 	includeOf  = regexp.MustCompile(`include\s+"([^"]+)"`)
 	defineOf   = regexp.MustCompile(`(?s)\{\{-?\s*define\s+"([^"]+)"\s*-?\}\}(.*?)\{\{-?\s*end\s*-?\}\}`)
 )
@@ -208,8 +259,14 @@ func firstUpgradeRestart(o Options) (res scenario.Result) {
 	}
 	var evidence []string
 	for name, text := range files {
-		for _, m := range checksumOf.FindAllStringSubmatch(text, -1) {
-			target := strings.TrimPrefix(m[1], "/")
+		// Files whose name starts with _ render nothing; their helpers count where they are included.
+		if strings.HasPrefix(filepath.Base(name), "_") {
+			continue
+		}
+		// A checksum can sit in a helper the template includes, such as
+		// checksum/config: {{ include "app.configChecksum" . }}.
+		for _, m := range checksumOf.FindAllStringSubmatch(withHelpers(text, helpers), -1) {
+			target := strings.TrimPrefix(m[1]+m[2], "/")
 			body, ok := files[target]
 			if !ok {
 				continue
@@ -242,33 +299,102 @@ func firstUpgradeRestart(o Options) (res scenario.Result) {
 	return res
 }
 
-// regeneratedSecrets renders the chart twice and lists Secret keys that differ, in Secrets that are
-// not hooks and whose template does not use lookup: they get a new value on every upgrade.
+// regeneratedSecrets renders the chart twice as an install and once as an upgrade, and lists the
+// Secret keys that differ between the two installs, in Secrets whose template does not use lookup.
+// Which scenario confirms one depends on when Helm renders it: a Secret Helm renders on upgrade
+// gets a new value on every upgrade (HB-SCAN-003, upgrade-without-values), while one Helm renders
+// only at install, under .Release.IsInstall or in an install-only hook, keeps its first value under
+// Helm and gets a new one on every Argo CD sync (HB-SCAN-006, gitops-render; #86).
+//
+// Some charts refuse to render as an upgrade on purpose (Bitnami's "PASSWORDS ERROR" without the
+// current passwords). Then hooks are still sorted by their annotation, and every other Secret goes
+// to HB-SCAN-003 as it did before #107, with a note: one rendered only at install cannot be told
+// apart without the upgrade render.
 func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 	res.Scenario = "scan:regenerated-secrets"
-	a, err := render(ctx, o, o.Chart)
-	if err != nil {
-		res.Verdict = scenario.Inconclusive
-		res.Summary = "could not render the chart: " + err.Error()
+	var installs [2][]object
+	for i := range installs {
+		objs, err := render(ctx, o, o.Chart)
+		if err != nil {
+			res.Verdict = scenario.Inconclusive
+			res.Summary = "could not render the chart: " + err.Error()
+			return res
+		}
+		installs[i] = objs
+	}
+	var upgraded map[string]bool // nil: the chart did not render as an upgrade
+	note := ""
+	if objs, err := render(ctx, o, o.Chart, "--is-upgrade"); err != nil {
+		note = "; the chart does not render as an upgrade (" + helmError(err.Error()) + "), so a Secret rendered only at install is not told apart from one rendered on upgrade"
+	} else {
+		upgraded = map[string]bool{}
+		for _, x := range objs {
+			upgraded[x.Kind+"/"+x.Name] = true
+		}
+	}
+	usesLookup, readable := lookupChecker(o.Chart)
+	onUpgrade, onSync, guarded := regenerated(installs[0], installs[1], upgraded, usesLookup)
+	// A Secret that calls lookup is left out as a whole: whether lookup keeps every key that differs
+	// only shows on a cluster, where upgrade-without-values compares them one by one (#51).
+	if len(guarded) > 0 {
+		note += fmt.Sprintf("; %d Secret(s) that use `lookup` differ between two renders and are left out (%s): only `helmbulance test` checks which keys lookup keeps",
+			len(guarded), strings.Join(guarded, ", "))
+	}
+	if !readable {
+		note += "; the chart's templates could not be read, so no Secret that uses `lookup` was left out"
+	}
+	if len(onUpgrade)+len(onSync) == 0 {
+		res.Verdict = scenario.Pass
+		res.Summary = "no Secret value is generated anew on every render" + note
+		if len(guarded) > 0 {
+			res.Summary = "no Secret without `lookup` has values generated anew on every render" + note
+		}
 		return res
 	}
-	b, err := render(ctx, o, o.Chart)
-	if err != nil {
-		res.Verdict = scenario.Inconclusive
-		res.Summary = "could not render the chart: " + err.Error()
-		return res
+	res.Verdict = scenario.Fail
+	res.Summary = fmt.Sprintf("%d Secret(s) with values generated on every render (candidates)", len(onUpgrade)+len(onSync)) + note
+	if len(onUpgrade) > 0 {
+		res.Findings = append(res.Findings, scenario.Finding{
+			ID:        "HB-SCAN-003",
+			Title:     "Candidate: Secret values are generated anew on every upgrade",
+			Severity:  "candidate",
+			Evidence:  onUpgrade,
+			Impact:    "If confirmed, every `helm upgrade` replaces these values: credentials stop matching what the data was created with, and pods that hash the Secret restart.",
+			Fix:       "Keep generated values with `lookup`, and support an existingSecret for tools that render without cluster access. A pre-install hook keeps the value under Helm but not under Argo CD, which runs the hook on every sync (HB-GR-001).",
+			Reproduce: []string{fmt.Sprintf("helmbulance test %s --scenario upgrade-without-values   # HB-UV-001", o.Chart)},
+		})
 	}
+	if len(onSync) > 0 {
+		res.Findings = append(res.Findings, scenario.Finding{
+			ID:        "HB-SCAN-006",
+			Title:     "Candidate: Secret values are generated anew on every GitOps sync",
+			Severity:  "candidate",
+			Evidence:  onSync,
+			Impact:    "If confirmed, Helm keeps the first value, but Argo CD and other tools that render with `helm template` render every sync as an install and run install hooks each time, so each sync writes a value the running release does not use.",
+			Fix:       "Take the value from values or an existingSecret. For a hook, an ignoreDifferences entry does not help: Argo CD applies hooks on every sync, outside the diff.",
+			Reproduce: []string{fmt.Sprintf("helmbulance test %s --scenario gitops-render   # HB-GR-001", o.Chart)},
+		})
+	}
+	return res
+}
+
+// regenerated compares two install renders (a, b) of the Secrets and sorts the keys that differ by
+// when Helm renders them: onUpgrade for a Secret Helm renders on upgrade, onSync for one only an
+// install renders. upgraded holds the objects of the upgrade render ("Secret/name"); nil means the
+// chart did not render as an upgrade, and then only hooks can be told apart, by their annotation.
+// A Secret whose template uses lookup is left out, and so is a hook that runs neither at install
+// nor at upgrade (test, delete, rollback).
+func regenerated(a, b []object, upgraded map[string]bool, usesLookup func(source string) bool) (onUpgrade, onSync, guarded []string) {
 	second := map[string]object{}
 	for _, x := range b {
 		second[x.Kind+"/"+x.Name] = x
 	}
-	var evidence []string
 	for _, x := range a {
-		if x.Kind != "Secret" || x.Hook {
+		if x.Kind != "Secret" {
 			continue
 		}
 		y, ok := second["Secret/"+x.Name]
-		if !ok || sourceUsesLookup(o.Chart, x.Source) {
+		if !ok {
 			continue
 		}
 		var changed []string
@@ -281,29 +407,31 @@ func regeneratedSecrets(ctx context.Context, o Options) (res scenario.Result) {
 				}
 			}
 		}
-		if len(changed) > 0 {
-			sort.Strings(changed)
-			evidence = append(evidence, fmt.Sprintf("`Secret/%s` keys %s differ between two renders (%s)", x.Name, strings.Join(changed, ", "), x.Source))
+		if len(changed) == 0 {
+			continue
+		}
+		if usesLookup(x.Source) {
+			guarded = append(guarded, "`Secret/"+x.Name+"`")
+			continue
+		}
+		sort.Strings(changed)
+		differ := fmt.Sprintf("`Secret/%s` keys %s differ between two renders (%s)", x.Name, strings.Join(changed, ", "), x.Source)
+		switch {
+		case x.Hook && helm.UpgradeHook(x.HookEvents):
+			onUpgrade = append(onUpgrade, differ+"; a `"+x.HookEvents+"` hook, run again on every upgrade")
+		case x.Hook && helm.InstallOnlyHook(x.HookEvents):
+			onSync = append(onSync, differ+"; a `"+x.HookEvents+"` hook: Helm runs it once, Argo CD on every sync")
+		case x.Hook:
+		case upgraded != nil && !upgraded["Secret/"+x.Name]:
+			onSync = append(onSync, differ+"; rendered only at install (`.Release.IsInstall`), so Helm keeps the first value")
+		default:
+			onUpgrade = append(onUpgrade, differ)
 		}
 	}
-	sort.Strings(evidence)
-	if len(evidence) == 0 {
-		res.Verdict = scenario.Pass
-		res.Summary = "no Secret value is generated anew on every render"
-		return res
-	}
-	res.Verdict = scenario.Fail
-	res.Summary = fmt.Sprintf("%d Secret(s) with values generated on every render (candidates)", len(evidence))
-	res.Findings = []scenario.Finding{{
-		ID:        "HB-SCAN-003",
-		Title:     "Candidate: Secret values are generated anew on every upgrade",
-		Severity:  "candidate",
-		Evidence:  evidence,
-		Impact:    "If confirmed, every `helm upgrade` replaces these values: credentials stop matching what the data was created with, and pods that hash the Secret restart.",
-		Fix:       "Keep generated values with `lookup`, and support an existingSecret for tools that render without cluster access. A pre-install hook keeps the value under Helm but not under Argo CD, which runs the hook on every sync (HB-GR-001).",
-		Reproduce: []string{fmt.Sprintf("helmbulance test %s --scenario upgrade-without-values   # HB-UV-001", o.Chart)},
-	}}
-	return res
+	sort.Strings(onUpgrade)
+	sort.Strings(onSync)
+	sort.Strings(guarded)
+	return onUpgrade, onSync, guarded
 }
 
 // maxUnquoted caps how many default values unquotedValues tries, one render each.
@@ -504,47 +632,99 @@ func sourceContains(chart, source, text string) bool {
 	return err == nil && strings.Contains(string(b), text)
 }
 
-// sourceUsesLookup reports whether the template a manifest came from (or a helper it includes)
-// uses lookup. "# Source:" paths start with the chart name.
-func sourceUsesLookup(chart, source string) bool {
-	if source == "" {
-		return false
-	}
-	parts := strings.SplitN(source, "/", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	b, err := os.ReadFile(filepath.Join(chart, parts[1]))
-	if err != nil {
-		return false
-	}
-	text := string(b)
-	if strings.Contains(text, "lookup") {
-		return true
-	}
-	includes := includeOf.FindAllStringSubmatch(text, -1)
-	if len(includes) == 0 {
-		return false
-	}
-	found := false
-	_ = filepath.WalkDir(filepath.Join(chart, "templates"), func(path string, d os.DirEntry, err error) error {
-		if found || err != nil || d.IsDir() {
-			return nil
+// lookupChecker reports whether the template a manifest came from, or a helper it includes at
+// any depth, calls lookup. It reads the chart's files once, subcharts and their archives included,
+// so a lookup in a library or subchart helper counts, and a helper's body runs to its own end
+// (#51). "# Source:" paths start with the chart name. readable is false when the chart's files
+// could not be read, a repository or OCI reference: then no Secret is left out.
+func lookupChecker(chart string) (uses func(source string) bool, readable bool) {
+	files := chartFiles(chart)
+	looks := lookupHelpers(files)
+	return func(source string) bool {
+		_, rel, ok := strings.Cut(source, "/")
+		if !ok {
+			return false
 		}
-		hb, err := os.ReadFile(path)
-		if err != nil {
-			return nil
+		text, ok := files[rel]
+		if !ok {
+			return false
 		}
-		for _, m := range defineOf.FindAllStringSubmatch(string(hb), -1) {
-			for _, inc := range includes {
-				if m[1] == inc[1] && strings.Contains(m[2], "lookup") {
-					found = true
-				}
+		text = withoutComments(text)
+		if lookupCall.MatchString(text) {
+			return true
+		}
+		for _, inc := range includeOf.FindAllStringSubmatch(text, -1) {
+			if looks[inc[1]] {
+				return true
 			}
 		}
-		return nil
-	})
-	return found
+		return false
+	}, files != nil
+}
+
+// lookupHelpers returns the helpers that call lookup, directly or through those they include.
+//
+// A name defined in several files counts only when every definition does. Which one helm renders
+// depends on more than the files: .helmignore and a subchart's condition can leave out the one that
+// would otherwise win, and neither is read here. So a disagreement makes a candidate that should not
+// be one rather than leave a regenerated Secret out. An empty define never replaces another in
+// text/template, so it counts only when the name has nothing else.
+//
+// One pass over the includes, without recursion: a body is done once it calls lookup or includes a
+// helper that is, and a helper once all its bodies are.
+func lookupHelpers(files map[string]string) map[string]bool {
+	type body struct {
+		name string
+		done bool
+	}
+	bodies := map[string][]string{}
+	for _, text := range files {
+		for n, b := range defines(text) {
+			bodies[n] = append(bodies[n], b)
+		}
+	}
+	left := map[string]int{}
+	users := map[string][]*body{}
+	var todo []*body
+	for n, all := range bodies {
+		var kept []string
+		for _, b := range all {
+			if strings.TrimSpace(b) != "" {
+				kept = append(kept, b)
+			}
+		}
+		if len(kept) == 0 {
+			kept = all[:1]
+		}
+		left[n] = len(kept)
+		for _, b := range kept {
+			x := &body{name: n}
+			if lookupCall.MatchString(b) {
+				x.done = true
+				todo = append(todo, x)
+				continue
+			}
+			for _, inc := range includeOf.FindAllStringSubmatch(b, -1) {
+				users[inc[1]] = append(users[inc[1]], x)
+			}
+		}
+	}
+	looks := map[string]bool{}
+	for len(todo) > 0 {
+		x := todo[len(todo)-1]
+		todo = todo[:len(todo)-1]
+		if left[x.name]--; left[x.name] > 0 || looks[x.name] {
+			continue
+		}
+		looks[x.name] = true
+		for _, u := range users[x.name] {
+			if !u.done {
+				u.done = true
+				todo = append(todo, u)
+			}
+		}
+	}
+	return looks
 }
 
 func dig(doc map[string]any, path []string) any {
@@ -566,4 +746,23 @@ func str(v any) string {
 
 func hash(v any) [32]byte {
 	return sha256.Sum256([]byte(fmt.Sprint(v)))
+}
+
+// helmError shortens a failed helm command to its error: the text after its last "Error: ", up to
+// two lines (a chart's `fail` message often starts on the second, as Bitnami's do), without helm's
+// "Use --debug" hint.
+func helmError(s string) string {
+	if i := strings.LastIndex(s, "Error: "); i >= 0 {
+		s = s[i+len("Error: "):]
+	}
+	var lines []string
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimSpace(l); l == "" || strings.HasPrefix(l, "Use --debug") {
+			continue
+		}
+		if lines = append(lines, l); len(lines) == 2 {
+			break
+		}
+	}
+	return strings.Join(lines, " ")
 }

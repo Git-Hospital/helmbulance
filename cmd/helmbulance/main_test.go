@@ -1,15 +1,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // stderrOf runs f and returns what it wrote to os.Stderr.
@@ -41,6 +43,9 @@ func TestRefuseRemote(t *testing.T) {
 		{false, []string{"./nonexistent"}, true, "path not found"},
 		{true, []string{"~/chart"}, true, "path not found"},
 		{false, []string{"../../testdata/charts/keeps-secret", "bitnami/redis"}, true, "bitnami/redis is not a chart on disk"},
+		// The ref is printed with its credentials hidden, refused or not.
+		{false, []string{"https://bob:hunter2@charts.example/x.tgz"}, true, "https://***@charts.example/x.tgz is not a chart on disk"},
+		{true, []string{"https://bob:hunter2@charts.example/x.tgz"}, false, "warning: running https://***@charts.example/x.tgz"},
 	}
 	for _, c := range cases {
 		var refused bool
@@ -148,6 +153,30 @@ func TestRefuseMissingValues(t *testing.T) {
 	}
 }
 
+// chart-upgrade named on the command line (or in the Action's scenarios input) with no
+// --from-version would test nothing: it is SKIPPED, which counts for nothing, so a run whose other
+// scenarios pass would exit 0 and look as if the upgrade was tested. It is refused before any
+// cluster starts. Without --scenario the default set leaves chart-upgrade out quietly, as before.
+func TestRefuseChartUpgradeWithoutFromVersion(t *testing.T) {
+	for _, c := range []struct {
+		only        []string
+		fromVersion string
+		refused     bool
+	}{
+		{nil, "", false},
+		{[]string{"upgrade-without-values"}, "", false},
+		{[]string{"upgrade-without-values", "chart-upgrade"}, "", true},
+		{[]string{"chart-upgrade"}, "", true},
+		{[]string{"chart-upgrade"}, "1.0.0", false},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseChartUpgradeWithoutFromVersion(c.only, c.fromVersion) })
+		if refused != c.refused || refused != strings.Contains(out, "--from-version") {
+			t.Errorf("refuseChartUpgradeWithoutFromVersion(%q, %q) = %v, %q; want %v", c.only, c.fromVersion, refused, out, c.refused)
+		}
+	}
+}
+
 // version1 stands in for helm show chart: every chart is version 1.0.0.
 func version1(string) (string, error) { return "1.0.0", nil }
 
@@ -192,6 +221,71 @@ func TestRefuseFromVersionThatALocalFromIsNot(t *testing.T) {
 	}
 	if refuseFromVersion("./chart", "repo/chart", "1.2.3", version1) {
 		t.Error("a remote --from was refused; helm honours --version there")
+	}
+}
+
+// A traffic flag that cannot work is refused before a cluster exists, not after the control
+// traffic fails (#95).
+func TestRefuseTraffic(t *testing.T) {
+	for _, c := range []struct {
+		target, path string
+		refused      bool
+	}{
+		{"", "/", false},
+		{"", "/healthz", false},
+		{"", "", false},
+		{"web:80", "", false},
+		{"web:80", "/", false},
+		{"web:65535", "/healthz", false},
+		{"", "healthz", true},
+		{"", "/health z", true},
+		{"", "/a\tb", true},
+		{"http://web:80", "/", true},
+		{"web:", "/", true},
+		{"web:0", "/", true},
+		{"web:65536", "/", true},
+		{"web:http", "/", true},
+		{"web:80:90", "/", true},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseTraffic(c.target, c.path) })
+		if refused != c.refused {
+			t.Errorf("refuseTraffic(%q, %q) = %v, want %v", c.target, c.path, refused, c.refused)
+		}
+		if refused && out == "" {
+			t.Errorf("refuseTraffic(%q, %q) printed no message", c.target, c.path)
+		}
+	}
+}
+
+// A refusal names the value it rejected, but never the token a query can carry.
+func TestRefuseTrafficRedactsTokens(t *testing.T) {
+	for _, c := range []struct{ target, path string }{
+		{"", "health?token=hunter2"},
+		{"web:80?token=hunter2", "/"},
+	} {
+		var refused bool
+		out := stderrOf(t, func() { refused = refuseTraffic(c.target, c.path) })
+		if !refused {
+			t.Fatalf("refuseTraffic(%q, %q) = false, want a refusal", c.target, c.path)
+		}
+		if !strings.Contains(out, "token=***") || strings.Contains(out, "hunter2") {
+			t.Errorf("refuseTraffic(%q, %q) = %q, want the token hidden", c.target, c.path, out)
+		}
+	}
+}
+
+// A repeated --scenario runs once, in the order first given (#95).
+func TestPickOnce(t *testing.T) {
+	got, err := pick([]string{"reinstall", "reinstall", "upgrade-without-values"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name() != "reinstall" || got[1].Name() != "upgrade-without-values" {
+		t.Errorf("pick = %v, want reinstall then upgrade-without-values", got)
+	}
+	if _, err := pick([]string{"nope"}); err == nil {
+		t.Error("pick accepted an unknown scenario")
 	}
 }
 
@@ -266,5 +360,78 @@ func TestParseArgs(t *testing.T) {
 		if ok && (*strict != c.strict || files.String() != c.files || *out != c.out) {
 			t.Errorf("parseArgs(%q): strict %v, -f %q, --report-dir %q; want %v, %q, %q", c.args, *strict, files.String(), *out, c.strict, c.files, c.out)
 		}
+	}
+}
+
+// A summary can carry a chart's fail message. Printed raw, its newline starts a line that the
+// Action's log reads as a workflow command, and its escape sequences reach the terminal (#58).
+func TestOneLine(t *testing.T) {
+	cases := map[string]string{
+		"plain summary":                              "plain summary",
+		"upgrade failed\n::warning::from chart":      "upgrade failed ::warning::from chart",
+		"a\r\nb\tc":                                  "a  b c",
+		"title\x1b]0;x\x07 and \x1b[2Jclear":         "title]0;x and [2Jclear",
+		"c1 \u009b31m control":                       "c1 31m control",
+		"del\x7f and nul\x00":                        "del and nul",
+		"bidi \u202egnp.exe\u202c and \u2066x\u2069": "bidi gnp.exe and x",
+		"line\u2028sep":                              "line sep",
+		// The runner's older command form is read anywhere in a line, not only at its start.
+		"x ##[error]from chart": "x ## [error]from chart",
+		// Other line breaks become spaces too, so words do not run together.
+		"a\u0085b\vc\fd": "a b c d",
+		// A byte that is not UTF-8, as a summary cut at 600 bytes can end with, is replaced.
+		"cut \xe2\x9c":          "cut \ufffd\ufffd",
+		"unicode stays: çğış ✓": "unicode stays: çğış ✓",
+	}
+	for in, want := range cases {
+		if got := oneLine(in); got != want {
+			t.Errorf("oneLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// After an interrupt no further scenario starts: each one left is INCONCLUSIVE "not run", so the
+// sandbox cluster is deleted at once instead of after every remaining scenario's cleanup (#58).
+func TestRunEachStopsStartingAfterAnInterrupt(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	var ran []string
+	names := []string{"a", "b", "c"}
+	got := runEach(ctx, names, func(i int) scenario.Result {
+		ran = append(ran, names[i])
+		if names[i] == "a" {
+			cancel() // the interrupt arrives while a runs
+		}
+		return scenario.Result{Scenario: names[i], Verdict: scenario.Pass}
+	})
+	if !reflect.DeepEqual(ran, []string{"a"}) {
+		t.Errorf("ran %v, want only a", ran)
+	}
+	if len(got) != 3 || got[0].Verdict != scenario.Pass {
+		t.Fatalf("results %+v, want a's own result first and one per name", got)
+	}
+	for _, r := range got[1:] {
+		if r.Verdict != scenario.Inconclusive || !strings.Contains(r.Summary, "not run") {
+			t.Errorf("%s: %+v, want INCONCLUSIVE not run", r.Scenario, r)
+		}
+	}
+}
+
+// An unsupported or empty --k8s is a usage error before any cluster starts (#56).
+func TestCheckVersions(t *testing.T) {
+	for _, good := range []string{"1.34, 1.37", "1.36,"} {
+		if err := checkVersions(good); err != nil {
+			t.Errorf("checkVersions(%q): %v", good, err)
+		}
+	}
+	for _, bad := range []string{"1.34,1.30", "", " , "} {
+		if err := checkVersions(bad); err == nil {
+			t.Errorf("checkVersions(%q) = nil, want an error", bad)
+		}
+	}
+}
+
+func TestMatrixRefusesAnUnsupportedVersionBeforeAnyCluster(t *testing.T) {
+	if code := matrixCmd([]string{"--k8s", "1.29", t.TempDir()}); code != exitError {
+		t.Errorf("exit %d, want %d", code, exitError)
 	}
 }

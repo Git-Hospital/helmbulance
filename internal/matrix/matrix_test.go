@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 func TestInstallFailedIsAFinding(t *testing.T) {
@@ -178,6 +178,10 @@ func TestCrashAtInstallIsBlamedOnlyWhenAnotherVersionRan(t *testing.T) {
 		// Unhealthy after an install that finished is not healthy.
 		{"unhealthy on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-002"), crashed("1.37")}, scenario.Inconclusive},
 		{"install failure on 1.36", []scenario.Result{result("1.36", scenario.Fail, "HB-K8S-001"), crashed("1.37")}, scenario.Inconclusive},
+		{"INCONCLUSIVE on 1.36", []scenario.Result{result("1.36", scenario.Inconclusive, ""), crashed("1.37")}, scenario.Inconclusive},
+		// The last result here is the install failure on 1.37: 1.36 accepted the manifests, so
+		// the crash counts as installed and the failure stays a finding.
+		{"crash on 1.36, install failure on 1.37", []scenario.Result{crashed("1.36"), result("1.37", scenario.Fail, "HB-K8S-001")}, scenario.Fail},
 		// API warnings alone do not make a version healthy when its workloads were never checked:
 		// an install whose --wait timed out with no crash, or a health check cut short.
 		{"timed out with a warning on 1.36", []scenario.Result{installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.36"}, "1.36", errors.New(installTimeout), nil, deprecation, nil), crashed("1.37")}, scenario.Inconclusive},
@@ -246,5 +250,21 @@ func TestHealthNotRead(t *testing.T) {
 	res = judge(scenario.Result{Scenario: "k8s-1.37"}, "1.37", nil, err, warning, nil)
 	if res.Verdict != scenario.Fail || len(res.Findings) != 1 || !strings.Contains(res.Summary, "health was not checked") {
 		t.Errorf("with a warning: verdict = %s with %d finding(s) (%s), want FAIL with the warning and the health check named", res.Verdict, len(res.Findings), res.Summary)
+	}
+}
+
+// A chart whose kubeVersion excludes the version is refused by helm before anything is created.
+// The chart says it does not run there: SKIPPED, not "does not install" (#56).
+func TestKubeVersionRefusalIsSkipped(t *testing.T) {
+	err := errors.New("helm install hb-matrix ./chart: exit status 1: Error: INSTALLATION FAILED: chart requires kubeVersion: >=1.36.0-0 which is incompatible with Kubernetes v1.34.11")
+	res := installFailed(t.Context(), scenario.Result{Scenario: "k8s-1.34"}, "1.34", err, nil, nil, nil)
+	if res.Verdict != scenario.Skipped || len(res.Findings) != 0 || !strings.Contains(res.Summary, ">=1.36.0-0") {
+		t.Errorf("result %+v, want SKIPPED naming the constraint", res)
+	}
+	// With the other versions it does not count as "installed nowhere": a version it did install on
+	// keeps its own result.
+	ok := scenario.Result{Scenario: "k8s-1.36", Verdict: scenario.Pass}
+	if got := Attribute([]scenario.Result{res, ok}); got[0].Verdict != scenario.Skipped || got[1].Verdict != scenario.Pass {
+		t.Errorf("Attribute = %+v", got)
 	}
 }

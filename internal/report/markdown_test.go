@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/scenario"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
 // Evidence quotes helm and the cluster, so a chart controls part of it. It must not reach
@@ -72,7 +72,7 @@ func TestWriteRedactsEveryField(t *testing.T) {
 	if err := r.Write(dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"report.json", "report.md"} {
+	for _, name := range []string{"report.json", "report.md", "report.sarif"} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatal(err)
@@ -92,7 +92,7 @@ func TestWriteHidesChartURLCredentials(t *testing.T) {
 	if err := r.Write(dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"report.json", "report.md"} {
+	for _, name := range []string{"report.json", "report.md", "report.sarif"} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatal(err)

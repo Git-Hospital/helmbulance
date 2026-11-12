@@ -14,14 +14,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/egezamb/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 )
 
 // NamePrefix marks clusters created by Helmbulance.
@@ -65,20 +67,31 @@ func NewCluster() (*Cluster, error) {
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
 		return nil, err
 	}
+	// MkdirAll leaves a directory that already exists as it is, so kind must not write the new
+	// kubeconfig into one that someone else made (#155).
+	if err := c.private(); err != nil {
+		os.Remove(c.dir) // only if it is empty, so nobody else's files go
+		return nil, err
+	}
 	return c, nil
 }
 
-// Create brings up the reserved cluster with kind and records its CA fingerprint. On failure it
-// deletes the cluster and its state directory: the caller only deletes a cluster that Create
-// returned without error.
+// Create brings up the reserved cluster with kind, records its CA fingerprint and, as Open does,
+// gives helm and kubectl a pinned copy of the kubeconfig kind wrote. On failure it deletes the
+// cluster and its state directory: the caller only deletes a cluster that Create returned without
+// error.
 func (c *Cluster) Create(ctx context.Context, r *execx.Runner, nodeImage string) error {
 	args := []string{"create", "cluster", "--name", c.Name, "--kubeconfig", c.Kubeconfig, "--wait", "180s"}
 	if nodeImage != "" {
 		args = append(args, "--image", nodeImage)
 	}
 	_, err := r.Run(ctx, "kind", args...)
+	var fp string
 	if err == nil {
-		err = c.record()
+		fp, err = c.record()
+	}
+	if err == nil {
+		err = c.usePinned(fp)
 	}
 	if err != nil {
 		// kind can fail after its node container started, most often because a Ctrl-C reached it:
@@ -93,16 +106,16 @@ func (c *Cluster) Create(ctx context.Context, r *execx.Runner, nodeImage string)
 	return nil
 }
 
-// record makes the new kubeconfig private and saves its CA fingerprint.
-func (c *Cluster) record() error {
+// record makes the new kubeconfig private, saves its CA fingerprint and returns it.
+func (c *Cluster) record() (string, error) {
 	if err := os.Chmod(c.Kubeconfig, 0o600); err != nil {
-		return err
+		return "", err
 	}
 	fp, err := caFingerprint(c.Kubeconfig, c.Name)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return os.WriteFile(filepath.Join(c.dir, "ca.sha256"), []byte(fp), 0o600)
+	return fp, os.WriteFile(filepath.Join(c.dir, "ca.sha256"), []byte(fp), 0o600)
 }
 
 // Open returns an existing cluster that Helmbulance created, after checking its CA fingerprint.
@@ -112,6 +125,12 @@ func Open(name string) (*Cluster, error) {
 	}
 	c, err := clusterFiles(name)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.private(); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("no record of cluster %q in %s: %w", name, c.dir, err)
+		}
 		return nil, err
 	}
 	want, err := os.ReadFile(filepath.Join(c.dir, "ca.sha256"))
@@ -125,7 +144,168 @@ func Open(name string) (*Cluster, error) {
 	if got != string(want) {
 		return nil, errors.New("cluster CA does not match the one recorded at creation; refusing to use it")
 	}
+	if err := c.usePinned(string(want)); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// usePinned points the cluster at a pinned copy of its kubeconfig whose CA is want. A check on the
+// kept file holds for the file as it is now, but helm and kubectl read it again on every call, so a
+// use-context or a merge during the run would send later calls elsewhere. They get a copy that
+// holds the sandbox's context, cluster and user only (#47), for a reused cluster and a new one
+// alike (security review of #156).
+//
+// The copy is checked before it replaces the one a run may be using: the kept file can change
+// between the check on it and pin reading it again, and a copy that fails would otherwise stay
+// where another run reads it (review of #142).
+func (c *Cluster) usePinned(want string) error {
+	pinned, err := pin(c.Kubeconfig, "kind-"+c.Name, func(copy string) error {
+		fp, err := caFingerprint(copy, c.Name)
+		if err != nil {
+			return fmt.Errorf("the pinned copy of the kubeconfig: %w", err)
+		}
+		if fp != want {
+			return errors.New("the pinned copy of the kubeconfig does not match the recorded CA; refusing to use it")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	c.Kubeconfig = pinned
+	return nil
+}
+
+// pin writes next to path a kubeconfig with only the context called ctxName, its cluster and its
+// user, and returns its path. It is written anew on every Open, mode 0600. verify gets the new copy
+// before it replaces the old one; when it fails, the old copy stays in place.
+func pin(path, ctxName string, verify func(copy string) error) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var kc map[string]any
+	if err := yaml.Unmarshal(data, &kc); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	named := func(key, name string) (map[string]any, error) {
+		list, _ := kc[key].([]any)
+		var found map[string]any
+		n := 0
+		for _, e := range list {
+			if m, ok := e.(map[string]any); ok && m["name"] == name {
+				found, n = m, n+1
+			}
+		}
+		if n != 1 {
+			return nil, fmt.Errorf("%s: %s %q appears %d times, want once", path, key, name, n)
+		}
+		return found, nil
+	}
+	// Each entry is copied as it is, so each must hold exactly what kind writes (#155).
+	entry := func(key, name, inner string, keys []string) (map[string]any, error) {
+		e, err := named(key, name)
+		if err != nil {
+			return nil, err
+		}
+		if err := kindEntry(e, inner, keys); err != nil {
+			return nil, fmt.Errorf("%s: %s %q %w; refusing to use it", path, inner, name, err)
+		}
+		return e, nil
+	}
+	ctxEntry, err := entry("contexts", ctxName, "context", kindContextKeys)
+	if err != nil {
+		return "", err
+	}
+	inner := ctxEntry["context"].(map[string]any)
+	clusterName, _ := inner["cluster"].(string)
+	userName, _ := inner["user"].(string)
+	clusterEntry, err := entry("clusters", clusterName, "cluster", kindClusterKeys)
+	if err != nil {
+		return "", err
+	}
+	userEntry, err := entry("users", userName, "user", kindUserKeys)
+	if err != nil {
+		return "", err
+	}
+	out := map[string]any{
+		"apiVersion": "v1", "kind": "Config", "current-context": ctxName,
+		"contexts": []any{ctxEntry}, "clusters": []any{clusterEntry}, "users": []any{userEntry},
+	}
+	b, err := yaml.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	// Written to a temporary file and renamed into place, so a run that reads it at the same time
+	// sees the old copy or the new one, never an empty file: an empty kubeconfig sends helm and
+	// kubectl to http://localhost:8080. CreateTemp opens with O_EXCL and mode 0600, and the copy
+	// stays next to the kept file, since client-go resolves relative paths in it from there.
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".kubeconfig.pinned-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name()) // a no-op once the rename succeeded
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := verify(f.Name()); err != nil {
+		return "", err
+	}
+	pinned := filepath.Join(dir, "kubeconfig.pinned")
+	if err := os.Rename(f.Name(), pinned); err != nil {
+		return "", err
+	}
+	return pinned, nil
+}
+
+// The keys kind writes in each entry of a kubeconfig, and nothing else.
+var (
+	kindContextKeys = []string{"cluster", "user"}
+	kindClusterKeys = []string{"certificate-authority-data", "server"}
+	kindUserKeys    = []string{"client-certificate-data", "client-key-data"}
+)
+
+// kindEntry refuses an entry that holds anything but its name and an inner mapping with exactly
+// keys. The pinned copy hands the entries to helm and kubectl as they are, so an exec or
+// auth-provider block added to the kept file by hand would run a command on every call, a token
+// or another identity would act as someone else, and a proxy-url would route the run through
+// another host (#155).
+func kindEntry(e map[string]any, inner string, keys []string) error {
+	var extra []string
+	for k := range e {
+		if k != "name" && k != inner {
+			extra = append(extra, k)
+		}
+	}
+	m, ok := e[inner].(map[string]any)
+	if !ok {
+		return errors.New("is not a mapping")
+	}
+	var missing []string
+	for _, k := range keys {
+		if _, ok := m[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	for k := range m {
+		if !slices.Contains(keys, k) {
+			extra = append(extra, k)
+		}
+	}
+	slices.Sort(extra)
+	switch {
+	case len(extra) > 0:
+		return fmt.Errorf("has %s, which kind never writes (only %s)", strings.Join(extra, ", "), strings.Join(keys, " and "))
+	case len(missing) > 0:
+		return fmt.Errorf("has no %s, which kind always writes", strings.Join(missing, " or "))
+	}
+	return nil
 }
 
 // Delete removes the cluster and its files.
@@ -163,6 +343,27 @@ func Unrecorded(ctx context.Context, r *execx.Runner) ([]string, error) {
 	return names, nil
 }
 
+// private checks that nobody else can change the cluster's files (#155), and from then on names
+// them by the state directory's real path. helm and kubectl open the kubeconfig by path on every
+// call, so a symlink in that path, or a directory above it that someone else can write, could
+// point later calls at another file once the check has passed. checkPrivate refuses the second;
+// resolving the state directory once removes the first.
+func (c *Cluster) private() error {
+	state, err := filepath.EvalSymlinks(filepath.Dir(filepath.Dir(c.dir)))
+	if err != nil {
+		return err
+	}
+	if state, err = filepath.Abs(state); err != nil {
+		return err
+	}
+	dir := filepath.Join(state, "clusters", c.Name)
+	if err := checkPrivate(state, filepath.Dir(dir), dir); err != nil {
+		return err
+	}
+	c.dir, c.Kubeconfig = dir, filepath.Join(dir, "kubeconfig")
+	return nil
+}
+
 func clusterFiles(name string) (*Cluster, error) {
 	state, err := StateDir()
 	if err != nil {
@@ -189,6 +390,7 @@ type namedContext struct {
 type namedCluster struct {
 	Name    string `yaml:"name"`
 	Cluster struct {
+		Server   string `yaml:"server"`
 		CAData   string `yaml:"certificate-authority-data"`
 		Insecure bool   `yaml:"insecure-skip-tls-verify"`
 	} `yaml:"cluster"`
@@ -228,6 +430,11 @@ func caFingerprint(path, name string) (string, error) {
 	// skips that check, so a file that does could reach any server whatever its CA says.
 	if clusterEntry.Cluster.Insecure {
 		return "", fmt.Errorf("%s: cluster %q sets insecure-skip-tls-verify, so its CA proves nothing; refusing to use it", path, cluster)
+	}
+	// Over plain http, or with no server (which means http://localhost:8080), there is no TLS,
+	// and the CA proves nothing. kind always writes https://127.0.0.1:<port>.
+	if u, err := url.Parse(clusterEntry.Cluster.Server); err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("%s: cluster %q has no https server, so its CA proves nothing; refusing to use it", path, cluster)
 	}
 	sum := sha256.Sum256([]byte(ca))
 	return hex.EncodeToString(sum[:]), nil

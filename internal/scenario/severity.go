@@ -1,9 +1,10 @@
 package scenario
 
 import (
+	"slices"
 	"strings"
 
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // readers lists the workloads that read the key a change refers to, directly or through the whole
@@ -79,4 +80,43 @@ func onlyTLS(changes []oracle.Change) bool {
 		}
 	}
 	return len(changes) > 0
+}
+
+// switchedTo separates the added credential keys that a workload with persistent data moved to: it
+// reads the key after an upgrade, did not before, and stopped reading a key, or a whole Secret, that
+// it read then. Its data was set up with the old value: a dropped --set existingSecret that makes
+// the chart generate a password, or a new chart version that points the workload at a new key. A
+// workload the upgrade added, or one that reads the new key next to the old one, moved nothing, so
+// those keys stay notes, as does a new key alone. Without the readers from before the upgrade
+// (before is nil) no key is taken for a switch (#54).
+func switchedTo(added []oracle.Change, before, after map[string][]string, stateful map[string]bool) (switched, rest []oracle.Change) {
+	for _, c := range added {
+		if before != nil && keyClass(c) == oracle.ClassCredential && newStatefulReader(c, before, after, stateful) {
+			switched = append(switched, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	return switched, rest
+}
+
+func newStatefulReader(c oracle.Change, before, after map[string][]string, stateful map[string]bool) bool {
+	old := readers(c, before)
+	for _, w := range readers(c, after) {
+		if stateful[w] && !slices.Contains(old, w) && stoppedReading(w, before, after) {
+			return true
+		}
+	}
+	return false
+}
+
+// stoppedReading reports whether workload w read a key, or a whole Secret, before the upgrade that
+// it does not read after it. A workload that read nothing before did not exist, or had no Secret.
+func stoppedReading(w string, before, after map[string][]string) bool {
+	for ref, ws := range before {
+		if slices.Contains(ws, w) && !slices.Contains(after[ref], w) {
+			return true
+		}
+	}
+	return false
 }

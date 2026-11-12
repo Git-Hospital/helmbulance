@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // runChartUpgrade runs chart-upgrade against a fake helm whose upgrade to the chart under test (the
@@ -133,6 +133,17 @@ func TestHealthUnread(t *testing.T) {
 	}
 }
 
+// With no --from-version there is no earlier version to upgrade from: chart-upgrade tests nothing,
+// which is SKIPPED (§2), not INCONCLUSIVE. The CLI never gets here (the default set leaves
+// chart-upgrade out, and naming it without --from-version is refused), but the scenario must not
+// call a run it never started inconclusive.
+func TestChartUpgradeWithoutFromVersionIsSkipped(t *testing.T) {
+	res := ChartUpgrade{}.Run(context.Background(), &Env{})
+	if res.Verdict != Skipped || len(res.Findings) > 0 {
+		t.Errorf("verdict = %s with %d finding(s) (%s), want SKIPPED and none", res.Verdict, len(res.Findings), res.Summary)
+	}
+}
+
 func TestChartUpgradeTimeoutIsInconclusive(t *testing.T) {
 	res := runChartUpgrade(t, "Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: InProgress\ncontext deadline exceeded")
 	if res.Verdict != Inconclusive || len(res.Findings) > 0 {
@@ -246,6 +257,31 @@ func TestChartUpgradeTimeoutWithACrashIsAFinding(t *testing.T) {
 	}
 }
 
+// A crash-looping container is running or just ended for a moment between two back-offs. A read at
+// that moment lists nothing, so the containers are read again until one waits in its back-off, at
+// most crashReads times (matrix-crashes-on-1-37 on Helm 4). matrix reads them the same way.
+func TestCrashReadBetweenTwoRunsIsReadAgain(t *testing.T) {
+	const timeout = "Error: UPGRADE FAILED: resource Deployment/ns/web not ready. status: InProgress\ncontext deadline exceeded"
+	between, backOff := items(podJSON("new", 3, "")), items(podJSON("new", 3, "CrashLoopBackOff"))
+	for name, c := range map[string]struct {
+		after []string
+		want  string
+	}{
+		"in its back-off at the second read": {[]string{between, backOff}, Fail},
+		"in its back-off at the last read":   {[]string{between, between, backOff}, Fail},
+		"only after the last read":           {[]string{between, between, between, backOff}, Inconclusive},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Reads: pods before the upgrade, containers before it (unreadable, so only the waiting
+			// reason counts, as in matrix), then the containers after the timeout, one per read.
+			res := runChartUpgrade(t, timeout, append([]string{items(podJSON("old", 0, "")), "not json"}, c.after...)...)
+			if res.Verdict != c.want {
+				t.Fatalf("verdict = %s (%s), want %s", res.Verdict, res.Summary, c.want)
+			}
+		})
+	}
+}
+
 // Only a --wait timeout with the release applied is worth reading pods or collecting evidence for;
 // a cancelled run, the chart's own webhook, a pull error or a render refusal are not. The upgrade
 // (#34) and both installs of reinstall (#30) share it. Helm 4 stops at a resource that reports
@@ -298,5 +334,51 @@ func TestStartFailures(t *testing.T) {
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("StartFailures = %q, want %q", got, want)
+	}
+}
+
+// A key that changes on every upgrade of the earlier version is left out of the comparison, and the
+// PASS summary says so instead of only "with Secrets kept" (#59).
+func TestChartUpgradePassNamesKeysThatChangeOnEveryUpgrade(t *testing.T) {
+	bin := t.TempDir()
+	helmScript := `#!/bin/sh
+case "$*" in
+  *"get metadata"*) echo '{"version":"1.0.0"}' ;;
+  *"get manifest"*) printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: db\n' ;;
+  upgrade*) n=$(cat "` + bin + `/n" 2>/dev/null || echo 0); echo $((n+1)) > "` + bin + `/n" ;;
+esac
+exit 0
+`
+	// Every upgrade gives db/password a new value, the earlier version's and the new one's alike.
+	kubectlScript := `#!/bin/sh
+case "$*" in
+  *"get secrets"*) n=$(cat "` + bin + `/n" 2>/dev/null || echo 0)
+    echo "{\"items\":[{\"metadata\":{\"name\":\"db\"},\"type\":\"Opaque\",\"data\":{\"password\":\"$(printf 'pw%s' "$n" | base64)\"}}]}" ;;
+  *) echo '{"items":[]}' ;;
+esac
+`
+	for name, script := range map[string]string{"helm": helmScript, "kubectl": kubectlScript} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := settleInterval
+	t.Cleanup(func() { settleInterval = old })
+	settleInterval = time.Millisecond
+	hasher, err := oracle.NewHasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &execx.Runner{}
+	res := ChartUpgrade{}.Run(t.Context(), &Env{
+		Runner: runner, Helm: &helm.Client{Runner: runner, Timeout: time.Minute}, Kube: &kube.Client{Runner: runner},
+		Hasher: hasher, Chart: "./v2", From: "repo/chart", FromVersion: "1.0.0", Log: io.Discard,
+	})
+	if res.Verdict != Pass {
+		t.Fatalf("verdict = %s (%s), want PASS", res.Verdict, res.Summary)
+	}
+	if want := "not compared, since they change on every upgrade of 1.0.0 too (upgrade-without-values): `db/password`"; !strings.Contains(res.Summary, want) {
+		t.Errorf("summary = %q, want it to contain %q", res.Summary, want)
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/egezamb/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 func svc(name string, ports ...kube.ServicePort) kube.Service {
@@ -29,6 +29,26 @@ func TestPickTarget(t *testing.T) {
 			svc("dns", kube.ServicePort{Name: "http", Port: 80, Protocol: "UDP"}),
 			svc("app", kube.ServicePort{Name: "http-alt", Port: 9000}),
 		}, "app:9000"},
+		// The requests are plain http://, so TLS and gRPC ports are never picked (#57).
+		{"https by name is not plain HTTP", []kube.Service{
+			svc("tls", kube.ServicePort{Name: "https", Port: 8080}),
+			svc("app", kube.ServicePort{Name: "http-alt", Port: 9000}),
+		}, "app:9000"},
+		{"gRPC on a common number is not HTTP", []kube.Service{
+			svc("api", kube.ServicePort{Name: "grpc-api", Port: 8000}),
+			svc("app", kube.ServicePort{Name: "http-alt", Port: 9000}),
+		}, "app:9000"},
+		{"appProtocol decides over the name", []kube.Service{
+			svc("api", kube.ServicePort{Name: "http", Port: 80, AppProtocol: "kubernetes.io/h2c"}),
+			svc("app", kube.ServicePort{Name: "web", Port: 9000, AppProtocol: "http"}),
+		}, "app:9000"},
+		{"443 is TLS whatever its name", []kube.Service{
+			svc("edge", kube.ServicePort{Name: "web", Port: 443}),
+			svc("app", kube.ServicePort{Name: "http-alt", Port: 9000}),
+		}, "app:9000"},
+		{"oauth2 in a name is not h2", []kube.Service{
+			svc("auth", kube.ServicePort{Name: "oauth2", Port: 8080}),
+		}, "auth:8080"},
 		{"a tie keeps the first", []kube.Service{
 			svc("a", kube.ServicePort{Name: "web", Port: 1}),
 			svc("b", kube.ServicePort{Name: "http", Port: 2}),
@@ -77,7 +97,7 @@ func TestPickTargetSkipsServicesWithEndpointsOutsideThePods(t *testing.T) {
 		t.Errorf("pickTarget = %q, %v; want app:8080", got, err)
 	}
 	_, err = pickTarget([]kube.Service{web}, outside)
-	if err == nil || !strings.Contains(err.Error(), "skipped web (endpoints the control plane did not write: 203.0.113.9)") {
+	if err == nil || !strings.Contains(err.Error(), "skipped web (endpoints that are not pods in the namespace: 203.0.113.9)") {
 		t.Errorf("err = %v, want web named with its outside address", err)
 	}
 }

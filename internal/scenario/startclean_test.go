@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egezamb/helmbulance/internal/execx"
-	"github.com/egezamb/helmbulance/internal/helm"
-	"github.com/egezamb/helmbulance/internal/kube"
-	"github.com/egezamb/helmbulance/internal/oracle"
+	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/helm"
+	"github.com/Git-Hospital/helmbulance/internal/kube"
+	"github.com/Git-Hospital/helmbulance/internal/oracle"
 )
 
 // fakeLoggingTools logs every call to $FAKE_DIR/log; helm install fails, so a scenario stops right
@@ -37,6 +37,7 @@ func TestScenariosStartFromACleanNamespace(t *testing.T) {
 		{ChartUpgrade{}, chartUpgradeNamespace, func(e *Env) { e.From, e.FromVersion = "repo/chart", "1.0.0" }},
 		{ZeroDowntime{}, zeroDowntimeNamespace, func(*Env) {}},
 		{Reinstall{}, reinstallNamespace, func(*Env) {}},
+		{GitopsRender{}, gitopsRenderNamespace, func(*Env) {}},
 	} {
 		t.Run(c.s.Name(), func(t *testing.T) {
 			bin, dir := t.TempDir(), t.TempDir()

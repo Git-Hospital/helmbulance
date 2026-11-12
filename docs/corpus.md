@@ -30,6 +30,8 @@ Each job compares the exit code and the set of finding IDs with the row below. A
 | HBC-06 | semaphore | [semaphoreui/charts#34](https://github.com/semaphoreui/charts/issues/34), fix [#35](https://github.com/semaphoreui/charts/pull/35) not released | 16.2.2 (defect) | exit 1: HB-UV-003 | 28 Oct 2026, as expected |
 | HBC-07 | docker-registry-ui | [Joxit/helm-charts#22](https://github.com/Joxit/helm-charts/pull/22) (open fix, not released) | 1.1.3 → 1.1.4 (defect) | exit 1: HB-CU-001 (`chart-upgrade`) | 28 Oct 2026, as expected |
 | HBC-08 | yugabyte | [yugabyte/charts#240](https://github.com/yugabyte/charts/issues/240), no fix | 2026.1.1 → 2026.1.2 (defect) | exit 1: HB-CU-001 (`chart-upgrade`) | 28 Oct 2026, as expected |
+| HBC-09 | seaweedfs | [seaweedfs/seaweedfs#12138](https://github.com/seaweedfs/seaweedfs/pull/12138), the fix, found with Helmbulance | 4.51.0 (defect) | exit 1: HB-RI-004 (`reinstall`) | 6 Nov 2026, as expected |
+| | | | 4.52.0 (fix) | exit 3, no finding: the filer never becomes ready without MySQL | 6 Nov 2026, as expected |
 
 "Seen" is from `helmbulance test <archive> --scenario <scenario> [-f testdata/corpus/<entry>/values.yaml]` on kind, with `--from <older archive> --from-version <version>` for `chart-upgrade`. HBC-01 ran with Helm v4.0.4; HBC-02 to HBC-08 with Helm v4.3.0 and kind v0.33.0 (Kubernetes 1.37), all on arm64.
 
@@ -71,7 +73,13 @@ Each job compares the exit code and the set of finding IDs with the row below. A
 - **yugabyte 2026.1.1 → 2026.1.2:** with the default `oldNamingStyle: true`, the master and tserver StatefulSet selectors go from `{app, release}` to `{app}`, and both are rejected as immutable: HB-CU-001. A one-master, one-tserver universe with small requests and no LoadBalancer Services (`testdata/corpus/hbc-08-yugabyte/values.yaml`). See [the case study](case-studies/yugabyte-2026.1.2.md).
 - These two entries use the workflow's `from-url`, `from-sha256` and `from-version` fields: the older archive is pinned like the newer one, and `chart-upgrade` upgrades from it.
 
+### HBC-09: a kept Secret replaced by the next install
+
+- **seaweedfs 4.51.0 → 4.52.0**, with the MySQL filer store (`filer.extraEnvironmentVars.WEED_MYSQL_ENABLED: "true"`, `testdata/corpus/hbc-09-seaweedfs/values.yaml`). `<fullname>-db-secret` carries `helm.sh/resource-policy: keep`, so it outlives `helm uninstall`, but it is also a `pre-install` hook, and Helm deletes an existing hook resource before it creates it again. The next install wrote a new password: HB-RI-004. 4.52.0 reads the stored user and password with `lookup`.
+- The sandbox has no MySQL, so the filer never becomes ready and both installs run out their `--wait`. HB-RI-004 needs no running reader, so the defect is found anyway. The fixed version finds nothing but cannot pass either: INCONCLUSIVE, exit 3, "the reinstall did not finish, and no credential change was proven". The entry expects exactly that. A MySQL beside the chart would make it a PASS; that is not part of the chart, so the entry does not add one.
+- Seen on 6 Nov 2026 with Helm v4.3.0 and kind v0.33.0 (`--timeout 3m`).
+
 ## What the corpus has shown so far
 
-- **Known defects found:** 8 of 8 (HBC-01 to HBC-08), across three scenarios: `upgrade-without-values` (HB-UV-001, HB-UV-003), `gitops-render` (HB-GR-001) and `chart-upgrade` (HB-CU-001). D8 asks for at least 5 of 6.
+- **Known defects found:** 9 of 9 (HBC-01 to HBC-09), across four scenarios: `upgrade-without-values` (HB-UV-001, HB-UV-003), `gitops-render` (HB-GR-001), `chart-upgrade` (HB-CU-001) and `reinstall` (HB-RI-004). D8 asks for at least 5 of 6.
 - **Findings on a fixed version:** 1 (HB-UV-003 on grafana 6.9.3); none on seaweedfs 4.50.0. It is a second defect that the fix did not touch, not a false finding. For D8 this means "a finding on the fixed version" has to be read per finding ID.
