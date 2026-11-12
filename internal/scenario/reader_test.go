@@ -140,12 +140,12 @@ func TestUpgradeValuesPassWithNoSecretsSaysSo(t *testing.T) {
 	env := newFakeReader(t, `{"items":[]}`, secretManifest()).env
 	cmd := []execx.Command{{Line: "helm upgrade hb ./chart"}}
 	empty := oracle.SecretSnapshot{}
-	res, _ := UpgradeValues{}.verdict(t.Context(), Result{}, empty, empty, empty, cmd, cmd, cmd, env)
+	res, _ := UpgradeValues{}.verdict(t.Context(), Result{}, empty, empty, empty, cmd, cmd, cmd, env, nil)
 	if res.Verdict != Pass || res.Summary != noSecretsTested {
 		t.Errorf("verdict %s, summary %q", res.Verdict, res.Summary)
 	}
 	some := oracle.SecretSnapshot{"app/k": {1}}
-	if res, _ := (UpgradeValues{}).verdict(t.Context(), Result{}, some, some, some, cmd, cmd, cmd, env); res.Summary != "Secrets stayed the same through both upgrades" {
+	if res, _ := (UpgradeValues{}).verdict(t.Context(), Result{}, some, some, some, cmd, cmd, cmd, env, nil); res.Summary != "Secrets stayed the same through both upgrades" {
 		t.Errorf("summary with Secrets compared = %q", res.Summary)
 	}
 }
@@ -160,7 +160,7 @@ func TestUpgradeValuesImpactFollowsTheKeyClass(t *testing.T) {
 	for key, wantOther := range map[string]bool{"log-level": true, "password": false} {
 		before := oracle.SecretSnapshot{"app/" + key: {1}}
 		after := oracle.SecretSnapshot{"app/" + key: {2}}
-		res, _ := UpgradeValues{}.verdict(t.Context(), Result{}, before, before, after, cmd, cmd, cmd, env)
+		res, _ := UpgradeValues{}.verdict(t.Context(), Result{}, before, before, after, cmd, cmd, cmd, env, nil)
 		if len(res.Findings) != 1 || res.Findings[0].ID != "HB-UV-002" {
 			t.Fatalf("%s: findings %+v, want HB-UV-002", key, res.Findings)
 		}

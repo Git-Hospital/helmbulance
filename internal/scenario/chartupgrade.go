@@ -46,6 +46,9 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		cleanUp(ctx, env, release, ns)
 	}()
 
+	// Runs before the cleanup above, while the release still exists (#115).
+	defer recordPodSecurity(ctx, env, ns, &res)
+
 	if err := startClean(ctx, env, release, ns); err != nil {
 		return inconclusive(res, "could not clear what an earlier run left", err)
 	}
@@ -93,6 +96,13 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 
 	// Treatment: the version under test.
 	mark = len(env.Runner.Transcript())
+	// Who reads which key on the earlier version, so a workload the new version points at a new
+	// key can be told from one that only gained a key (#54).
+	readersBefore, err := env.Kube.SecretConsumers(ctx, ns)
+	if err != nil {
+		fmt.Fprintf(env.Log, "could not map Secret consumers before the upgrade: %v\n", err)
+		readersBefore = nil
+	}
 	upgradeErr := env.Helm.Upgrade(ctx, release, ns, env.Chart, env.Values)
 	repro = append(repro, execx.ReproLine(env.Runner.Transcript()[mark].Line))
 	// A new version whose pods crash ends in the same `--wait` timeout as a slow machine. The
@@ -145,6 +155,8 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 	rest, moved := oracle.Moved(control, upgraded, withoutRefs(oracle.Diff(control, upgraded), regenerated))
 	moved, back := unpairStillRead(moved, consumers)
 	changes, added := splitAdded(append(rest, back...))
+	switched, added := switchedTo(added, readersBefore, consumers, stateful)
+	changes = append(changes, switched...)
 	changes, rotated := splitExpected(changes, env.ExpectedRotation)
 	if len(changes) > 0 {
 		res.Findings = append(res.Findings, Finding{
@@ -153,7 +165,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 			Severity: worstSeverity(changes, consumers, stateful, statefulKnown),
 			Evidence: describe(changes, consumers),
 			Impact: "After the upgrade the application gets different credentials or keys than the " +
-				"ones its data was created with, or loses them.",
+				"ones its data was created with, or loses them." + switchedImpact(switched, "such as a key the new version reads in place of the old one"),
 			Fix: "Keep the Secret names and keys of earlier versions, or migrate the stored value " +
 				"(read the old Secret with `lookup` and carry it over) and say so in the release notes.",
 			Reproduce: repro,

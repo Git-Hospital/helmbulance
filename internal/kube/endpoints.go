@@ -51,7 +51,7 @@ func (c *Client) OutsideEndpoints(ctx context.Context, ns string) (map[string][]
 var OutsideRecheck = 2 * time.Second
 
 func (c *Client) outsideOnce(ctx context.Context, ns string) (map[string][]string, error) {
-	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--namespace", ns, "get", "endpointslices,pods", "-o", "json")
+	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "endpointslices,pods", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
