@@ -146,7 +146,11 @@ func ReadCrashes(ctx context.Context, k *kube.Client, ns string, log io.Writer, 
 			fmt.Fprintf(log, "could not read containers after the timeout: %v\n", err)
 			return nil
 		}
-		if c := crashed(containers); len(c) > 0 || i == crashReads {
+		c := crashed(containers)
+		if len(c) == 0 && i == crashReads {
+			logStates(log, containers)
+		}
+		if len(c) > 0 || i == crashReads {
 			return c
 		}
 		select {
@@ -154,5 +158,26 @@ func ReadCrashes(ctx context.Context, k *kube.Client, ns string, log io.Writer, 
 			return nil
 		case <-time.After(crashReadGap):
 		}
+	}
+}
+
+// logStates writes what each container was doing when no read listed a crash, so a timeout that
+// stays INCONCLUSIVE says why in the run's log: still pulling its image, running, or between two
+// crashes (matrix-crashes-on-1-37 under Helm 3 and 4, 12 November).
+func logStates(log io.Writer, containers []kube.Container) {
+	if len(containers) == 0 {
+		fmt.Fprintln(log, "after the timeout the release has no containers yet")
+		return
+	}
+	for _, c := range containers {
+		state := "running"
+		if c.Waiting != "" {
+			state = "waiting " + c.Waiting
+		}
+		last := ""
+		if c.LastReason != "" {
+			last = fmt.Sprintf(", last run %s (exit %d)", c.LastReason, c.LastExit)
+		}
+		fmt.Fprintf(log, "after the timeout, pod %s container %s: %s, %d restart(s)%s\n", c.Pod, c.Name, state, c.Restarts, last)
 	}
 }
