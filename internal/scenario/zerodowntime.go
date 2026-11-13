@@ -384,8 +384,8 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 			"is wrong with the new version.",
 		Fix: "Run at least two replicas with a RollingUpdate that keeps them available " +
 			"(maxUnavailable: 0), a readiness probe that passes only when the app can serve, a preStop " +
-			"sleep of a few seconds so the pod leaves the Service before it stops. A single replica, " +
-			"or the Recreate strategy, always has a gap. A PodDisruptionBudget helps with node drains " +
+			"sleep of a few seconds so the pod leaves the Service before it stops. A single StatefulSet " +
+			"replica, or the Recreate strategy, always has a gap. A PodDisruptionBudget helps with node drains " +
 			"and other evictions, not rollouts.",
 	})
 	return res
@@ -568,6 +568,8 @@ func causes(workloads []kube.Workload) []string {
 		switch {
 		case w.Kind == "DaemonSet" && (w.MaxSurge == "" || w.MaxSurge == "0" || w.MaxSurge == "0%"):
 			out = append(out, fmt.Sprintf("`%s` updates with maxSurge 0: on each node the old pod stops before the new one starts.", ref))
+		case w.Kind == "Deployment" && w.Replicas == 1 && w.Strategy != "Recreate" && !deploymentCanStopLastPod(w):
+			out = append(out, fmt.Sprintf("`%s` has 1 replica, and its rollout starts the new pod before it stops the old one.", ref))
 		case w.Kind != "DaemonSet" && w.Replicas < 2 && w.Strategy != "Recreate":
 			out = append(out, fmt.Sprintf("`%s` has %d replica; while it restarts nothing else serves.", ref, w.Replicas))
 		}
@@ -726,6 +728,33 @@ func cutoff(restarts []int64, next int) int64 {
 		return restarts[next]
 	}
 	return 0
+}
+
+// deploymentCanStopLastPod reports whether a Deployment's RollingUpdate may stop all of its pods
+// before a new one is ready. Kubernetes scales a percentage maxUnavailable against the replica
+// count and rounds it down, so the default 25% of one replica is 0, and the new pod is started and
+// must be ready before the old one stops (#167). An empty value is the API default, 25%. A value
+// that cannot be read counts as a gap, as before.
+func deploymentCanStopLastPod(w kube.Workload) bool {
+	mu := w.MaxUnavailable
+	if mu == "" {
+		mu = "25%"
+	}
+	var unavailable int
+	if p, ok := strings.CutSuffix(mu, "%"); ok {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return true
+		}
+		unavailable = n * w.Replicas / 100
+	} else {
+		n, err := strconv.Atoi(mu)
+		if err != nil {
+			return true
+		}
+		unavailable = n
+	}
+	return unavailable >= w.Replicas
 }
 
 // oneNodeGap reports whether a workload is a DaemonSet that, on the one-node sandbox, has no pod
