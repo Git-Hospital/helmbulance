@@ -81,6 +81,38 @@ func TestRefuseMissing(t *testing.T) {
 	}
 }
 
+// A chart or --from that starts with '-' would reach helm as a flag in the chart's place, so it is
+// refused before anything runs, on disk or not. test and matrix check it through refuseRemote,
+// scan through refuseMissing.
+func TestRefuseDashRef(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("--debug", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, refs := range [][]string{
+		{"--kubeconfig=/tmp/x"},
+		{"--debug"}, // a directory of that name is on disk
+		{"-x"},
+		{"./--debug", "--post-renderer=x"},
+	} {
+		for name, refuse := range map[string]func() bool{
+			"refuseMissing": func() bool { return refuseMissing(refs...) },
+			"refuseRemote":  func() bool { return refuseRemote(true, refs...) },
+		} {
+			var refused bool
+			out := stderrOf(t, func() { refused = refuse() })
+			if !refused || !strings.Contains(out, "which helm reads as a flag") {
+				t.Errorf("%s(%q) = %v, %q; want it refused as a flag", name, refs, refused, out)
+			}
+		}
+	}
+	// The same directory given as a path is a chart on disk.
+	var refused bool
+	if out := stderrOf(t, func() { refused = refuseMissing("./--debug") }); refused || out != "" {
+		t.Errorf("refuseMissing(./--debug) = %v, %q; want a chart on disk", refused, out)
+	}
+}
+
 func TestScanExit(t *testing.T) {
 	for _, c := range []struct {
 		strict      bool
