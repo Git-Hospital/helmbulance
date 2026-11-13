@@ -8,9 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/Git-Hospital/helmbulance/internal/execx"
 	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
@@ -365,6 +368,87 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+// A values file passed with -f can hold the same secrets as --set, and helm quotes them back in
+// schema errors, a chart's fail message or a Kubernetes "Invalid value" (#58 reviews, N3). Values
+// under a key that names a credential or TLS material are redacted like --set values; the rest
+// of the file is not, so image names and hosts stay readable in error text.
+func TestFileSecrets(t *testing.T) {
+	dir := t.TempDir()
+	values := filepath.Join(dir, "values.yaml")
+	if err := os.WriteFile(values, []byte(`
+image: nginx-1.27
+image: nginx-1.28
+1: one
+db:
+  host: db.example.internal
+  password: FileSecret-7f3a91
+access:
+  users:
+    - name: alice
+      token: tok-0a1b2c3d
+auth:
+  username: admin-user
+  existingSecret: my-release-pg
+  secretKeys:
+    userPasswordKey: user-password
+    password: pg-password-entry
+  tlsSecretName: my-tls-cert
+  passwordFile: /run/secrets/db-pass
+  rootPasswordKey: root-password-key
+apiToken: 12345678
+apiKey: 0x1F2E3D4C
+secretKey: aws-secret-0a1b
+tls:
+  key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQ
+    -----END PRIVATE KEY-----
+passwordUpdateJob:
+  image:
+    tag: latest-1001
+extraEnv:
+  - name: DB_PASSWORD
+    value: EnvSecret-55aa
+  - name: LOG_LEVEL
+    value: debug-level
+featureFlags:
+  enabled: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "other.yaml")
+	if err := os.WriteFile(other, []byte("password: OtherFile-9e8d\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := fileSecrets([]string{values, "-", other + ",https://charts.example/values.yaml", filepath.Join(dir, "missing.yaml")})
+	for _, want := range []string{
+		"FileSecret-7f3a91", "tok-0a1b2c3d", "EnvSecret-55aa", "aws-secret-0a1b", "OtherFile-9e8d",
+		"-----BEGIN PRIVATE KEY-----\nMIIEvQ\n-----END PRIVATE KEY-----\n",
+		// As written, and as helm prints a number it read as float64.
+		"12345678", "1.2345678e+07", "0x1F2E3D4C", "5.23124044e+08",
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("fileSecrets is missing %q: %q", want, got)
+		}
+	}
+	for _, not := range []string{
+		"nginx-1.28", "db.example.internal", "alice", "admin-user", "my-release-pg", "user-password",
+		"root-password-key", "pg-password-entry", "my-tls-cert", "/run/secrets/db-pass", "latest-1001", "debug-level", "true", "one",
+	} {
+		if slices.Contains(got, not) {
+			t.Errorf("fileSecrets hides %q, which is not a secret: %q", not, got)
+		}
+	}
+	if text := execx.Redact("password FileSecret-7f3a91 rejected", execx.SecretValues(got)); strings.Contains(text, "FileSecret") {
+		t.Errorf("Redact left the value: %q", text)
+	}
+	// helm and Kubernetes quote a value in their errors: the PEM key with escaped line breaks.
+	quotedPEM := strconv.Quote("-----BEGIN PRIVATE KEY-----\nMIIEvQ\n-----END PRIVATE KEY-----\n")
+	if text := execx.Redact("invalid value "+quotedPEM, execx.SecretValues(got)); strings.Contains(text, "MIIEvQ") {
+		t.Errorf("Redact left the quoted key: %q", text)
+	}
+}
+
 // A summary can carry a chart's fail message. Printed raw, its newline starts a line that the
 // Action's log reads as a workflow command, and its escape sequences reach the terminal (#58).
 func TestOneLine(t *testing.T) {
@@ -388,6 +472,100 @@ func TestOneLine(t *testing.T) {
 	for in, want := range cases {
 		if got := oneLine(in); got != want {
 			t.Errorf("oneLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Review of #122: a list under a credential key is a list of credentials (bitnami/mongodb's
+// auth.passwords), and values keys such as a toleration's key, topologyKey, externalUrl and
+// authType are not credentials, so a Kubernetes "Invalid value" about them keeps the value.
+func TestFileSecretsListsAndCommonValuesKeys(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte(`
+auth:
+  passwords: [MongoPw-in-a-list]
+  authType: basic-auth
+apiKeys:
+  - ApiKey-in-a-list
+privateKey: PrivKey-77aa
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+topologySpreadConstraints:
+  - topologyKey: kubernetes.io/hostname
+externalUrl: https://grafana.example.com
+connectionTimeout: 30s-timeout
+ca:
+  key: CaKey-0c0c
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := fileSecrets([]string{values})
+	for _, want := range []string{"MongoPw-in-a-list", "ApiKey-in-a-list", "PrivKey-77aa", "CaKey-0c0c"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("fileSecrets is missing %q: %q", want, got)
+		}
+	}
+	for _, not := range []string{"node-role.kubernetes.io/control-plane", "kubernetes.io/hostname", "https://grafana.example.com", "basic-auth", "30s-timeout"} {
+		if slices.Contains(got, not) {
+			t.Errorf("fileSecrets hides %q, which is not a secret: %q", not, got)
+		}
+	}
+}
+
+// Second review of #122, checked with Helm v4.3.0: helm 4 merges every document of a values file,
+// resolves aliases and merge keys, and reads 012345670 as octal, printing 2.739128e+06. Key names
+// that hold a key themselves leak unless they are named, and ssl.key is TLS like tls.key.
+func TestFileSecretsDocumentsAliasesKeysAndOctal(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte(`
+shared: &pw AliasSecret-3c3c
+base: &base
+  password: MergedSecret-4d4d
+db:
+  password: *pw
+  <<: *base
+airflow:
+  fernetKey: Fernet-5e5e
+  jwtKey: Jwt-6f6f
+storage:
+  accountKey: Account-7a7a
+  connectionString: Conn-8b8b
+ssl:
+  key: SslKey-9c9c
+env:
+  - name: STRIPE_KEY
+    value: Stripe-0d0d
+  - name: SORT_ORDER
+    value: ascending-order
+pin:
+  apiToken: 012345670
+s3:
+  secretAccessKey: S3Secret-2f2f
+  secret_key: S3Secret-3a3a
+  secret_access_key: S3Secret-4b4b
+auth:
+  userPasswordKey: user-password-entry
+  adminTokenKey: admin-token-entry
+tolerations:
+  - key: dedicated-node
+---
+db:
+  password: SecondDoc-1e1e
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := fileSecrets([]string{values})
+	for _, want := range []string{
+		"AliasSecret-3c3c", "MergedSecret-4d4d", "Fernet-5e5e", "Jwt-6f6f", "Account-7a7a", "Conn-8b8b",
+		"SslKey-9c9c", "Stripe-0d0d", "S3Secret-2f2f", "S3Secret-3a3a", "S3Secret-4b4b", "SecondDoc-1e1e", "012345670", "2.739128e+06", "2739128",
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("fileSecrets is missing %q: %q", want, got)
+		}
+	}
+	for _, not := range []string{"12345670", "1.234567e+07", "ascending-order", "user-password-entry", "admin-token-entry", "dedicated-node"} {
+		if slices.Contains(got, not) {
+			t.Errorf("fileSecrets hides %q, which is not a secret or not how helm prints it: %q", not, got)
 		}
 	}
 }
@@ -435,5 +613,17 @@ func TestCheckVersions(t *testing.T) {
 func TestMatrixRefusesAnUnsupportedVersionBeforeAnyCluster(t *testing.T) {
 	if code := matrixCmd([]string{"--k8s", "1.29", t.TempDir()}); code != exitError {
 		t.Errorf("exit %d, want %d", code, exitError)
+	}
+}
+
+// An alias that names a node holding it is a cycle in yaml.v3's tree; fileSecrets must return
+// instead of recursing until the stack overflows (review of #122).
+func TestFileSecretsSurvivesASelfReferencingAlias(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte("a: &a [*a]\npassword: AfterTheCycle-5c5c\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileSecrets([]string{values}); !slices.Contains(got, "AfterTheCycle-5c5c") {
+		t.Errorf("fileSecrets = %q, want the password after the cycle", got)
 	}
 }
