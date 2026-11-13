@@ -51,7 +51,7 @@ Nothing is released yet, so pin the Action to a full commit SHA.
 | `scenarios` | | Scenarios to run, one per line. Empty runs the default set. |
 | `from` | | Chart that `chart-upgrade` and `zero-downtime` upgrade from: a path, or with `allow-remote` a `repo/chart`, `oci://…` or URL reference. |
 | `allow-remote` | `false` | `true` lets `chart` and `from` name a chart from a repository, OCI registry or URL. Without it such a reference ends the run with exit 2. |
-| `from-version` | | Version to upgrade from. Setting it enables `chart-upgrade`. For a local `chart`, also set `from` to the earlier chart; without it the run stops with exit 2, because helm ignores the version of a path. |
+| `from-version` | | Version to upgrade from. Setting it enables `chart-upgrade` and `rollback`. For a local `chart`, also set `from` to the earlier chart; without it the run stops with exit 2, because helm ignores the version of a path. |
 | `traffic-target` | | Where `zero-downtime` sends its requests, `service:port`. Empty picks the Service port that looks most like plain HTTP. |
 | `traffic-path` | | The path `zero-downtime` requests; it must answer 2xx. Empty means `/`. |
 | `expected-rotation` | | Secret keys the chart changes on purpose, one `secret/key` pattern per line, globs allowed (`'*-webhook-tls/*'`). They are named in the summary, not reported. |

@@ -1,0 +1,34 @@
+# Refuses data in a format newer than its own, as many stores do.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-db
+spec:
+  replicas: 1
+  serviceName: {{ .Release.Name }}-db
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-db}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-db}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65535, runAsGroup: 65535, fsGroup: 65535}
+      containers:
+        - name: db
+          image: busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+          command:
+            - sh
+            - -c
+            - |
+              if [ -f /data/format ] && [ "$(cat /data/format)" -gt 1 ]; then
+                echo "data format $(cat /data/format) is newer than this version reads" >&2
+                exit 1
+              fi
+              echo 1 > /data/format
+              exec sleep 2147483647
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: data, mountPath: /data}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 10Mi}}}

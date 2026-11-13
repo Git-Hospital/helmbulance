@@ -80,9 +80,9 @@ jobs:
     name: fixtures (Helm ${{ matrix.major }})
     needs: test
     runs-on: ubuntu-24.04
-    # One pass no longer fits in 60 minutes with the fixture pairs added for #60; the nightly run
-    # makes three.
-    timeout-minutes: ${{ github.event_name == 'schedule' && 240 || 90 }}
+    # One pass takes about 59 minutes on main with the #60 pairs, and the rollback pairs add 12 to 19;
+    # the nightly run makes three.
+    timeout-minutes: ${{ github.event_name == 'schedule' && 300 || 90 }}
     permissions:
       contents: read
     strategy:

@@ -3,6 +3,7 @@ package helm
 import (
 	"context"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -81,4 +82,37 @@ type object struct {
 		Namespace string `yaml:"namespace"`
 	} `yaml:"metadata"`
 	Items []object `yaml:"items"`
+}
+
+// HookJobs maps the release's hook Jobs in ns, as "Job/<name>", to their helm.sh/hook value, such
+// as "pre-rollback" or "pre-upgrade,post-install". Their pods are then not mistaken for
+// application containers, and a failed hook is told apart from a hook of another kind.
+func (c *Client) HookJobs(ctx context.Context, release, ns string) (map[string]string, error) {
+	out, err := c.run(ctx, append([]string{"get", "hooks", release}, c.base(ns)...)...)
+	if err != nil {
+		return nil, err
+	}
+	jobs := map[string]string{}
+	for _, text := range docSeparator.Split(string(out), -1) {
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		var doc struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name        string            `yaml:"name"`
+				Namespace   string            `yaml:"namespace"`
+				Annotations map[string]string `yaml:"annotations"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+			return nil, err
+		}
+		if doc.Kind == "Job" && doc.Metadata.Name != "" &&
+			(doc.Metadata.Namespace == "" || doc.Metadata.Namespace == ns) &&
+			doc.Metadata.Annotations["helm.sh/hook"] != "" {
+			jobs["Job/"+doc.Metadata.Name] = doc.Metadata.Annotations["helm.sh/hook"]
+		}
+	}
+	return jobs, nil
 }

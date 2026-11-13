@@ -168,6 +168,8 @@ func TestRefuseChartUpgradeWithoutFromVersion(t *testing.T) {
 		{[]string{"upgrade-without-values", "chart-upgrade"}, "", true},
 		{[]string{"chart-upgrade"}, "", true},
 		{[]string{"chart-upgrade"}, "1.0.0", false},
+		{[]string{"rollback"}, "", true},
+		{[]string{"rollback"}, "1.0.0", false},
 	} {
 		var refused bool
 		out := stderrOf(t, func() { refused = refuseChartUpgradeWithoutFromVersion(c.only, c.fromVersion) })
