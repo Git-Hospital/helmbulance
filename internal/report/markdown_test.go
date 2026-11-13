@@ -226,3 +226,50 @@ func TestMarkdownKeepsReproduceInItsBlock(t *testing.T) {
 		t.Errorf("the fence is not longer than the backticks inside:\n%s", md)
 	}
 }
+
+// A control between backticks is dropped when the line is written, so the fence must be counted on
+// the written line, or "`​“" becomes a fence that closes the block (#170).
+func TestMarkdownFenceCountsTheWrittenLine(t *testing.T) {
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "scan",
+		Verdict:  scenario.Fail,
+		Findings: []scenario.Finding{{
+			ID:        "HB-SCAN-004",
+			Title:     "x",
+			Reproduce: []string{"helm template c", "`​``", "![i](https://evil.example/r.png)"},
+		}},
+	}}}
+	md := r.Markdown()
+	if !strings.Contains(md, "````sh\n") {
+		t.Errorf("the fence is not longer than the written backticks:\n%s", md)
+	}
+}
+
+// Evidence is a list item, so what starts a block there must be escaped, not only a heading (#170).
+func TestMarkdownEscapesBlockStartsInEvidence(t *testing.T) {
+	cases := map[string]string{
+		"- # x":       `\- # x`,
+		"* ## x":      `\* ## x`,
+		"+ x":         `\+ x`,
+		"1. ## x":     `1\. ## x`,
+		"12) x":       `12\) x`,
+		"---":         `\---`,
+		"* * *":       `\* * *`,
+		"___":         `\___`,
+		"```":         "\\```",
+		"~~~":         `\~~~`,
+		"  # x":       `\# x`,
+		"`pod` x":     "`pod` x",
+		"3 of 80":     "3 of 80",
+		"1.2% failed": "1.2% failed",
+		"-x":          "-x",
+		"**bold**":    "**bold**",
+	}
+	for in, want := range cases {
+		r := &Report{Results: []scenario.Result{{Scenario: "s", Verdict: scenario.Fail,
+			Findings: []scenario.Finding{{ID: "HB-X", Title: "t", Evidence: []string{in}}}}}}
+		if md := r.Markdown(); !strings.Contains(md, "\n- "+want+"\n") {
+			t.Errorf("evidence %q: want the line %q in\n%s", in, "- "+want, md)
+		}
+	}
+}
