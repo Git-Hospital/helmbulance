@@ -161,7 +161,10 @@ jobs:
     name: mutation (report)
     needs: test
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 45, not 30: internal/scenario runs every mutant against the package's tests, so the time grows
+    # with both. #158 took it from 614 mutants and 89 s of tests to 702 and 111 s, and the job from
+    # 24 minutes to past 30, where it was cancelled before writing the report.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
