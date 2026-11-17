@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -28,6 +29,8 @@ import (
 	"github.com/Git-Hospital/helmbulance/internal/sandbox"
 	"github.com/Git-Hospital/helmbulance/internal/scan"
 	"github.com/Git-Hospital/helmbulance/internal/scenario"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Exit codes.
@@ -41,6 +44,7 @@ const (
 var scenarios = []scenario.Scenario{
 	scenario.UpgradeValues{},
 	scenario.ChartUpgrade{},
+	scenario.Rollback{},
 	scenario.ZeroDowntime{},
 	scenario.Reinstall{},
 	scenario.GitopsRender{},
@@ -150,11 +154,11 @@ func test(args []string) int {
 		return exitError
 	}
 	if *fromVersion == "" && len(only) == 0 {
-		selected = without(selected, "chart-upgrade")
+		selected = without(without(selected, "chart-upgrade"), "rollback")
 	}
 
 	runner := execx.NewSandboxRunner()
-	runner.Secrets = execx.SetValues(sets)
+	runner.Secrets = append(execx.SetValues(sets), execx.SecretValues(fileSecrets(files))...)
 	runner.Paths = localPaths()
 	started := time.Now()
 	warnUnrecorded(ctx, runner)
@@ -308,9 +312,16 @@ func refuseRemote(allow bool, refs ...string) bool {
 }
 
 // refuseMissing stops a run on a ref that helm reads only as a path and that is not on disk. That
-// is a typo, and a run on it would only report that it could not render the chart (#50).
+// is a typo, and a run on it would only report that it could not render the chart (#50). A ref
+// that starts with '-' is stopped too, on disk or not: helm would read it as a flag in the chart's
+// place.
 func refuseMissing(refs ...string) bool {
 	for _, ref := range refs {
+		if strings.HasPrefix(ref, "-") {
+			r := execx.RedactURLs(ref)
+			fmt.Fprintf(os.Stderr, "chart or --from %s starts with '-', which helm reads as a flag; give a directory of that name as ./%s\n", r, r)
+			return true
+		}
 		if ref != "" && !helm.IsLocal(ref) && helm.IsPath(ref) {
 			fmt.Fprintf(os.Stderr, "path not found: %s\n", ref)
 			return true
@@ -339,6 +350,196 @@ func refuseMissingTools(tools ...string) bool {
 	return true
 }
 
+// fileSecrets returns the values in local -f files that a key names as a credential or TLS
+// material, so they are redacted like --set values: helm quotes values back in schema errors, a
+// chart's fail message and Kubernetes "Invalid value" errors. Only the leaf's own key counts
+// (db.password, users[].token, tls.key, apiKey), and an env item {name: DB_PASSWORD, value: …}; a
+// parent such as auth or passwordUpdateJob does not, and keys that name a Secret or a key in one
+// (existingSecret, secretName, secretKeys.*, userPasswordKey) are not secrets. Other values stay
+// readable in error text (image names, hosts, user names). The file is read as YAML nodes, so a
+// repeated key or a non-string key does not hide the rest of it, as it would with yaml.Unmarshal
+// into a map; a file that cannot be read or parsed is skipped, and helm reports it. -f takes a
+// comma list too.
+func fileSecrets(files []string) []string {
+	var out []string
+	for _, arg := range files {
+		for _, f := range strings.Split(arg, ",") {
+			if f == "" || f == "-" || strings.Contains(f, "://") {
+				continue
+			}
+			b, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			// helm reads every document of a values file, so a later one can hold a password too
+			// (review of #122). A document that cannot be parsed ends the file; helm reports it.
+			dec := yaml.NewDecoder(bytes.NewReader(b))
+			for {
+				var doc yaml.Node
+				if dec.Decode(&doc) != nil {
+					break
+				}
+				out = secretScalars(&doc, "", out, 0)
+			}
+		}
+	}
+	return out
+}
+
+// secretScalars walks a YAML node and appends the scalars that fileSecrets keeps. parent is the
+// key the node is under, so tls.key and ca.key count while a toleration's key does not.
+func secretScalars(n *yaml.Node, parent string, out []string, depth int) []string {
+	// An alias can name a node that holds it (a: &a [*a]), which yaml.v3 returns as a cycle; helm
+	// rejects such a file, so the walk stops instead of overflowing the stack (review of #122).
+	if depth > maxValuesDepth {
+		return out
+	}
+	switch n.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, c := range n.Content {
+			out = secretScalars(c, parent, out, depth+1)
+		}
+	case yaml.AliasNode:
+		if n.Alias != nil {
+			out = secretScalars(n.Alias, parent, out, depth+1)
+		}
+	case yaml.MappingNode:
+		envSecret := false
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if k, v := n.Content[i], resolveAlias(n.Content[i+1]); k.Value == "name" && v.Kind == yaml.ScalarNode && envSecretName(v.Value) {
+				envSecret = true
+			}
+		}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], resolveAlias(n.Content[i+1])
+			if k.Value == "<<" {
+				// A merge key puts the aliased mapping's keys into this one, under the same parent.
+				out = secretScalars(v, parent, out, depth+1)
+				continue
+			}
+			secret := secretKey(k.Value) || tlsKey(parent, k.Value)
+			switch {
+			case v.Kind == yaml.ScalarNode && (secret || (envSecret && k.Value == "value")):
+				out = append(out, scalarForms(v)...)
+				continue
+			case v.Kind == yaml.SequenceNode && secret:
+				// A list under a credential key holds credentials too, as bitnami/mongodb's
+				// auth.passwords does (review of #122).
+				for _, item := range v.Content {
+					if item = resolveAlias(item); item.Kind == yaml.ScalarNode {
+						out = append(out, scalarForms(item)...)
+					}
+				}
+			}
+			if !strings.EqualFold(k.Value, "secretKeys") {
+				out = secretScalars(v, k.Value, out, depth+1)
+			}
+		}
+	}
+	return out
+}
+
+// secretKey reports whether a values key holds a secret: ValuesKeyClass calls it a credential or TLS,
+// and it is not a reference to one (existingSecret, secretName, userPasswordKey, a …Ref, Path or
+// File). A key ending in Key whose other words already name a credential (userPasswordKey,
+// adminPasswordKey) names a key inside a Secret; apiKey, secretKey and privateKey are keys
+// themselves.
+func secretKey(key string) bool {
+	if keyNames[strings.ToLower(key)] {
+		return true
+	}
+	if oracle.ValuesKeyClass(key) == oracle.ClassOther {
+		return false
+	}
+	k := strings.ToLower(key)
+	// secretKeys maps keys to the names of keys in a Secret; apiKeys is a list of keys.
+	if strings.HasPrefix(k, "existing") || k == "secretkeys" {
+		return false
+	}
+	for _, suffix := range []string{"name", "ref", "path", "file", "filename"} {
+		if strings.HasSuffix(k, suffix) {
+			return false
+		}
+	}
+	// Compared without _ and -, so secret_key and secret-access-key are read like secretKey and
+	// secretAccessKey, the S3 names (review of #122).
+	switch strings.NewReplacer("_", "", "-", "").Replace(k) {
+	case "apikey", "secretkey", "secretaccesskey", "privatekey", "accesskey", "encryptionkey", "signingkey", "masterkey":
+		return true
+	}
+	// userPasswordKey and adminTokenKey name a key in a Secret; jwtKey is the key itself.
+	if trimmed, ok := strings.CutSuffix(k, "key"); ok {
+		for _, w := range []string{"password", "passwd", "token", "secret", "credential"} {
+			if strings.Contains(trimmed, w) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// maxValuesDepth bounds how deep secretScalars follows a values file; real ones stay far below it.
+const maxValuesDepth = 1000
+
+// keyNames are values keys that hold a key or a connection string although ValuesKeyClass does
+// not class them (review of #122): fernetKey is Airflow's, accountKey Azure Storage's.
+var keyNames = map[string]bool{
+	"fernetkey": true, "accountkey": true, "storagekey": true, "storageaccountkey": true, "sharedkey": true,
+	"hmackey": true, "sessionkey": true, "cookiekey": true, "licensekey": true, "connectionstring": true,
+}
+
+// tlsParents are the parents under which a key named key or crt is TLS material: tls.key and
+// ca.key as before, and ssl.key or https.key. A list, so that a toleration's key stays readable.
+var tlsParents = map[string]bool{
+	"tls": true, "ssl": true, "ca": true, "https": true, "mtls": true, "cert": true, "certs": true,
+	"certificate": true, "certificates": true, "x509": true,
+}
+
+func tlsKey(parent, key string) bool {
+	return oracle.KeyClass(parent+"."+key) == oracle.ClassTLS ||
+		(strings.EqualFold(key, "key") && tlsParents[strings.ToLower(parent)])
+}
+
+// envSecretName reports whether an env item's name marks its value as a secret: a credential name
+// such as DB_PASSWORD, or a name that ends in KEY (STRIPE_KEY, AWS_SECRET_ACCESS_KEY). An env
+// value names no key in a Secret; that is valueFrom.
+func envSecretName(name string) bool {
+	if oracle.ValuesKeyClass(name) != oracle.ClassOther {
+		return true
+	}
+	n := strings.ToUpper(name)
+	return strings.HasSuffix(n, "_KEY") || strings.HasSuffix(n, "APIKEY")
+}
+
+// resolveAlias follows *anchor to the node it names, so password: *pw is read like the value.
+func resolveAlias(n *yaml.Node) *yaml.Node {
+	for n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	return n
+}
+
+// scalarForms is a scalar as written, and a number also as helm prints it once it has read the
+// value into a float64 (12345678 becomes 1.2345678e+07 in a template).
+func scalarForms(v *yaml.Node) []string {
+	forms := []string{v.Value}
+	if v.Tag == "!!int" || v.Tag == "!!float" {
+		// An integer first, with its base: helm reads 012345670 as octal, so 2739128 is printed, and
+		// ParseFloat would take it as decimal (review of #122).
+		var f float64
+		i, err := strconv.ParseInt(v.Value, 0, 64)
+		if err == nil {
+			f = float64(i)
+		} else {
+			f, err = strconv.ParseFloat(v.Value, 64)
+		}
+		if err == nil {
+			forms = append(forms, fmt.Sprint(f), strconv.FormatFloat(f, 'f', -1, 64))
+		}
+	}
+	return forms
+}
+
 // refuseMissingValues stops a run on a -f values file that is not on disk. helm reads -f as a file,
 // a URL or "-" for standard input, never as a chart repository, so unlike a chart ref any other
 // value must exist. Without this, test and matrix started a cluster first, and scan reported that it
@@ -358,12 +559,18 @@ func refuseMissingValues(files []string) bool {
 // --from-version. chart-upgrade would have no earlier version to upgrade from and be SKIPPED, which
 // counts for nothing, so the run could exit 0 with the upgrade never tested. Without --scenario the
 // default set leaves chart-upgrade out instead.
+// rollback is refused the same way: it rolls back to the earlier version.
 func refuseChartUpgradeWithoutFromVersion(only []string, fromVersion string) bool {
-	if fromVersion != "" || !slices.Contains(only, "chart-upgrade") {
+	if fromVersion != "" {
 		return false
 	}
-	fmt.Fprintln(os.Stderr, "--scenario chart-upgrade needs --from-version: give the version users upgrade from, e.g. --from-version 1.2.3 (and --from with a local chart).")
-	return true
+	for _, name := range []string{"chart-upgrade", "rollback"} {
+		if slices.Contains(only, name) {
+			fmt.Fprintf(os.Stderr, "--scenario %s needs --from-version: give the version users upgrade from, e.g. --from-version 1.2.3 (and --from with a local chart).\n", name)
+			return true
+		}
+	}
+	return false
 }
 
 // refuseFromVersion stops a run whose --from-version cannot take effect. helm ignores --version for
@@ -470,7 +677,7 @@ func matrixCmd(args []string) int {
 	defer stop()
 
 	runner := execx.NewSandboxRunner()
-	runner.Secrets = execx.SetValues(sets)
+	runner.Secrets = append(execx.SetValues(sets), execx.SecretValues(fileSecrets(files))...)
 	runner.Paths = localPaths()
 	started := time.Now()
 	warnUnrecorded(ctx, runner)
@@ -538,7 +745,7 @@ func scanCmd(args []string) int {
 	ctx, stop := interruptContext()
 	defer stop()
 	runner := execx.NewSandboxRunner()
-	runner.Secrets = execx.SetValues(sets)
+	runner.Secrets = append(execx.SetValues(sets), execx.SecretValues(fileSecrets(files))...)
 	runner.Paths = localPaths()
 	started := time.Now()
 	rep := &report.Report{

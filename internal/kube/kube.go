@@ -485,34 +485,46 @@ func (c *Client) Pods(ctx context.Context, ns string) ([]Pod, error) {
 	return pods, nil
 }
 
-// FailedJobs returns the Jobs in ns that gave up (condition Failed) or are retrying after a failed
-// attempt, as "Job/<name>: <message>".
-func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
+// job is the part of a Job that FailedJobs and JobStates read.
+type job struct {
+	Metadata struct {
+		Name        string            `json:"name"`
+		Annotations map[string]string `json:"annotations"`
+	} `json:"metadata"`
+	Status struct {
+		Failed     int `json:"failed"`
+		Conditions []struct {
+			Type    string `json:"type"`
+			Status  string `json:"status"`
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"conditions"`
+	} `json:"status"`
+}
+
+func (c *Client) jobs(ctx context.Context, ns string) ([]job, error) {
 	out, err := c.Runner.Run(ctx, "kubectl", "--kubeconfig", c.Kubeconfig, "--request-timeout", readTimeout, "--namespace", ns, "get", "jobs", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
 	var list struct {
-		Items []struct {
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-			Status struct {
-				Failed     int `json:"failed"`
-				Conditions []struct {
-					Type    string `json:"type"`
-					Status  string `json:"status"`
-					Reason  string `json:"reason"`
-					Message string `json:"message"`
-				} `json:"conditions"`
-			} `json:"status"`
-		} `json:"items"`
+		Items []job `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
 		return nil, fmt.Errorf("parse jobs: %w", err)
 	}
+	return list.Items, nil
+}
+
+// FailedJobs returns the Jobs in ns that gave up (condition Failed) or are retrying after a failed
+// attempt, as "Job/<name>: <message>".
+func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
+	items, err := c.jobs(ctx, ns)
+	if err != nil {
+		return nil, err
+	}
 	var failed []string
-	for _, item := range list.Items {
+	for _, item := range items {
 		finished := false
 		for _, cond := range item.Status.Conditions {
 			if cond.Status != "True" {
@@ -534,6 +546,34 @@ func (c *Client) FailedJobs(ctx context.Context, ns string) ([]string, error) {
 	}
 	sort.Strings(failed)
 	return failed, nil
+}
+
+// JobState is what a scenario needs to know about one Job: whether it finished with condition
+// Complete, and its helm.sh/hook annotation, empty for a Job that is not a hook.
+type JobState struct {
+	Complete bool
+	Hook     string
+}
+
+// JobStates maps the Jobs in ns, as "Job/<name>", to their state. A Complete Job's failed pods
+// were attempts that a later pod made good. The hook annotation is read from the Job itself, so a
+// hook left over from another revision of the release is still known as one.
+func (c *Client) JobStates(ctx context.Context, ns string) (map[string]JobState, error) {
+	items, err := c.jobs(ctx, ns)
+	if err != nil {
+		return nil, err
+	}
+	states := map[string]JobState{}
+	for _, item := range items {
+		st := JobState{Hook: item.Metadata.Annotations["helm.sh/hook"]}
+		for _, cond := range item.Status.Conditions {
+			if cond.Type == "Complete" && cond.Status == "True" {
+				st.Complete = true
+			}
+		}
+		states["Job/"+item.Metadata.Name] = st
+	}
+	return states, nil
 }
 
 // Service is one Service of the release and the ports it exposes.

@@ -12,6 +12,7 @@ type Container struct {
 	Pod      string
 	PodUID   string
 	Owner    string // kind/name of the pod's controlling object
+	PodPhase string // Pending, Running, Succeeded, Failed or Unknown
 	Name     string
 	Init     bool
 	Restarts int
@@ -67,6 +68,7 @@ func parseContainers(out []byte) ([]Container, error) {
 				} `json:"ownerReferences"`
 			} `json:"metadata"`
 			Status struct {
+				Phase                 string            `json:"phase"`
 				InitContainerStatuses []containerStatus `json:"initContainerStatuses"`
 				ContainerStatuses     []containerStatus `json:"containerStatuses"`
 			} `json:"status"`
@@ -85,7 +87,7 @@ func parseContainers(out []byte) ([]Container, error) {
 			owner = refs[0].Kind + "/" + refs[0].Name
 		}
 		add := func(s containerStatus, init bool) {
-			c := Container{Pod: item.Metadata.Name, PodUID: item.Metadata.UID, Owner: owner, Name: s.Name, Init: init, Restarts: s.RestartCount}
+			c := Container{Pod: item.Metadata.Name, PodUID: item.Metadata.UID, Owner: owner, PodPhase: item.Status.Phase, Name: s.Name, Init: init, Restarts: s.RestartCount}
 			if s.State.Waiting != nil {
 				c.Waiting = s.State.Waiting.Reason
 			}

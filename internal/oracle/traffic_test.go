@@ -61,3 +61,51 @@ func TestParseTrafficBetween(t *testing.T) {
 		t.Errorf("[104, end) = %+v, want 1 of 2 failed", s)
 	}
 }
+
+// The traffic pod writes what wget printed after "fail" (#162). Only short reasons are kept, and a
+// line in the old two-field format still counts.
+func TestParseTrafficReasons(t *testing.T) {
+	log := "10 ok\n" +
+		"11 fail wget: server returned error: HTTP/1.1 404 Not Found\n" +
+		"11 fail wget: server returned error: HTTP/1.1 404 Not Found\n" +
+		"12 fail wget: can't connect to remote host (10.96.0.4): Connection refused\n" +
+		"13 fail\n" +
+		"14 fail wget: something new\n" +
+		"15 ok trailing words\n"
+	s := ParseTraffic(log)
+	if s.Total != 6 || s.Failed != 5 {
+		t.Fatalf("total %d failed %d, want 6 and 5 (an ok line with extra words is not a request)", s.Total, s.Failed)
+	}
+	if s.Reasons["HTTP 404 Not Found"] != 2 || s.Reasons["connection refused"] != 1 || len(s.Reasons) != 2 {
+		t.Errorf("reasons %v, want two 404s and one refused", s.Reasons)
+	}
+	if r, n := s.MostCommonReason(); r != "HTTP 404 Not Found" || n != 2 {
+		t.Errorf("MostCommonReason = %q, %d", r, n)
+	}
+	if r, n := ParseTraffic("1 fail\n").MostCommonReason(); r != "" || n != 0 {
+		t.Errorf("no reasons: MostCommonReason = %q, %d, want nothing", r, n)
+	}
+}
+
+// What the pinned busybox 1.36.1 wget prints for each case, captured by running it.
+func TestFailureReason(t *testing.T) {
+	for in, want := range map[string]string{
+		"wget: server returned error: HTTP/1.1 404 Not Found":                "HTTP 404 Not Found",
+		"wget: server returned error: HTTP/1.1 400 Bad Request":              "HTTP 400 Bad Request",
+		"wget: can't connect to remote host (127.0.0.1): Connection refused": "connection refused",
+		"wget: bad address 'no-such-host.invalid'":                           "name not resolved",
+		"wget: download timed out":                                           "timed out",
+		"wget: error getting response: Connection reset by peer":             "connection reset",
+		"wget: server returned error: garbled":                               "an HTTP error",
+		"wget: server returned error: HTTP/1.1 400 ":                         "HTTP 400 Bad Request",
+		"wget: server returned error: HTTP/1.1 404 see http://10.0.0.5/x":    "HTTP 404 Not Found",
+		"wget: server returned error: HTTP/1.1 599 Custom":                   "HTTP 599",
+		"wget: server returned error: HTTP/1.1 abc Bad":                      "an HTTP error",
+		"":                     "",
+		"wget: something else": "",
+	} {
+		if got := FailureReason(in); got != want {
+			t.Errorf("FailureReason(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

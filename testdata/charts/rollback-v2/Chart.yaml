@@ -1,0 +1,5 @@
+apiVersion: v2
+name: rollback-fixture
+description: "Helmbulance fixture: the version rollback goes back from. Its StatefulSet writes data format 2 to its volume (#130)."
+type: application
+version: 2.0.0

@@ -102,3 +102,127 @@ func TestWriteHidesChartURLCredentials(t *testing.T) {
 		}
 	}
 }
+
+// A chart's fail message reaches the evidence, and the job summary renders report.md: a Markdown
+// link or image in it must stay text, and control characters must not reach report.md at all.
+// Impact and Fix are escaped too, without the evidence's length cut.
+func TestMarkdownNeutralisesLinksAndControls(t *testing.T) {
+	long := strings.Repeat("x", 600)
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "chart-upgrade",
+		Verdict:  scenario.Fail,
+		Findings: []scenario.Finding{{
+			ID:    "HB-CU-001",
+			Title: "Upgrading fails",
+			Evidence: []string{
+				"Error: [Re-run with your token](https://evil.example/login) ![p](https://evil.example/pixel.png)",
+				`Error: \[escaped\](https://evil.example/2) [ref][r]`,
+				"`Deployment/x spec.template.spec.containers[app].env[FOO].value`",
+				"Error: a" + "\x1b]0;title" + "\x07" + "b " + "\u202egnp.exe" + "\u202c" + " c" + "\u009b" + "d",
+			},
+			Impact: "<img src=x>" + "\n## Not a heading",
+			Fix:    "Set it. " + long,
+		}},
+	}}}
+	md := r.Markdown()
+	for _, bad := range []string{"![p](", "](https://evil.example/2)", "][r]", "\x1b", "\x07", "\u202e", "\u009b", "<img", "\n## Not a heading"} {
+		if strings.Contains(md, bad) {
+			t.Errorf("report.md contains %q:\n%s", bad, md)
+		}
+	}
+	if !strings.Contains(md, "[Re-run with your token]&#40;https://evil.example/login)") {
+		t.Errorf("the link text is not kept as text:\n%s", md)
+	}
+	if !strings.Contains(md, "`Deployment/x spec.template.spec.containers[app].env[FOO].value`") {
+		t.Errorf("a field path in a code span was changed:\n%s", md)
+	}
+	if !strings.Contains(md, long) {
+		t.Error("Fix was cut: only evidence has a length limit")
+	}
+}
+
+// A link reference definition needs "]:" right after its label, and is valid at the start of a list
+// item, as every evidence line is. With it, a shortcut ![x] in a summary becomes an image the job
+// summary fetches (review of #121).
+func TestMarkdownNeutralisesLinkReferenceDefinitions(t *testing.T) {
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "matrix",
+		Verdict:  scenario.Fail,
+		Summary:  "see ![x]",
+		Findings: []scenario.Finding{{
+			ID:       "HB-MX-002",
+			Title:    "x",
+			Evidence: []string{"[x]: https://example.invalid/p.png"},
+		}},
+	}}}
+	md := r.Markdown()
+	if strings.Contains(md, "[x]:") {
+		t.Errorf("report.md keeps a link reference definition:\n%s", md)
+	}
+	if !strings.Contains(md, "[x]&#58; https://example.invalid/p.png") {
+		t.Errorf("the evidence is not kept as text:\n%s", md)
+	}
+}
+
+// A control or bidi character between "]" and "(" hid the pair from the link breaking, and dropping
+// it afterwards joined them again (review of #121). The four lines from that review stay text.
+func TestMarkdownDropsControlsBeforeBreakingLinks(t *testing.T) {
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "chart-upgrade",
+		Verdict:  scenario.Fail,
+		Summary:  "see ![x]",
+		Findings: []scenario.Finding{{
+			ID:    "HB-CU-001",
+			Title: "x",
+			Evidence: []string{
+				"Error: [Re-run here]\x00(https://evil.example/login)",
+				"Error: ![p]\x7f(https://evil.example/pixel.png)",
+				"Error: !\u202e[p]\u202c(https://evil.example/pixel.png)",
+				"[x]\x01: https://evil.example/ref.png",
+				"# Not a heading",
+				"a\u200b\u200e\ufeff\u2028b",
+			},
+		}},
+	}}}
+	md := r.Markdown()
+	for _, bad := range []string{"](https://evil.example", "[x]:", "\n- # Not", "\u200b", "\u200e", "\ufeff", "\u2028"} {
+		if strings.Contains(md, bad) {
+			t.Errorf("report.md contains %q:\n%s", bad, md)
+		}
+	}
+	for _, want := range []string{"[Re-run here]&#40;https://evil.example/login)", "![p]&#40;https://evil.example/pixel.png)", "[x]&#58; https://evil.example/ref.png", `\# Not a heading`, "ab"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("report.md does not keep %q as text:\n%s", want, md)
+		}
+	}
+}
+
+// A reproduce line can carry a values key from the chart. A line break and a fence in it must not
+// close the code block and let the rest render as Markdown.
+func TestMarkdownKeepsReproduceInItsBlock(t *testing.T) {
+	r := &Report{Results: []scenario.Result{{
+		Scenario: "scan",
+		Verdict:  scenario.Fail,
+		Findings: []scenario.Finding{{
+			ID:        "HB-SCAN-004",
+			Title:     "x",
+			Reproduce: []string{"helm template c --set-json 'a\n```\n![i](https://evil.example/r.png)=1'"},
+		}},
+	}}}
+	md := r.Markdown()
+	fences := 0
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "```") {
+			fences++
+		}
+		if strings.HasPrefix(line, "![i]") {
+			t.Errorf("the reproduce line left its code block:\n%s", md)
+		}
+	}
+	if fences != 2 {
+		t.Errorf("got %d fence lines, want the block's own 2:\n%s", fences, md)
+	}
+	if !strings.Contains(md, "````sh\n") {
+		t.Errorf("the fence is not longer than the backticks inside:\n%s", md)
+	}
+}

@@ -49,6 +49,25 @@ func TestPickTarget(t *testing.T) {
 		{"oauth2 in a name is not h2", []kube.Service{
 			svc("auth", kube.ServicePort{Name: "oauth2", Port: 8080}),
 		}, "auth:8080"},
+		// A metrics port often answers only /metrics, so the control fails (#162).
+		{"a metrics Service on a common number loses to any other", []kube.Service{
+			svc("kyverno-svc-metrics", kube.ServicePort{Name: "metrics-port", Port: 8000}),
+			svc("kyverno-ui", kube.ServicePort{Name: "http-alt", Port: 9000}),
+		}, "kyverno-ui:9000"},
+		{"a port named metrics loses even when it is called http", []kube.Service{
+			svc("app", kube.ServicePort{Name: "http-metrics", Port: 80}, kube.ServicePort{Name: "http-api", Port: 9000}),
+		}, "app:9000"},
+		{"a metrics port is still picked when it is the only one", []kube.Service{
+			svc("exporter-metrics", kube.ServicePort{Name: "http", Port: 9100}),
+		}, "exporter-metrics:9100"},
+		{"among metrics ports the usual order still holds", []kube.Service{
+			svc("monitoring-exporter", kube.ServicePort{Name: "tcp", Port: 8080}),
+			svc("monitoring-ui", kube.ServicePort{Name: "http", Port: 3000}),
+		}, "monitoring-ui:3000"},
+		{"metricsserver is not the word metrics", []kube.Service{
+			svc("metricsserver", kube.ServicePort{Name: "http", Port: 80}),
+			svc("app", kube.ServicePort{Name: "http-alt", Port: 9000}),
+		}, "metricsserver:80"},
 		{"a tie keeps the first", []kube.Service{
 			svc("a", kube.ServicePort{Name: "web", Port: 1}),
 			svc("b", kube.ServicePort{Name: "http", Port: 2}),
