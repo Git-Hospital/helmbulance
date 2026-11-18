@@ -2,7 +2,7 @@
 
 **Behavioural tests for Helm charts.** Helmbulance installs a chart into a throwaway Kubernetes cluster and runs the things that go wrong in production: upgrades without the original values, uninstall and reinstall, password rotation, network isolation, broken processes, hostile traffic. It reports what actually broke, with evidence and a suggested fix.
 
-> **Status: early.** The CLI runs five scenarios (`upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`) end to end on kind. [v0.1.0](https://github.com/Git-Hospital/helmbulance/releases/tag/v0.1.0) is the first release. See [docs/architecture.md](docs/architecture.md) for the design.
+> **Status: early.** The CLI runs six scenarios (`upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `rollback`) end to end on kind. [v0.1.0](https://github.com/Git-Hospital/helmbulance/releases/tag/v0.1.0) is the first release. See [docs/architecture.md](docs/architecture.md) for the design.
 
 ## Why
 
@@ -31,7 +31,7 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 |---|---|---|
 | `upgrade-without-values` | Does an upgrade from the values files, without the install-time `--set` flags, change or drop Secret values? | **works** |
 | `chart-upgrade` | Does upgrading from an earlier chart version, with the same values, succeed, keep the Secrets, and leave the workloads healthy? | **works** |
-| `rollback` | After an upgrade to the new chart version, does `helm rollback` bring the earlier version back deployed, healthy and with the same Secrets? | **works** (on `main`, after v0.1) |
+| `rollback` | After an upgrade to the new chart version, does `helm rollback` bring the earlier version back deployed, healthy and with the same Secrets? | **works** (v0.1.0) |
 | `zero-downtime` | Do requests fail while the pods are replaced, during a rolling restart or a version upgrade? How long is the outage? | **works** |
 | `helmbulance scan` | Static pre-screen, no cluster, seconds: immutable fields changed since `--from-version`, checksums that change on the first upgrade, Secrets generated anew on every render. Lists **candidates** and the `test` run that confirms each. | **works** |
 | `helmbulance matrix` | Does the chart install and run on every supported Kubernetes version (1.34–1.37), and does the API server warn about what it creates? | **works** |
@@ -94,7 +94,7 @@ More case studies:
 
 ## Roadmap
 
-- **v0.1:** the CLI with `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan` and `matrix`, Markdown, JSON and SARIF reports, and an experimental GitHub Action ([its limits](docs/github-action.md#status-experimental)).
+- **v0.1:** the CLI with `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `rollback`, `scan` and `matrix`, Markdown, JSON and SARIF reports, and an experimental GitHub Action ([its limits](docs/github-action.md#status-experimental)).
 - **v0.1.x:** `network-isolation`.
 - **v0.2:** `secret-rotation`, `immutable-fields`, `process-kill`, uploading the SARIF report to GitHub code scanning, and signed releases.
 - **v0.3:** `probe-abuse`, a hardened mode for charts you did not write, and optional AI hypotheses that the cluster must confirm.
@@ -104,7 +104,7 @@ Helmbulance runs entirely on your machine or in your CI. There is no server and 
 
 ## Try it
 
-Requires Go 1.27.2 or later (the version in `go.mod`), Docker, kind, helm and kubectl. CI tests with kind v0.33.0, Helm v4.3.0 and v3.22.0 and kubectl v1.37.1, and `matrix` needs kind v0.33 for its node images. The [GitHub Action](docs/github-action.md) runs the same checks in CI; the [decisions](docs/decisions/) record what is in scope and why.
+Requires Go 1.27.4 or later (the version in `go.mod`), Docker, kind, helm and kubectl. CI tests with kind v0.33.0, Helm v4.3.0 and v3.22.0 and kubectl v1.37.1, and `matrix` needs kind v0.33 for its node images. The [GitHub Action](docs/github-action.md) runs the same checks in CI; the [decisions](docs/decisions/) record what is in scope and why.
 
 ```sh
 go install github.com/Git-Hospital/helmbulance/cmd/helmbulance@v0.1.0
