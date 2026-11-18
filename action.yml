@@ -23,7 +23,7 @@ inputs:
       runs without the third-party protections, which arrive in v0.3, so use it only for charts you trust.
     default: "false"
   from-version:
-    description: Chart version to upgrade from. Setting it enables chart-upgrade.
+    description: Chart version to upgrade from. Setting it enables chart-upgrade and rollback.
     default: ""
   traffic-target:
     description: >-

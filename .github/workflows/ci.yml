@@ -80,9 +80,9 @@ jobs:
     name: fixtures (Helm ${{ matrix.major }})
     needs: test
     runs-on: ubuntu-24.04
-    # One pass no longer fits in 60 minutes with the fixture pairs added for #60; the nightly run
-    # makes three.
-    timeout-minutes: ${{ github.event_name == 'schedule' && 240 || 90 }}
+    # One pass takes about 59 minutes on main with the #60 pairs, and the rollback pairs add 12 to 19;
+    # the nightly run makes three.
+    timeout-minutes: ${{ github.event_name == 'schedule' && 300 || 90 }}
     permissions:
       contents: read
     strategy:
@@ -161,7 +161,10 @@ jobs:
     name: mutation (report)
     needs: test
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 45, not 30: internal/scenario runs every mutant against the package's tests, so the time grows
+    # with both. #158 took it from 614 mutants and 89 s of tests to 702 and 111 s, and the job from
+    # 24 minutes to past 30, where it was cancelled before writing the report.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:

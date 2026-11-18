@@ -87,16 +87,7 @@ func quoted(v string) []string {
 // are left out: Helm turns them into non-strings, and they are not secrets.
 func SetValues(sets []string) []string {
 	var values []string
-	add := func(v string) {
-		if utf8.RuneCountInString(v) < minRedact || slices.Contains(values, v) {
-			return
-		}
-		switch strings.ToLower(v) {
-		case "true", "false", "null":
-			return
-		}
-		values = append(values, v)
-	}
+	add := func(v string) { values = addSecret(values, v) }
 	addAll := func(v string) {
 		add(v)
 		for _, q := range quoted(v) {
@@ -119,6 +110,32 @@ func SetValues(sets []string) []string {
 		}
 	}
 	return values
+}
+
+// SecretValues returns values taken from elsewhere (a values file) as they may appear in a
+// command's output, like SetValues: as written and in their quoted forms, without values shorter
+// than minRedact, true, false and null.
+func SecretValues(values []string) []string {
+	var out []string
+	for _, v := range values {
+		out = addSecret(out, v)
+		for _, q := range quoted(v) {
+			out = addSecret(out, q)
+		}
+	}
+	return out
+}
+
+// addSecret appends v to values unless it is too short to hide, a YAML constant, or there already.
+func addSecret(values []string, v string) []string {
+	if utf8.RuneCountInString(v) < minRedact || slices.Contains(values, v) {
+		return values
+	}
+	switch strings.ToLower(v) {
+	case "true", "false", "null":
+		return values
+	}
+	return append(values, v)
 }
 
 func unescape(s string) string {

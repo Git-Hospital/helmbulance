@@ -1,0 +1,5 @@
+apiVersion: v2
+name: rollback-fixture
+description: "Helmbulance fixture: a pre-rollback hook that refuses data in a format newer than 1, so rolling back from rollback-v2 fails (HB-RB-001). In the control the data is still format 1 and the hook passes. Its twin is rollback-v1-hook-migrates."
+type: application
+version: 1.0.0

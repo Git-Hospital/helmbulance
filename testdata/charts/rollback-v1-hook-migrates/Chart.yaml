@@ -1,0 +1,5 @@
+apiVersion: v2
+name: rollback-fixture
+description: "Helmbulance fixture: fixed twin of rollback-v1-hook-refuses. Its pre-rollback hook migrates format-2 data back to format 1, so the rollback goes through."
+type: application
+version: 1.0.0
