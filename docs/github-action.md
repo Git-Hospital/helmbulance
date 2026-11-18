@@ -11,7 +11,7 @@ On each run it:
 
 The Action passes fewer options than the CLI, and that changes what it can find ([#48](https://github.com/Git-Hospital/helmbulance/issues/48)):
 
-- **No install-only values.** The Action has no `--set` input, and the files in `values` are given both at install and in the upgrade. So `upgrade-without-values` cannot find a value the upgrade leaves out (HB-UV-002); through the Action it finds HB-UV-001 and HB-UV-003 only. Run the CLI with `--set` for that check.
+- **No install-only values.** The Action has no `--set` input, and the files in `values` are given both at install and in the upgrade. So `upgrade-without-values` cannot find a value the upgrade leaves out. HB-UV-002 can still come from the values files alone, when an upgrade from them renders other Secret values than the control. Run the CLI with `--set` for install-only values.
 
 Use it on your own charts and read the report, not only the exit code.
 
