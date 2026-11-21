@@ -47,6 +47,9 @@ type Env struct {
 	// purpose, such as a webhook certificate it reissues. They are named, not reported.
 	ExpectedRotation []string
 	Log              io.Writer
+
+	// timedOut holds the installs whose --wait ran out earlier in this run, by installKey (#165).
+	timedOut map[string]timedOutInstall
 }
 
 // Finding is one reproduced problem.

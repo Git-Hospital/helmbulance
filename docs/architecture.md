@@ -116,7 +116,7 @@ Each scenario goes through these phases:
 | Phase | What it does |
 |---|---|
 | `Applies(model)` | Decides whether the chart has what the scenario tests |
-| `Setup` | Clears what an earlier run left under the same names, and the cluster-scoped objects any scenario's release kept; then installs a fresh release in its own namespace, under its own release name |
+| `Setup` | Clears what an earlier run left under the same names, and the cluster-scoped objects any scenario's release kept; then installs a fresh release in its own namespace, under its own release name. An install whose `--wait` already ran out earlier in the run, with the same chart, version and values and no container waiting on an image, is not waited for again: the scenario is `INCONCLUSIVE` and names the one that waited. `reinstall` installs anyway (#165) |
 | `Control` | Records the baseline, or runs the neutral form of the operation |
 | `Act` | Performs the operation |
 | `Observe` + `Assert` | Waits until the cluster settles (no change for N seconds, with a timeout), then compares against the control |
