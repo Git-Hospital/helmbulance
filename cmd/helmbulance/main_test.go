@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Git-Hospital/helmbulance/internal/execx"
 	"github.com/Git-Hospital/helmbulance/internal/scenario"
@@ -657,5 +658,31 @@ func TestFileSecretsSurvivesASelfReferencingAlias(t *testing.T) {
 	}
 	if got := fileSecrets([]string{values}); !slices.Contains(got, "AfterTheCycle-5c5c") {
 		t.Errorf("fileSecrets = %q, want the password after the cycle", got)
+	}
+}
+
+// #164: a CI job limit kills helmbulance without a signal it can act on, so nothing is written.
+// --run-timeout ends the run from inside: the scenario running is cut short, the rest are "not
+// run" and say why, and the caller still cleans up and writes the report.
+func TestRunTimeoutEndsTheRunAndSaysSo(t *testing.T) {
+	ctx, cancel := withRunTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	names := []string{"a", "b"}
+	got := runEach(ctx, names, func(i int) scenario.Result {
+		<-ctx.Done() // a scenario that would outlast the limit
+		return scenario.Result{Scenario: names[i], Verdict: scenario.Inconclusive, Summary: "cut short"}
+	})
+	if len(got) != 2 || got[0].Summary != "cut short" {
+		t.Fatalf("results %+v, want a's own result first", got)
+	}
+	if got[1].Verdict != scenario.Inconclusive || !strings.Contains(got[1].Summary, "not run: the run reached --run-timeout") {
+		t.Errorf("b: %+v, want INCONCLUSIVE naming --run-timeout", got[1])
+	}
+
+	// 0, the default, sets no limit.
+	ctx, cancel = withRunTimeout(t.Context(), 0)
+	defer cancel()
+	if _, ok := ctx.Deadline(); ok {
+		t.Error("--run-timeout 0 set a deadline")
 	}
 }
