@@ -104,10 +104,28 @@ Helmbulance runs entirely on your machine or in your CI. There is no server and 
 
 ## Try it
 
-Requires Go 1.27.4 or later (the version in `go.mod`), Docker, kind, helm and kubectl. CI tests with kind v0.33.0, Helm v4.3.0 and v3.22.0 and kubectl v1.37.1, and `matrix` needs kind v0.33 for its node images. The [GitHub Action](docs/github-action.md) runs the same checks in CI; the [decisions](docs/decisions/) record what is in scope and why.
+Helmbulance needs Docker, kind, helm and kubectl. CI tests with kind v0.33.0, Helm v4.3.0 and v3.22.0 and kubectl v1.37.1, and `matrix` needs kind v0.33 for its node images. The [GitHub Action](docs/github-action.md) runs the same checks in CI; the [decisions](docs/decisions/) record what is in scope and why.
+
+Download the archive for your system from the [v0.1.0 release](https://github.com/Git-Hospital/helmbulance/releases/tag/v0.1.0) (Linux and macOS, amd64 and arm64), check it and put the binary on your `PATH`:
+
+```sh
+v=v0.1.0 os=linux arch=amd64
+gh release download $v -R Git-Hospital/helmbulance -p "helmbulance_${v}_${os}_${arch}.tar.gz" -p SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify "helmbulance_${v}_${os}_${arch}.tar.gz" --repo Git-Hospital/helmbulance
+tar xzf "helmbulance_${v}_${os}_${arch}.tar.gz"
+install "helmbulance_${v}_${os}_${arch}/helmbulance" ~/.local/bin/
+```
+
+Or with Go 1.21 or later, which fetches the Go 1.27.4 toolchain from `go.mod` by itself unless `GOTOOLCHAIN` turns that off:
 
 ```sh
 go install github.com/Git-Hospital/helmbulance/cmd/helmbulance@v0.1.0
+```
+
+Then:
+
+```sh
 helmbulance test ./path/to/chart -f values.yaml --set some.secret=value
 helmbulance test ./path/to/chart --scenario chart-upgrade --from ./old/chart --from-version 1.2.3
 helmbulance matrix ./path/to/chart -f values.yaml --k8s 1.34,1.37
