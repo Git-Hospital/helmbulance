@@ -190,7 +190,8 @@ func installWaiting(ctx context.Context, env *Env, ns string, err error) string 
 	if !timedOutWaiting(ctx, err) {
 		return ""
 	}
-	containers, cerr := env.Kube.Containers(context.WithoutCancel(ctx), ns)
+	// timedOutWaiting saw ctx live, so a Ctrl-C or the run deadline stops this read too.
+	containers, cerr := env.Kube.Containers(ctx, ns)
 	if cerr != nil {
 		return ""
 	}
