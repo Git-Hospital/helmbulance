@@ -934,7 +934,11 @@ func (c *Client) RunWithPVC(ctx context.Context, ns, name, image, claim, script 
 			break
 		}
 		if phase == "Failed" || time.Now().After(deadline) {
-			return "", fmt.Errorf("pod %s is %s after %s (mounting %s)", name, phase, timeout, claim)
+			err := fmt.Errorf("pod %s is %s after %s (mounting %s)", name, phase, timeout, claim)
+			if why := c.podWaitReason(ctx, ns, name); why != "" {
+				err = fmt.Errorf("%w: %s", err, why)
+			}
+			return "", err
 		}
 		select {
 		case <-ctx.Done():
