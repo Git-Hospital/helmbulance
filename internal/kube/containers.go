@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // Container is the state of one container (or init container) of a pod: why it is waiting, how its
@@ -107,4 +109,31 @@ func parseContainers(out []byte) ([]Container, error) {
 		}
 	}
 	return containers, nil
+}
+
+// waitingNote says why the containers of pod are waiting, as "; container sentinel waiting:
+// ImagePullBackOff", for the end of an error message. It is empty when none waits or the pods
+// cannot be read: it only adds detail to an error that is being returned anyway.
+func (c *Client) waitingNote(ctx context.Context, ns, pod string) string {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	containers, err := c.Containers(ctx, ns)
+	if err != nil {
+		return ""
+	}
+	return WaitingNote(containers, pod)
+}
+
+// WaitingNote is waitingNote for containers already read; an empty pod covers every pod.
+func WaitingNote(containers []Container, pod string) string {
+	var out []string
+	for _, ct := range containers {
+		if ct.Waiting != "" && (pod == "" || ct.Pod == pod) {
+			out = append(out, fmt.Sprintf("container %s waiting: %s", ct.Name, ct.Waiting))
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(out, "; ")
 }

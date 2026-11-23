@@ -181,3 +181,22 @@ func logStates(log io.Writer, containers []kube.Container) {
 		fmt.Fprintf(log, "after the timeout, pod %s container %s: %s, %d restart(s)%s\n", c.Pod, c.Name, state, c.Restarts, last)
 	}
 }
+
+// installWaiting names the containers still waiting after an install's `--wait` timed out, such as
+// " (container busybox waiting: ImagePullBackOff)", for the INCONCLUSIVE message: helm's own error
+// only says the deadline passed, not whether an image could not be pulled. It is empty for any
+// other error or when no container waits.
+func installWaiting(ctx context.Context, env *Env, ns string, err error) string {
+	if !timedOutWaiting(ctx, err) {
+		return ""
+	}
+	containers, cerr := env.Kube.Containers(context.WithoutCancel(ctx), ns)
+	if cerr != nil {
+		return ""
+	}
+	note := kube.WaitingNote(containers, "")
+	if note == "" {
+		return ""
+	}
+	return " (" + strings.TrimPrefix(note, "; ") + ")"
+}

@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -97,5 +98,20 @@ func TestUnhealthyAfterSkipsJobsThatFailedBefore(t *testing.T) {
 	}
 	if got, err := unhealthyAfter(t.Context(), env, chartUpgradeNamespace, before, nil, nil); len(got) != 1 || err != nil {
 		t.Errorf("unhealthyAfter = %q, %v; want the Job when it is new", got, err)
+	}
+}
+
+// After an install's --wait timed out, the INCONCLUSIVE message names the containers that wait, so
+// an image that cannot be pulled shows (the helm error alone only says the deadline passed).
+func TestInstallWaitingNamesThePullFailure(t *testing.T) {
+	pods := `{"items":[{"metadata":{"name":"web-1"},"status":{"phase":"Pending","containerStatuses":[` +
+		`{"name":"web","state":{"waiting":{"reason":"ImagePullBackOff"}}}]}}]}`
+	env := fakePodReads(t, pods)
+	timeout := errors.New("Error: INSTALLATION FAILED: context deadline exceeded")
+	if got, want := installWaiting(t.Context(), env, "ns", timeout), " (container web waiting: ImagePullBackOff)"; got != want {
+		t.Errorf("installWaiting after a timeout = %q, want %q", got, want)
+	}
+	if got := installWaiting(t.Context(), env, "ns", errors.New("Error: rendered manifests contain a resource that already exists")); got != "" {
+		t.Errorf("installWaiting for another error = %q, want none", got)
 	}
 }
