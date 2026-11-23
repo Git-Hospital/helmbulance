@@ -295,3 +295,5 @@ jobs:
           [ "$RUNTIMEOUT_CODE" = 3 ]
           jq -e '[.results[].verdict] == ["INCONCLUSIVE", "INCONCLUSIVE"]' reports/runtimeout/report.json
           jq -e '.results[1].summary | startswith("not run: the run reached --run-timeout")' reports/runtimeout/report.json
+          jq -e '.complete == true' reports/runtimeout/report.json
+          jq -e '.complete == true' reports/bad/report.json

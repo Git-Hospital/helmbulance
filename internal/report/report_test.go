@@ -96,3 +96,45 @@ func TestReportJSONHasVerdictAndNoNullLists(t *testing.T) {
 		}
 	}
 }
+
+// #164: a report written while the run goes on says so, in report.json and report.md, and
+// writing it leaves no temporary file behind.
+func TestPartialReportSaysItIsNotComplete(t *testing.T) {
+	dir := t.TempDir()
+	r := &Report{SchemaVersion: SchemaVersion, Results: []scenario.Result{{Scenario: "a", Verdict: scenario.Pass}}}
+	if err := r.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	data, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["complete"] != false {
+		t.Errorf("complete = %v, want false", got["complete"])
+	}
+	md, _ := os.ReadFile(filepath.Join(dir, "report.md"))
+	if !strings.Contains(string(md), "written before the run finished") {
+		t.Errorf("report.md does not say it is partial:\n%s", md)
+	}
+
+	r.Complete = true
+	if err := r.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	md, _ = os.ReadFile(filepath.Join(dir, "report.md"))
+	if strings.Contains(string(md), "written before the run finished") {
+		t.Errorf("a complete report.md still says it is partial:\n%s", md)
+	}
+	entries, _ := os.ReadDir(dir)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, " ") != "report.json report.md report.sarif" {
+		t.Errorf("files in the report dir: %v, want only the three reports", names)
+	}
+}

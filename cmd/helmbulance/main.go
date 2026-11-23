@@ -230,9 +230,10 @@ func test(args []string) int {
 	rep.Results = runEach(ctx, names, func(i int) scenario.Result {
 		fmt.Printf("▶ %s\n", names[i])
 		return selected[i].Run(ctx, env)
-	})
+	}, func(done []scenario.Result) { writePartial(*rep, runner, started, names, done, *out) })
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()
+	rep.Complete = true
 
 	if err := rep.Write(*out); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -707,7 +708,7 @@ func matrixCmd(args []string) int {
 	rep.Results = runEach(ctx, names, func(i int) scenario.Result {
 		fmt.Printf("▶ Kubernetes %s\n", vs[i])
 		return matrix.Run(ctx, vs[i], opts)
-	})
+	}, func(done []scenario.Result) { writePartial(*rep, runner, started, names, done, *out) })
 	attributed := matrix.Attribute(rep.Results)
 	for i, res := range attributed {
 		if res.Verdict != rep.Results[i].Verdict {
@@ -717,6 +718,7 @@ func matrixCmd(args []string) int {
 	rep.Results = attributed
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()
+	rep.Complete = true
 	if err := rep.Write(*out); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitError
@@ -770,6 +772,7 @@ func scanCmd(args []string) int {
 	}
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()
+	rep.Complete = true
 	if err := rep.Write(*out); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitError
@@ -885,8 +888,12 @@ func withRunTimeout(ctx context.Context, d time.Duration) (context.Context, cont
 // runEach runs step for each of names in order and prints its verdict. After an interrupt it starts
 // no more steps: each one left is INCONCLUSIVE, "not run", so the sandbox cluster is deleted
 // without waiting for the start and cleanup of scenarios that would only be cut short (#58).
-func runEach(ctx context.Context, names []string, step func(i int) scenario.Result) []scenario.Result {
+// after, when set, gets the results so far before the first step and after each one (#164).
+func runEach(ctx context.Context, names []string, step func(i int) scenario.Result, after func(done []scenario.Result)) []scenario.Result {
 	results := make([]scenario.Result, 0, len(names))
+	if after != nil {
+		after(results)
+	}
 	for i, name := range names {
 		if ctx.Err() != nil {
 			why := "the run was interrupted"
@@ -900,8 +907,29 @@ func runEach(ctx context.Context, names []string, step func(i int) scenario.Resu
 		res := step(i)
 		fmt.Printf("  %s: %s\n", res.Verdict, oneLine(res.Summary))
 		results = append(results, res)
+		if after != nil && i < len(names)-1 {
+			after(results)
+		}
 	}
 	return results
+}
+
+// writePartial writes the report while the run goes on: the results so far, the steps left as
+// INCONCLUSIVE "not run yet", and Complete false. A CI job limit kills helmbulance without a
+// signal it can act on, and this is then the report that is left (#164). rep is a copy, so the
+// final report is untouched. A failed write is logged and the run goes on.
+func writePartial(rep report.Report, runner *execx.Runner, started time.Time, names []string, done []scenario.Result, dir string) {
+	rep.Results = append([]scenario.Result{}, done...)
+	for _, name := range names[len(done):] {
+		rep.Results = append(rep.Results, scenario.Result{Scenario: name, Verdict: scenario.Inconclusive,
+			Summary: "not run yet: this report was written before the run reached it"})
+	}
+	rep.Duration = time.Since(started).Round(time.Second).String()
+	rep.Commands = runner.Transcript()
+	rep.Complete = false
+	if err := rep.Write(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "could not write the partial report: %v\n", err)
+	}
 }
 
 // checkVersions refuses a --k8s list that names a version with no pinned node image, or none at

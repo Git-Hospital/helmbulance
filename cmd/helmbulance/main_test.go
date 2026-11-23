@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/report"
 	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
@@ -615,7 +617,7 @@ func TestRunEachStopsStartingAfterAnInterrupt(t *testing.T) {
 			cancel() // the interrupt arrives while a runs
 		}
 		return scenario.Result{Scenario: names[i], Verdict: scenario.Pass}
-	})
+	}, nil)
 	if !reflect.DeepEqual(ran, []string{"a"}) {
 		t.Errorf("ran %v, want only a", ran)
 	}
@@ -671,7 +673,7 @@ func TestRunTimeoutEndsTheRunAndSaysSo(t *testing.T) {
 	got := runEach(ctx, names, func(i int) scenario.Result {
 		<-ctx.Done() // a scenario that would outlast the limit
 		return scenario.Result{Scenario: names[i], Verdict: scenario.Inconclusive, Summary: "cut short"}
-	})
+	}, nil)
 	if len(got) != 2 || got[0].Summary != "cut short" {
 		t.Fatalf("results %+v, want a's own result first", got)
 	}
@@ -684,5 +686,40 @@ func TestRunTimeoutEndsTheRunAndSaysSo(t *testing.T) {
 	defer cancel()
 	if _, ok := ctx.Deadline(); ok {
 		t.Error("--run-timeout 0 set a deadline")
+	}
+}
+
+// #164: the report is written before the first step and after each step but the last, so a run
+// killed from outside leaves the results it had; the end of the run writes the final one.
+func TestRunEachReportsProgress(t *testing.T) {
+	var seen []int
+	names := []string{"a", "b", "c"}
+	runEach(t.Context(), names, func(i int) scenario.Result {
+		return scenario.Result{Scenario: names[i], Verdict: scenario.Pass}
+	}, func(done []scenario.Result) { seen = append(seen, len(done)) })
+	if !reflect.DeepEqual(seen, []int{0, 1, 2}) {
+		t.Errorf("progress after %v results, want [0 1 2]", seen)
+	}
+}
+
+// The partial report keeps the results so far, marks the rest "not run yet" and is not complete.
+func TestWritePartial(t *testing.T) {
+	dir := t.TempDir()
+	rep := report.Report{SchemaVersion: report.SchemaVersion, Chart: "./chart"}
+	writePartial(rep, execx.NewSandboxRunner(), time.Now(), []string{"a", "b"},
+		[]scenario.Result{{Scenario: "a", Verdict: scenario.Fail, Summary: "found"}}, dir)
+	data, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got report.Report
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Complete || got.Verdict != scenario.Fail || len(got.Results) != 2 {
+		t.Fatalf("partial report: complete=%v verdict=%s results=%+v", got.Complete, got.Verdict, got.Results)
+	}
+	if got.Results[1].Verdict != scenario.Inconclusive || !strings.HasPrefix(got.Results[1].Summary, "not run yet") {
+		t.Errorf("b: %+v, want INCONCLUSIVE not run yet", got.Results[1])
 	}
 }
