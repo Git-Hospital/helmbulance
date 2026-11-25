@@ -647,6 +647,9 @@ func TestCheckVersions(t *testing.T) {
 
 // A negative --run-timeout is refused, in test and matrix, before any tool or cluster is touched.
 func TestNegativeRunTimeoutIsRefused(t *testing.T) {
+	// No kind, helm or kubectl: if the refusal is ever lost, the command stops at the missing tools
+	// with another message, instead of creating clusters (review of #175).
+	t.Setenv("PATH", "")
 	for name, cmd := range map[string]func([]string) int{"test": test, "matrix": matrixCmd} {
 		var code int
 		out := stderrOf(t, func() { code = cmd([]string{"--run-timeout", "-5m", t.TempDir()}) })
