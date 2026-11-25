@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/Git-Hospital/helmbulance/internal/kube"
 )
 
 // timedOutInstall is an install whose --wait ran out earlier in the run: the scenario that waited,
@@ -42,6 +44,13 @@ func install(ctx context.Context, env *Env, scenario, release, ns, chart string,
 	return err
 }
 
+// pullingImage reports whether c may still be waiting for its image. An init container that has not
+// started yet is PodInitializing while its image comes down, not ContainerCreating (review of #174);
+// a main container is PodInitializing too while an init container crash-loops, which no cache helps.
+func pullingImage(c kube.Container) bool {
+	return imagePulls[c.Waiting] || (c.Init && c.Waiting == "PodInitializing")
+}
+
 // rememberTimeout records err for install when it is a --wait timeout with no image pull pending.
 func rememberTimeout(ctx context.Context, env *Env, scenario, ns, key string, err error) {
 	if !timedOutWaiting(ctx, err) {
@@ -53,7 +62,7 @@ func rememberTimeout(ctx context.Context, env *Env, scenario, ns, key string, er
 		return
 	}
 	for _, c := range containers {
-		if imagePulls[c.Waiting] {
+		if pullingImage(c) {
 			return
 		}
 	}

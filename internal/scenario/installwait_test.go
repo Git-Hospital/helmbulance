@@ -36,6 +36,13 @@ func unreadyPods(waiting string) string {
 		`"status":{"phase":"Running","containerStatuses":[{"name":"web","restartCount":0,"state":` + state + `}]}}]}`
 }
 
+// initPods is a pod whose init container waits as init says and whose main container waits as main says.
+func initPods(init, main string) string {
+	return `{"items":[{"metadata":{"name":"web-1","uid":"u1","ownerReferences":[{"kind":"ReplicaSet","name":"web-1"}]},` +
+		`"status":{"phase":"Pending","initContainerStatuses":[{"name":"migrate","restartCount":0,"state":{"waiting":{"reason":"` + init + `"}}}],` +
+		`"containerStatuses":[{"name":"web","restartCount":0,"state":{"waiting":{"reason":"` + main + `"}}}]}}]}`
+}
+
 // runAllUnready runs every scenario in the CLI's order, with --from-version, against a chart that
 // never becomes ready, and returns the results and the helm install calls.
 func runAllUnready(t *testing.T, pods string) ([]Result, []string) {
@@ -116,6 +123,18 @@ func TestScenariosWaitAgainWhileAnImageWasPulling(t *testing.T) {
 				t.Errorf("%d helm installs, want all 7:\n%s", len(installs), strings.Join(installs, "\n"))
 			}
 		})
+	}
+}
+
+// An init container's image being pulled shows as PodInitializing on the init container, so those
+// installs are waited for again. The main container's PodInitializing, while an init container
+// crash-loops, is no pull: those are not (review of #174).
+func TestScenariosWaitAgainWhileAnInitImageWasPulling(t *testing.T) {
+	if _, installs := runAllUnready(t, initPods("PodInitializing", "PodInitializing")); len(installs) != 7 {
+		t.Errorf("init image pulling: %d helm installs, want all 7:\n%s", len(installs), strings.Join(installs, "\n"))
+	}
+	if _, installs := runAllUnready(t, initPods("CrashLoopBackOff", "PodInitializing")); len(installs) != 4 {
+		t.Errorf("init container crash-looping: %d helm installs, want 4:\n%s", len(installs), strings.Join(installs, "\n"))
 	}
 }
 
