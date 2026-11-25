@@ -645,6 +645,26 @@ func TestCheckVersions(t *testing.T) {
 	}
 }
 
+// A negative --run-timeout is refused, in test and matrix, before any tool or cluster is touched.
+func TestNegativeRunTimeoutIsRefused(t *testing.T) {
+	for name, cmd := range map[string]func([]string) int{"test": test, "matrix": matrixCmd} {
+		var code int
+		out := stderrOf(t, func() { code = cmd([]string{"--run-timeout", "-5m", t.TempDir()}) })
+		if code != exitError || !strings.Contains(out, "--run-timeout must be 0 (no limit) or more, got -5m0s") {
+			t.Errorf("%s --run-timeout -5m = %d, %q; want exit %d and the refusal", name, code, out, exitError)
+		}
+	}
+	for _, d := range []time.Duration{0, time.Minute} {
+		if out := stderrOf(t, func() {
+			if refuseRunTimeout(d) {
+				t.Errorf("refuseRunTimeout(%s) = true, want false", d)
+			}
+		}); out != "" {
+			t.Errorf("refuseRunTimeout(%s) printed %q", d, out)
+		}
+	}
+}
+
 func TestMatrixRefusesAnUnsupportedVersionBeforeAnyCluster(t *testing.T) {
 	if code := matrixCmd([]string{"--k8s", "1.29", t.TempDir()}); code != exitError {
 		t.Errorf("exit %d, want %d", code, exitError)
