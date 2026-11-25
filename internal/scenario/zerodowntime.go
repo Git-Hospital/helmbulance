@@ -731,30 +731,44 @@ func cutoff(restarts []int64, next int) int64 {
 }
 
 // deploymentCanStopLastPod reports whether a Deployment's RollingUpdate may stop all of its pods
-// before a new one is ready. Kubernetes scales a percentage maxUnavailable against the replica
-// count and rounds it down, so the default 25% of one replica is 0, and the new pod is started and
-// must be ready before the old one stops (#167). An empty value is the API default, 25%. A value
-// that cannot be read counts as a gap, as before.
+// before a new one is ready. Kubernetes scales a percentage against the replica count, rounding
+// maxSurge up and maxUnavailable down, so the default 25% of one replica is a surge of 1 and an
+// unavailable of 0: the new pod is started and must be ready before the old one stops (#167). When
+// both come to 0, Kubernetes sets maxUnavailable to 1, and the old pod stops first. An empty value
+// is the API default, 25%. A value that cannot be read counts as a gap, as before.
 func deploymentCanStopLastPod(w kube.Workload) bool {
-	mu := w.MaxUnavailable
-	if mu == "" {
-		mu = "25%"
+	unavailable, ok := rolloutLimit(w.MaxUnavailable, w.Replicas, false)
+	if !ok {
+		return true
 	}
-	var unavailable int
-	if p, ok := strings.CutSuffix(mu, "%"); ok {
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			return true
-		}
-		unavailable = n * w.Replicas / 100
-	} else {
-		n, err := strconv.Atoi(mu)
-		if err != nil {
-			return true
-		}
-		unavailable = n
+	surge, ok := rolloutLimit(w.MaxSurge, w.Replicas, true)
+	if !ok {
+		return true
+	}
+	if surge == 0 && unavailable == 0 {
+		unavailable = 1
 	}
 	return unavailable >= w.Replicas
+}
+
+// rolloutLimit reads a maxSurge or maxUnavailable value, a count or a percentage of replicas,
+// with an empty value as the API default of 25%. roundUp is true for maxSurge.
+func rolloutLimit(v string, replicas int, roundUp bool) (int, bool) {
+	if v == "" {
+		v = "25%"
+	}
+	p, pct := strings.CutSuffix(v, "%")
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	if !pct {
+		return n, true
+	}
+	if roundUp {
+		return (n*replicas + 99) / 100, true
+	}
+	return n * replicas / 100, true
 }
 
 // oneNodeGap reports whether a workload is a DaemonSet that, on the one-node sandbox, has no pod

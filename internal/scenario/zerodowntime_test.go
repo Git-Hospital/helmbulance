@@ -662,6 +662,7 @@ func TestZeroDowntimeOneReplicaCause(t *testing.T) {
 		"deployment 25%":           {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "25%", MaxSurge: "25%"}, surge, gap},
 		"deployment default":       {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1}, surge, gap},
 		"deployment unavailable 1": {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "1", MaxSurge: "0"}, gap, surge},
+		"deployment no surge 25%":  {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "25%", MaxSurge: "0"}, gap, surge},
 		"deployment 100%":          {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "100%"}, gap, surge},
 		"deployment unreadable":    {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "x"}, gap, surge},
 		"statefulset":              {kube.Workload{Kind: "StatefulSet", Name: "db", Replicas: 1, Strategy: "RollingUpdate"}, gap, surge},
