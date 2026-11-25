@@ -384,8 +384,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 			"is wrong with the new version.",
 		Fix: "Run at least two replicas with a RollingUpdate that keeps them available " +
 			"(maxUnavailable: 0), a readiness probe that passes only when the app can serve, a preStop " +
-			"sleep of a few seconds so the pod leaves the Service before it stops. A single StatefulSet " +
-			"replica, or the Recreate strategy, always has a gap. A PodDisruptionBudget helps with node drains " +
+			"sleep of a few seconds so the pod leaves the Service before it stops. A single replica that the " +
+			"rollout stops first (a StatefulSet, or a Deployment with maxUnavailable 1), or the Recreate " +
+			"strategy, always has a gap. A PodDisruptionBudget helps with node drains " +
 			"and other evictions, not rollouts.",
 	})
 	return res
