@@ -462,8 +462,17 @@ func secretKey(key string) bool {
 		}
 	}
 	// Compared without _ and -, so secret_key and secret-access-key are read like secretKey and
-	// secretAccessKey, the S3 names (review of #122).
-	switch strings.NewReplacer("_", "", "-", "").Replace(k) {
+	// secretAccessKey, the S3 names (review of #122). A storage prefix is dropped first, so that
+	// awsSecretAccessKey, minioSecretKey and s3SecretKey are the key itself, while
+	// passwordSecretKey still names a key in a Secret (#170).
+	n := strings.NewReplacer("_", "", "-", "").Replace(k)
+	for _, p := range []string{"aws", "minio", "s3", "gcs"} {
+		if t, ok := strings.CutPrefix(n, p); ok {
+			n = t
+			break
+		}
+	}
+	switch n {
 	case "apikey", "secretkey", "secretaccesskey", "privatekey", "accesskey", "encryptionkey", "signingkey", "masterkey":
 		return true
 	}
@@ -482,10 +491,12 @@ func secretKey(key string) bool {
 const maxValuesDepth = 1000
 
 // keyNames are values keys that hold a key or a connection string although ValuesKeyClass does
-// not class them (review of #122): fernetKey is Airflow's, accountKey Azure Storage's.
+// not class them (review of #122): fernetKey is Airflow's, accountKey Azure Storage's,
+// replicaSetKey bitnami/mongodb's and bindpw (the LDAP bind password) bitnami/postgresql's (#170).
 var keyNames = map[string]bool{
 	"fernetkey": true, "accountkey": true, "storagekey": true, "storageaccountkey": true, "sharedkey": true,
 	"hmackey": true, "sessionkey": true, "cookiekey": true, "licensekey": true, "connectionstring": true,
+	"replicasetkey": true, "bindpw": true,
 }
 
 // tlsParents are the parents under which a key named key or crt is TLS material: tls.key and

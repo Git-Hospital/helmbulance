@@ -650,6 +650,39 @@ func TestMatrixRefusesAnUnsupportedVersionBeforeAnyCluster(t *testing.T) {
 
 // An alias that names a node holding it is a cycle in yaml.v3's tree; fileSecrets must return
 // instead of recursing until the stack overflows (review of #122).
+// #170: keys from real charts that held a secret and were not hidden, and S3 names with a
+// storage prefix. Keys that name a key in a Secret stay readable.
+func TestFileSecretsChartKeysAndPrefixedS3Names(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte(`
+auth:
+  replicaSetKey: RsKey-1a1a
+ldap:
+  bindpw: BindPw-2b2b
+awsSecretAccessKey: AwsSecret-3c3c
+aws_secret_access_key: AwsSecret-4d4d
+minioSecretKey: MinioSecret-5e5e
+s3SecretKey: S3Secret-6f6f
+s3:
+  passwordSecretKey: password-key-name
+  awsSecretKeyName: s3-key-name
+  existingSecretKey: existing-key-name
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := fileSecrets([]string{values})
+	for _, want := range []string{"RsKey-1a1a", "BindPw-2b2b", "AwsSecret-3c3c", "AwsSecret-4d4d", "MinioSecret-5e5e", "S3Secret-6f6f"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("fileSecrets is missing %q: %q", want, got)
+		}
+	}
+	for _, not := range []string{"password-key-name", "s3-key-name", "existing-key-name"} {
+		if slices.Contains(got, not) {
+			t.Errorf("fileSecrets hides %q, which names a key in a Secret: %q", not, got)
+		}
+	}
+}
+
 func TestFileSecretsSurvivesASelfReferencingAlias(t *testing.T) {
 	values := filepath.Join(t.TempDir(), "values.yaml")
 	if err := os.WriteFile(values, []byte("a: &a [*a]\npassword: AfterTheCycle-5c5c\n"), 0o600); err != nil {
