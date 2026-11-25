@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -115,5 +116,80 @@ func TestScenariosWaitAgainWhileAnImageWasPulling(t *testing.T) {
 				t.Errorf("%d helm installs, want all 7:\n%s", len(installs), strings.Join(installs, "\n"))
 			}
 		})
+	}
+}
+
+// unreadyEnv is an Env whose helm and kubectl are fakeUnreadyTools, with no pod waiting on an image,
+// and a func that returns the helm install calls so far.
+func unreadyEnv(t *testing.T, helmScript string) (*Env, func() []string) {
+	t.Helper()
+	bin, dir := t.TempDir(), t.TempDir()
+	for name, script := range map[string]string{"helm": helmScript, "kubectl": fakeUnreadyTools} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_DIR", dir)
+	t.Setenv("FAKE_PODS", unreadyPods(""))
+	runner := &execx.Runner{}
+	env := &Env{Runner: runner, Helm: &helm.Client{Runner: runner, Timeout: time.Minute}, Kube: &kube.Client{Runner: runner}, Log: io.Discard}
+	return env, func() []string {
+		log, _ := os.ReadFile(filepath.Join(dir, "log"))
+		var installs []string
+		for _, call := range strings.Split(string(log), "\n") {
+			if strings.HasPrefix(call, "helm install ") {
+				installs = append(installs, call)
+			}
+		}
+		return installs
+	}
+}
+
+// installKey is all that tells two installs apart, so an install of another chart version or with
+// other values is waited for, even after one of the same chart timed out (review of #174).
+func TestInstallWaitsForAnotherVersionOrOtherValues(t *testing.T) {
+	env, installs := unreadyEnv(t, fakeUnreadyTools)
+	env.Values = helm.Values{Sets: []string{"a=b"}}
+	ctx := t.Context()
+	_ = install(ctx, env, "first", "r1", "ns1", "./chart")
+	_ = install(ctx, env, "version", "r2", "ns2", "./chart", "--version", "2.0.0")
+	_ = install(ctx, env, "repo", "r3", "ns3", "repo/chart")
+	env.Values = helm.Values{Sets: []string{"a=c"}}
+	_ = install(ctx, env, "set", "r4", "ns4", "./chart")
+	env.Values = helm.Values{Sets: []string{"a=b"}, Files: []string{"prod.yaml"}}
+	_ = install(ctx, env, "file", "r5", "ns5", "./chart")
+	if got := installs(); len(got) != 5 {
+		t.Errorf("%d helm installs, want 5, one for each chart, version and values:\n%s", len(got), strings.Join(got, "\n"))
+	}
+	// The same chart and values as the first install: not waited for again.
+	env.Values = helm.Values{Sets: []string{"a=b"}}
+	if err := install(ctx, env, "again", "r6", "ns6", "./chart"); err == nil || !strings.Contains(err.Error(), "already ran out in first") {
+		t.Errorf("install of the first chart again = %v, want it skipped naming first", err)
+	}
+	if got := installs(); len(got) != 5 {
+		t.Errorf("%d helm installs after the repeat, want still 5", len(got))
+	}
+}
+
+// An install cut short by the run's own deadline (--run-timeout, Ctrl-C) says nothing about the
+// chart, so the next install of it in another run step is not skipped (review of #174).
+func TestInstallCutByTheRunIsNotRemembered(t *testing.T) {
+	// helm prints the waiter's words and then hangs, so only the context ends it.
+	slow := strings.Replace(fakeUnreadyTools, `exit 1 ;;`, `exec sleep 2 ;;`, 1)
+	env, installs := unreadyEnv(t, slow)
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	if err := install(ctx, env, "cut", "r1", "ns1", "./chart"); err == nil {
+		t.Fatal("install under an expired run deadline succeeded")
+	}
+	if len(env.timedOut) != 0 {
+		t.Errorf("remembered %v after an install the run cut short, want nothing", env.timedOut)
+	}
+	env.Helm = &helm.Client{Runner: env.Runner, Timeout: time.Minute}
+	_ = install(context.WithoutCancel(t.Context()), env, "next", "r2", "ns2", "./chart")
+	// The cut install may be killed before its helm even starts, so only the next one is counted.
+	if got := installs(); len(got) == 0 || !strings.HasPrefix(got[len(got)-1], "helm install r2 ") {
+		t.Errorf("helm installs %q, want the next one (r2) run, not skipped", got)
 	}
 }
