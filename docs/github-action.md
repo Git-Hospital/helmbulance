@@ -33,14 +33,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Git-Hospital/helmbulance@<commit SHA>
+      - uses: Git-Hospital/helmbulance@174c1b4ebe4607272e85cc3fadd782e45f3aae72 # v0.1.0
         with:
           chart: ./chart
           values: |
             ci/values.yaml
 ```
 
-Nothing is released yet, so pin the Action to a full commit SHA.
+Pin the Action to the full commit SHA of a release tag, with the tag in a comment, as for `actions/checkout` above. `v0.1.0` is commit `174c1b4`.
 
 ## Inputs
 
