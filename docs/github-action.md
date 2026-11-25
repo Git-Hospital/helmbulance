@@ -56,7 +56,7 @@ Nothing is released yet, so pin the Action to a full commit SHA.
 | `traffic-path` | | The path `zero-downtime` requests; it must answer 2xx. Empty means `/`. |
 | `expected-rotation` | | Secret keys the chart changes on purpose, one `secret/key` pattern per line, globs allowed (`'*-webhook-tls/*'`). They are named in the summary, not reported. |
 | `timeout` | `10m` | Timeout for each install or upgrade. Every scenario installs for itself, so a chart that never becomes ready can wait it out many times and run past the job's `timeout-minutes`. |
-| `run-timeout` | | Limit for the whole run, such as `30m`. When it is reached, the scenario running is cut short, the rest are `INCONCLUSIVE` "not run", and cleanup and the report still happen. Set it about 12 minutes below the job's `timeout-minutes`: cleanup has its own 10 minute limit. When the job limit is reached first, the runner ends Helmbulance without a signal it can act on, and there is no report (#164). |
+| `run-timeout` | | Not in v0.1.0: from the next release. Limit for the whole run, such as `30m`; a negative value is refused. When it is reached, the scenario running is cut short, the rest are `INCONCLUSIVE` "not run", and cleanup and the report still happen. Set it about 12 minutes below the job's `timeout-minutes`: cleanup has its own 10 minute limit. When the job limit is reached first, the runner ends Helmbulance without a signal it can act on, and there is no report (#164). |
 | `report-dir` | `helmbulance-report` | Where `report.md`, `report.json` and `report.sarif` are written. |
 | `fail-on` | `findings` | `findings` fails the step on exit 1, 2 or 3. `error` fails only on 2 or 3. `never` always passes; read the `exit-code` output. |
 

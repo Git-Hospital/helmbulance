@@ -137,7 +137,7 @@ func test(args []string) int {
 		return exitError
 	}
 	// Tools first: refuseFromVersion already runs helm.
-	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) ||
+	if refuseRunTimeout(*runTimeout) || refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) ||
 		refuseFromVersion(chart, *from, *fromVersion, localVersion) || refuseChartUpgradeWithoutFromVersion(only, *fromVersion) || refuseTraffic(*trafficTarget, *trafficPath) {
 		return exitError
 	}
@@ -674,7 +674,7 @@ func matrixCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return exitError
 	}
-	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
+	if refuseRunTimeout(*runTimeout) || refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
@@ -861,6 +861,16 @@ func interruptContext() (context.Context, context.CancelFunc) {
 }
 
 const runTimeoutUsage = "limit for the whole run, such as 30m; 0 means none. When it is reached, the step running is cut short, the rest are not run, and cleanup and the report still happen. Below a CI job limit, leave about 12m for that"
+
+// refuseRunTimeout refuses a negative --run-timeout, which would otherwise mean no limit: a typo
+// such as -30m must not quietly drop the limit a CI job relies on (review of #175).
+func refuseRunTimeout(d time.Duration) bool {
+	if d < 0 {
+		fmt.Fprintf(os.Stderr, "--run-timeout must be 0 (no limit) or more, got %s\n", d)
+		return true
+	}
+	return false
+}
 
 // errRunTimeout is the cause of a run's context when --run-timeout ends it (#164).
 var errRunTimeout = errors.New("the run reached --run-timeout")
