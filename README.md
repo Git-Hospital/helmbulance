@@ -111,9 +111,10 @@ Download the archive for your system from the [v0.1.0 release](https://github.co
 ```sh
 v=v0.1.0 os=linux arch=amd64
 gh release download $v -R Git-Hospital/helmbulance -p "helmbulance_${v}_${os}_${arch}.tar.gz" -p SHA256SUMS
-sha256sum --check --ignore-missing SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS   # a Mac without sha256sum: shasum -a 256 --check --ignore-missing SHA256SUMS
 gh attestation verify "helmbulance_${v}_${os}_${arch}.tar.gz" --repo Git-Hospital/helmbulance
 tar xzf "helmbulance_${v}_${os}_${arch}.tar.gz"
+mkdir -p ~/.local/bin
 install "helmbulance_${v}_${os}_${arch}/helmbulance" ~/.local/bin/
 ```
 
