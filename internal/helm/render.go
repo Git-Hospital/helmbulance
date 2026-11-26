@@ -129,3 +129,8 @@ func InstallOnlyHook(events string) bool {
 	}
 	return install
 }
+
+// ShowValues returns the chart's default values.yaml as helm prints it.
+func (c *Client) ShowValues(ctx context.Context, chart string) ([]byte, error) {
+	return c.run(ctx, "show", "values", chart)
+}
