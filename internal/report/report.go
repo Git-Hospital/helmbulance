@@ -218,11 +218,35 @@ var markdownText = strings.NewReplacer("|", "\\|", "\n", " ", "\r", " ", "\t", "
 // would otherwise hide the pair from it and join them again when dropped (review of #121). A
 // leading "#" is escaped, since the text can start a list item, where "# x" is a heading.
 func inline(s string) string {
-	s = markdownText.Replace(dropControls(s))
-	if t := strings.TrimLeft(s, " "); strings.HasPrefix(t, "#") {
+	return leadingBlock(strings.TrimLeft(markdownText.Replace(dropControls(s)), " "))
+}
+
+// leadingBlock escapes what would start a block at the start of a list item or a cell: a heading
+// (#), a list item (-, *, + or 1. with a space after it), a thematic break (---, ***, ___) or a
+// code fence (``` or ~~~). Evidence is written as list items, where "- # x" is a heading in a
+// nested list (#170). A code span at the start, as in our own evidence, stays as it is.
+func leadingBlock(t string) string {
+	if t == "" {
+		return t
+	}
+	marker := func(i int) bool { return i == len(t) || t[i] == ' ' }
+	switch c := t[0]; {
+	case c == '#', strings.HasPrefix(t, "```"), strings.HasPrefix(t, "~~~"):
+		return `\` + t
+	case (c == '-' || c == '*' || c == '+') && marker(1):
+		return `\` + t
+	case (c == '-' || c == '*' || c == '_') && len(strings.ReplaceAll(t, " ", "")) >= 3 &&
+		strings.Trim(t, " "+string(c)) == "":
 		return `\` + t
 	}
-	return s
+	i := 0
+	for i < len(t) && i < 9 && t[i] >= '0' && t[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(t) && (t[i] == '.' || t[i] == ')') && marker(i+1) {
+		return t[:i] + `\` + t[i:]
+	}
+	return t
 }
 
 // commandLine keeps a reproduce command on one line of its code block: a values key the chart
@@ -249,11 +273,13 @@ func dropControls(s string) string {
 }
 
 // codeFence is a fence longer than any run of backticks in lines, so none of them closes the block.
+// It counts them as commandLine writes them: a control between two backticks is dropped there, and
+// would otherwise hide a longer run from the count (#170).
 func codeFence(lines []string) string {
 	longest := 2
 	for _, l := range lines {
 		run := 0
-		for _, r := range l {
+		for _, r := range commandLine(l) {
 			if r != '`' {
 				run = 0
 				continue

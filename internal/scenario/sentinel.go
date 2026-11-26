@@ -10,7 +10,7 @@ import (
 
 // busyboxImage runs Helmbulance's own helper pods (traffic, sentinels). Pinned by the digest of
 // the multi-architecture index, so amd64 and arm64 hosts get the same image.
-const busyboxImage = "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+const busyboxImage = "registry.k8s.io/e2e-test-images/busybox:1.36.1-1@sha256:a9155b13325b2abef48e71de77bb8ac015412a566829f621d06bfae5c699b1b9"
 
 // sentinelImage writes and reads the sentinel files.
 const sentinelImage = busyboxImage

@@ -27,6 +27,7 @@ const fakeKubectl = `#!/bin/sh
 for a in "$@"; do last="$a"; done
 case "$*" in
   *"get services"*) echo '{"items":[{"metadata":{"name":"web"},"spec":{"selector":{"app":"web"},"ports":[{"name":"http","port":80}]}}]}' ;;
+  *"get pods"*) cat "$FAKE_LOGS/pods" 2>/dev/null || echo '{"items":[]}' ;;
   *"get deployments,statefulsets"*) cat "$FAKE_LOGS/workloads" 2>/dev/null || echo '{"items":[{"kind":"Deployment","metadata":{"name":"web"},"spec":{"replicas":2,"template":{"metadata":{"labels":{"app":"web"}}}}}]}' ;;
   *" rollout "*) echo "$*" | sed 's/.* rollout /rollout /' >> "$FAKE_LOGS/calls" ;;
   *"get endpointslices"*)
@@ -37,6 +38,14 @@ case "$*" in
     f="$FAKE_LOGS/$last.before.$n"; [ -f "$f" ] || f="$FAKE_LOGS/$last.before"
     [ -f "$f" ] && tail -n 1 "$f" ;;
   *" logs "*) cat "$FAKE_LOGS/$last" ;;
+esac
+exit 0
+`
+
+// fakeHelm succeeds, except that an install fails with $FAKE_INSTALL_ERR when it is set.
+const fakeHelm = `#!/bin/sh
+case "$*" in
+  "install "*) if [ -n "$FAKE_INSTALL_ERR" ]; then echo "$FAKE_INSTALL_ERR" >&2; exit 1; fi ;;
 esac
 exit 0
 `
@@ -55,7 +64,7 @@ func runZeroDowntimePath(t *testing.T, logs map[string]string, path string, opts
 	t.Cleanup(func() { controlDuration, trafficLead, trafficTail = c, l, tl })
 	controlDuration, trafficLead, trafficTail = time.Millisecond, time.Millisecond, time.Millisecond
 	bin, logDir := t.TempDir(), t.TempDir()
-	for name, script := range map[string]string{"kubectl": fakeKubectl, "helm": "#!/bin/sh\nexit 0\n"} {
+	for name, script := range map[string]string{"kubectl": fakeKubectl, "helm": fakeHelm} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -672,5 +681,17 @@ func TestZeroDowntimeOneReplicaCause(t *testing.T) {
 		if !strings.Contains(got, c.want) || strings.Contains(got, c.not) {
 			t.Errorf("%s: causes =\n%s\nwant %q and not %q", name, got, c.want, c.not)
 		}
+	}
+}
+
+// An install that hit its --wait timeout while an image could not be pulled says so in the
+// INCONCLUSIVE message; helm's own error only says the deadline passed.
+func TestZeroDowntimeInstallTimeoutNamesTheWaitingReason(t *testing.T) {
+	pods := `{"items":[{"metadata":{"name":"web-1"},"status":{"phase":"Pending","containerStatuses":[` +
+		`{"name":"web","state":{"waiting":{"reason":"ImagePullBackOff"}}}]}}]}`
+	t.Setenv("FAKE_INSTALL_ERR", "Error: INSTALLATION FAILED: context deadline exceeded")
+	res := runZeroDowntime(t, map[string]string{"pods": pods})
+	if res.Verdict != Inconclusive || !strings.Contains(res.Summary, "the chart did not install (container web waiting: ImagePullBackOff)") {
+		t.Errorf("verdict = %s, summary = %q; want INCONCLUSIVE naming ImagePullBackOff", res.Verdict, res.Summary)
 	}
 }

@@ -41,6 +41,12 @@ inputs:
   timeout:
     description: Timeout for each install or upgrade.
     default: 10m
+  run-timeout:
+    description: >-
+      Limit for the whole run, such as 30m. When it is reached, the scenario running is cut short,
+      the rest are not run, and cleanup and the report still happen. Set it about 12m below the
+      job's timeout-minutes; a job limit alone leaves no report. Empty means no limit.
+    default: ""
   report-dir:
     description: Where report.md, report.json and report.sarif are written, relative to the workspace.
     default: helmbulance-report
@@ -148,6 +154,7 @@ runs:
         TRAFFIC_PATH: ${{ inputs.traffic-path }}
         EXPECTED_ROTATION: ${{ inputs.expected-rotation }}
         TIMEOUT: ${{ inputs.timeout }}
+        RUN_TIMEOUT: ${{ inputs.run-timeout }}
         REPORT_DIR: ${{ inputs.report-dir }}
         FAIL_ON: ${{ inputs.fail-on }}
       run: |
@@ -158,6 +165,7 @@ runs:
         while read -r s; do
           if [ -n "$s" ]; then args+=(--scenario "$s"); fi
         done <<< "$SCENARIOS"
+        if [ -n "$RUN_TIMEOUT" ]; then args+=(--run-timeout "$RUN_TIMEOUT"); fi
         if [ -n "$FROM" ]; then args+=(--from "$FROM"); fi
         if [ -n "$FROM_VERSION" ]; then args+=(--from-version "$FROM_VERSION"); fi
         if [ "$ALLOW_REMOTE" = true ]; then args+=(--allow-remote); fi
