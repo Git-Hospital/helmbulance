@@ -331,3 +331,59 @@ func TestSecretConsumersSeesEveryReader(t *testing.T) {
 		t.Errorf("SecretConsumers =\n%v\nwant\n%v", got, want)
 	}
 }
+
+// How each workload reads a key decides whether a rotation reaches it without a restart: only a
+// volume mounted whole is rewritten in a running container (#187).
+func TestSecretReadsTellsHowAKeyIsRead(t *testing.T) {
+	out := `{"items": [
+	  {"kind": "Deployment", "metadata": {"name": "web"}, "spec": {"template": {"spec": {
+	    "containers": [{"env": [{"name": "P", "valueFrom": {"secretKeyRef": {"name": "a", "key": "password"}}}],
+	                    "envFrom": [{"secretRef": {"name": "b"}}],
+	                    "volumeMounts": [{"name": "whole", "mountPath": "/etc/c"},
+	                                     {"name": "one", "mountPath": "/etc/d/token", "subPath": "token"}]}],
+	    "volumes": [{"name": "whole", "secret": {"secretName": "c"}},
+	                {"name": "one", "secret": {"secretName": "d"}}]}}}},
+	  {"kind": "StatefulSet", "metadata": {"name": "db"}, "spec": {"template": {"spec": {
+	    "initContainers": [{"volumeMounts": [{"name": "creds", "mountPath": "/init", "subPath": "./auth"}]}],
+	    "containers": [{"volumeMounts": [{"name": "creds", "mountPath": "/creds"}]}],
+	    "volumes": [{"name": "creds", "secret": {"secretName": "e", "items": [
+	      {"key": "user", "path": "auth/user"}, {"key": "pass", "path": "auth/pass"}, {"key": "ca.crt", "path": "ca.crt"}]}}]}}}},
+	  {"kind": "DaemonSet", "metadata": {"name": "agent"}, "spec": {"template": {"spec": {
+	    "containers": [{"volumeMounts": [{"name": "p", "mountPath": "/p/pw", "subPath": "pw"},
+	                                     {"name": "x", "mountPath": "/x", "subPathExpr": "$(POD_NAME)"}]}],
+	    "volumes": [{"name": "p", "projected": {"sources": [
+	                  {"secret": {"name": "f", "items": [{"key": "password", "path": "pw"}, {"key": "other", "path": "other"}]}},
+	                  {"configMap": {"name": "not-a-secret"}}]}},
+	                {"name": "x", "secret": {"secretName": "g"}},
+	                {"name": "unmounted", "secret": {"secretName": "h"}}]}}}}
+	]}`
+	got, err := fakeKubectl(t, out).SecretReads(t.Context(), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	web, db, agent := "Deployment/web", "StatefulSet/db", "DaemonSet/agent"
+	want := map[string][]SecretRead{
+		"a/password": {{web, ViaEnv}},
+		"b/*":        {{web, ViaEnvFrom}},
+		"c/*":        {{web, ViaVolume}},
+		"d/token":    {{web, ViaSubPath}}, // a subPath into a Secret without items is one key
+		// The init container mounts the auth directory by subPath, the main container all of it.
+		"e/user":     {{db, ViaSubPath}, {db, ViaVolume}},
+		"e/pass":     {{db, ViaSubPath}, {db, ViaVolume}},
+		"e/ca.crt":   {{db, ViaVolume}},
+		"f/password": {{agent, ViaSubPath}}, // other is in the volume, but not under the subPath
+		"g/*":        {{agent, ViaSubPath}}, // subPathExpr: any key, resolved per pod
+		"h/*":        {{agent, ViaVolume}},  // declared and not mounted counts as whole, as before
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SecretReads =\n%v\nwant\n%v", got, want)
+	}
+	consumers, err := fakeKubectl(t, out).SecretConsumers(t.Context(), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(consumers["e/user"], []string{db}) || consumers["d/*"] != nil {
+		t.Errorf("SecretConsumers lists e/user as %v and d/* as %v; want each workload once, and only the key a subPath mounts",
+			consumers["e/user"], consumers["d/*"])
+	}
+}
