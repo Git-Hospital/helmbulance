@@ -379,29 +379,44 @@ func fileSecrets(files []string) []string {
 				if dec.Decode(&doc) != nil {
 					break
 				}
-				out = secretScalars(&doc, "", out, 0)
+				out = secretScalars(&doc, "", out, 0, map[walked]bool{})
 			}
 		}
 	}
 	return out
 }
 
+// walked is a node secretScalars went through, under the key it was under.
+type walked struct {
+	n      *yaml.Node
+	parent string
+}
+
 // secretScalars walks a YAML node and appends the scalars that fileSecrets keeps. parent is the
 // key the node is under, so tls.key and ca.key count while a toleration's key does not.
-func secretScalars(n *yaml.Node, parent string, out []string, depth int) []string {
+func secretScalars(n *yaml.Node, parent string, out []string, depth int, seen map[walked]bool) []string {
 	// An alias can name a node that holds it (a: &a [*a]), which yaml.v3 returns as a cycle; helm
 	// rejects such a file, so the walk stops instead of overflowing the stack (review of #122).
 	if depth > maxValuesDepth {
 		return out
 	}
+	// Each use of an alias leads to the same node, so a list of ten aliases to a list of ten
+	// aliases is walked ten times per level unless a node already walked under the same parent is
+	// skipped: its scalars are in out already (#170).
+	if n.Kind != yaml.ScalarNode && n.Kind != yaml.AliasNode {
+		if seen[walked{n, parent}] {
+			return out
+		}
+		seen[walked{n, parent}] = true
+	}
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, c := range n.Content {
-			out = secretScalars(c, parent, out, depth+1)
+			out = secretScalars(c, parent, out, depth+1, seen)
 		}
 	case yaml.AliasNode:
 		if n.Alias != nil {
-			out = secretScalars(n.Alias, parent, out, depth+1)
+			out = secretScalars(n.Alias, parent, out, depth+1, seen)
 		}
 	case yaml.MappingNode:
 		envSecret := false
@@ -414,7 +429,7 @@ func secretScalars(n *yaml.Node, parent string, out []string, depth int) []strin
 			k, v := n.Content[i], resolveAlias(n.Content[i+1])
 			if k.Value == "<<" {
 				// A merge key puts the aliased mapping's keys into this one, under the same parent.
-				out = secretScalars(v, parent, out, depth+1)
+				out = secretScalars(v, parent, out, depth+1, seen)
 				continue
 			}
 			secret := secretKey(k.Value) || tlsKey(parent, k.Value)
@@ -432,7 +447,7 @@ func secretScalars(n *yaml.Node, parent string, out []string, depth int) []strin
 				}
 			}
 			if !strings.EqualFold(k.Value, "secretKeys") {
-				out = secretScalars(v, k.Value, out, depth+1)
+				out = secretScalars(v, k.Value, out, depth+1, seen)
 			}
 		}
 	}
@@ -462,8 +477,17 @@ func secretKey(key string) bool {
 		}
 	}
 	// Compared without _ and -, so secret_key and secret-access-key are read like secretKey and
-	// secretAccessKey, the S3 names (review of #122).
-	switch strings.NewReplacer("_", "", "-", "").Replace(k) {
+	// secretAccessKey, the S3 names (review of #122). A storage prefix is dropped first, so that
+	// awsSecretAccessKey, minioSecretKey and s3SecretKey are the key itself, while
+	// passwordSecretKey still names a key in a Secret (#170).
+	n := strings.NewReplacer("_", "", "-", "").Replace(k)
+	for _, p := range []string{"aws", "minio", "s3", "gcs"} {
+		if t, ok := strings.CutPrefix(n, p); ok {
+			n = t
+			break
+		}
+	}
+	switch n {
 	case "apikey", "secretkey", "secretaccesskey", "privatekey", "accesskey", "encryptionkey", "signingkey", "masterkey":
 		return true
 	}
@@ -482,10 +506,12 @@ func secretKey(key string) bool {
 const maxValuesDepth = 1000
 
 // keyNames are values keys that hold a key or a connection string although ValuesKeyClass does
-// not class them (review of #122): fernetKey is Airflow's, accountKey Azure Storage's.
+// not class them (review of #122): fernetKey is Airflow's, accountKey Azure Storage's,
+// replicaSetKey bitnami/mongodb's and bindpw (the LDAP bind password) bitnami/postgresql's (#170).
 var keyNames = map[string]bool{
 	"fernetkey": true, "accountkey": true, "storagekey": true, "storageaccountkey": true, "sharedkey": true,
 	"hmackey": true, "sessionkey": true, "cookiekey": true, "licensekey": true, "connectionstring": true,
+	"replicasetkey": true, "bindpw": true,
 }
 
 // tlsParents are the parents under which a key named key or crt is TLS material: tls.key and
