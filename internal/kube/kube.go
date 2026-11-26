@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"path"
 	"regexp"
 	"slices"
 	"sort"
@@ -91,56 +92,156 @@ func (c *Client) Secrets(ctx context.Context, ns string) ([]Secret, error) {
 // is left out: it reads nothing again, and a post-install hook Job stays behind with the old
 // template after an upgrade, which would make a moved key look removed (#73). A volume with items mounts only
 // those keys, and one without maps "secret/*", as it mounts the whole Secret. Used to explain the
-// impact of a changed key.
+// impact of a changed key. SecretReads says how each workload reads it.
 func (c *Client) SecretConsumers(ctx context.Context, ns string) (map[string][]string, error) {
-	workloads, err := c.podWorkloads(ctx, ns)
+	reads, err := c.SecretReads(ctx, ns)
 	if err != nil {
 		return nil, err
 	}
 	consumers := map[string][]string{}
-	add := func(ref, workload string) {
-		for _, w := range consumers[ref] {
-			if w == workload {
-				return
-			}
-		}
-		consumers[ref] = append(consumers[ref], workload)
-	}
-	// mount adds the keys a volume source mounts: the listed items, or the whole Secret.
-	mount := func(secret string, items []keyToPath, workload string) {
-		if len(items) == 0 {
-			add(secret+"/*", workload)
-		}
-		for _, it := range items {
-			add(secret+"/"+it.Key, workload)
-		}
-	}
-	for _, w := range workloads {
-		spec := podSpecOf(w)
-		for _, ctr := range append(spec.InitContainers, spec.Containers...) {
-			for _, e := range ctr.Env {
-				if ref := e.ValueFrom.SecretKeyRef; ref.Name != "" {
-					add(ref.Name+"/"+ref.Key, w.ref())
-				}
-			}
-			for _, e := range ctr.EnvFrom {
-				if e.SecretRef.Name != "" {
-					add(e.SecretRef.Name+"/*", w.ref())
-				}
-			}
-		}
-		for _, v := range spec.Volumes {
-			if v.Secret.SecretName != "" {
-				mount(v.Secret.SecretName, v.Secret.Items, w.ref())
-			}
-			for _, src := range v.Projected.Sources {
-				if src.Secret.Name != "" {
-					mount(src.Secret.Name, src.Secret.Items, w.ref())
-				}
+	for ref, rs := range reads {
+		for _, r := range rs {
+			if !slices.Contains(consumers[ref], r.Workload) {
+				consumers[ref] = append(consumers[ref], r.Workload)
 			}
 		}
 	}
 	return consumers, nil
+}
+
+// The ways a pod template reads a Secret key, as SecretReads reports them. The kubelet rewrites a
+// key in a running container only in a volume mounted whole; env and envFrom are read when the
+// container starts, and a subPath mount keeps the file it started with. Only a restart delivers a
+// new value to those three.
+const (
+	ViaEnv     = "env"
+	ViaEnvFrom = "envFrom"
+	ViaVolume  = "volume"
+	ViaSubPath = "subPath"
+)
+
+// SecretRead is one workload (kind/name) reading a Secret key in one way (Via...).
+type SecretRead struct {
+	Workload string
+	Via      string
+}
+
+// SecretReads maps "secret/key" to the workloads that read it and how, with the readers
+// SecretConsumers lists. A workload that reads a key in two ways (one container through a whole
+// volume, another through a subPath) is listed with both. Keys are "secret/*" where SecretConsumers
+// has them, and for a subPath that names a key of a volume without items, which mounts only that
+// key. A subPathExpr is resolved per pod, so it counts as a subPath for every key of the volume. A
+// volume no container mounts counts as mounted whole, as it does for SecretConsumers.
+func (c *Client) SecretReads(ctx context.Context, ns string) (map[string][]SecretRead, error) {
+	workloads, err := c.podWorkloads(ctx, ns)
+	if err != nil {
+		return nil, err
+	}
+	reads := map[string][]SecretRead{}
+	add := func(ref, workload, via string) {
+		r := SecretRead{Workload: workload, Via: via}
+		if !slices.Contains(reads[ref], r) {
+			reads[ref] = append(reads[ref], r)
+		}
+	}
+	for _, w := range workloads {
+		spec := podSpecOf(w)
+		containers := append(slices.Clone(spec.InitContainers), spec.Containers...)
+		for _, ctr := range containers {
+			for _, e := range ctr.Env {
+				if ref := e.ValueFrom.SecretKeyRef; ref.Name != "" {
+					add(ref.Name+"/"+ref.Key, w.ref(), ViaEnv)
+				}
+			}
+			for _, e := range ctr.EnvFrom {
+				if e.SecretRef.Name != "" {
+					add(e.SecretRef.Name+"/*", w.ref(), ViaEnvFrom)
+				}
+			}
+		}
+		for _, v := range spec.Volumes {
+			var sources []secretSource
+			if v.Secret.SecretName != "" {
+				sources = append(sources, secretSource{v.Secret.SecretName, v.Secret.Items})
+			}
+			for _, src := range v.Projected.Sources {
+				if src.Secret.Name != "" {
+					sources = append(sources, secretSource{src.Secret.Name, src.Secret.Items})
+				}
+			}
+			if len(sources) == 0 {
+				continue
+			}
+			whole, mounted := false, false
+			for _, ctr := range containers {
+				for _, m := range ctr.VolumeMounts {
+					if m.Name != v.Name {
+						continue
+					}
+					mounted = true
+					sub := path.Clean(m.SubPath)
+					switch {
+					case m.SubPathExpr != "":
+						for _, s := range sources {
+							for _, k := range s.keys() {
+								add(s.name+"/"+k, w.ref(), ViaSubPath)
+							}
+						}
+					case m.SubPath == "" || sub == ".":
+						whole = true
+					default:
+						for _, s := range sources {
+							for _, k := range s.under(sub) {
+								add(s.name+"/"+k, w.ref(), ViaSubPath)
+							}
+						}
+					}
+				}
+			}
+			if whole || !mounted {
+				for _, s := range sources {
+					for _, k := range s.keys() {
+						add(s.name+"/"+k, w.ref(), ViaVolume)
+					}
+				}
+			}
+		}
+	}
+	return reads, nil
+}
+
+// secretSource is one Secret in a volume: a secret volume, or one source of a projected volume.
+type secretSource struct {
+	name  string
+	items []keyToPath
+}
+
+// keys returns the keys the source mounts: the listed items, or "*" for the whole Secret.
+func (s secretSource) keys() []string {
+	if len(s.items) == 0 {
+		return []string{"*"}
+	}
+	keys := make([]string, 0, len(s.items))
+	for _, it := range s.items {
+		keys = append(keys, it.Key)
+	}
+	return keys
+}
+
+// under returns the keys a subPath mount of the volume reaches: the items at sub or below it, or,
+// with no items, the key named by sub's first element, as the whole Secret sits at the volume's
+// root with one file per key.
+func (s secretSource) under(sub string) []string {
+	if len(s.items) == 0 {
+		return []string{strings.SplitN(sub, "/", 2)[0]}
+	}
+	var keys []string
+	for _, it := range s.items {
+		if p := path.Clean(it.Path); p == sub || strings.HasPrefix(p, sub+"/") {
+			keys = append(keys, it.Key)
+		}
+	}
+	return keys
 }
 
 // StatefulWorkloads returns the workloads (kind/name) in ns that keep data across restarts: a
@@ -173,6 +274,7 @@ type podSpec struct {
 	InitContainers []container `json:"initContainers"`
 	Containers     []container `json:"containers"`
 	Volumes        []struct {
+		Name   string `json:"name"`
 		Secret struct {
 			SecretName string      `json:"secretName"`
 			Items      []keyToPath `json:"items"`
@@ -292,7 +394,8 @@ func finished(conds []condition) bool {
 
 // keyToPath is one key a Secret volume mounts.
 type keyToPath struct {
-	Key string `json:"key"`
+	Key  string `json:"key"`
+	Path string `json:"path"`
 }
 
 type container struct {
@@ -309,6 +412,11 @@ type container struct {
 			Name string `json:"name"`
 		} `json:"secretRef"`
 	} `json:"envFrom"`
+	VolumeMounts []struct {
+		Name        string `json:"name"`
+		SubPath     string `json:"subPath"`
+		SubPathExpr string `json:"subPathExpr"`
+	} `json:"volumeMounts"`
 }
 
 // DeleteNamespace removes ns and waits until it is gone.
