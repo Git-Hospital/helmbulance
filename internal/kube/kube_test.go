@@ -331,3 +331,46 @@ func TestSecretConsumersSeesEveryReader(t *testing.T) {
 		t.Errorf("SecretConsumers =\n%v\nwant\n%v", got, want)
 	}
 }
+
+// A pod that stays Pending says why in the error: the container's waiting reason, which the pod's
+// phase alone never shows (an image that cannot be pulled looks like a slow start).
+func TestRunWithPVCNamesTheWaitingReason(t *testing.T) {
+	bin := t.TempDir()
+	script := `#!/bin/sh
+case "$*" in
+  *jsonpath=*) printf Pending ;;
+  *"get pods"*) echo '{"items":[
+    {"metadata":{"name":"other"},"status":{"phase":"Pending","containerStatuses":[{"name":"x","state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}},
+    {"metadata":{"name":"hb-sentinel"},"status":{"phase":"Pending","containerStatuses":[{"name":"hb-sentinel","state":{"waiting":{"reason":"ImagePullBackOff"}}}]}}]}' ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	c := &Client{Runner: &execx.Runner{}}
+	_, err := c.RunWithPVC(t.Context(), "ns", "hb-sentinel", "busybox", "data-db-0", "true", 0)
+	want := "pod hb-sentinel is Pending after 0s (mounting data-db-0; container hb-sentinel waiting: ImagePullBackOff)"
+	if err == nil || err.Error() != want {
+		t.Errorf("RunWithPVC on a pod stuck pulling = %v, want %q", err, want)
+	}
+}
+
+func TestWaitingNote(t *testing.T) {
+	cs := []Container{
+		{Pod: "a", Name: "app", Waiting: "ImagePullBackOff"},
+		{Pod: "a", Name: "sidecar"},
+		{Pod: "b", Name: "init", Init: true, Waiting: "PodInitializing"},
+	}
+	for _, c := range []struct {
+		pod, want string
+	}{
+		{"a", "; container app waiting: ImagePullBackOff"},
+		{"", "; container app waiting: ImagePullBackOff; container init waiting: PodInitializing"},
+		{"none", ""},
+	} {
+		if got := WaitingNote(cs, c.pod); got != c.want {
+			t.Errorf("WaitingNote(%q) = %q, want %q", c.pod, got, c.want)
+		}
+	}
+}
