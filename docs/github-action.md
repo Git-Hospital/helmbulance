@@ -33,14 +33,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Git-Hospital/helmbulance@<commit SHA>
+      - uses: Git-Hospital/helmbulance@174c1b4ebe4607272e85cc3fadd782e45f3aae72 # v0.1.0
         with:
           chart: ./chart
           values: |
             ci/values.yaml
 ```
 
-Nothing is released yet, so pin the Action to a full commit SHA.
+Pin the Action to the full commit SHA of a release tag, with the tag in a comment, as for `actions/checkout` above. `v0.1.0` is commit `174c1b4`.
 
 ## Inputs
 
@@ -55,7 +55,8 @@ Nothing is released yet, so pin the Action to a full commit SHA.
 | `traffic-target` | | Where `zero-downtime` sends its requests, `service:port`. Empty picks the Service port that looks most like plain HTTP. |
 | `traffic-path` | | The path `zero-downtime` requests; it must answer 2xx. Empty means `/`. |
 | `expected-rotation` | | Secret keys the chart changes on purpose, one `secret/key` pattern per line, globs allowed (`'*-webhook-tls/*'`). They are named in the summary, not reported. |
-| `timeout` | `10m` | Timeout for each install or upgrade. |
+| `timeout` | `10m` | Timeout for each install or upgrade. Every scenario installs for itself, so a chart that never becomes ready can wait it out many times and run past the job's `timeout-minutes`. |
+| `run-timeout` | | Not in v0.1.0: from the next release. Limit for the whole run, such as `30m`; a negative value is refused. When it is reached, the scenario running is cut short, the rest are `INCONCLUSIVE` "not run", and cleanup and the report still happen. Set it about 12 minutes below the job's `timeout-minutes`: cleanup has its own 10 minute limit. When the job limit is reached first, the runner ends Helmbulance without a signal it can act on, and there is no report (#164). |
 | `report-dir` | `helmbulance-report` | Where `report.md`, `report.json` and `report.sarif` are written. |
 | `fail-on` | `findings` | `findings` fails the step on exit 1, 2 or 3. `error` fails only on 2 or 3. `never` always passes; read the `exit-code` output. |
 

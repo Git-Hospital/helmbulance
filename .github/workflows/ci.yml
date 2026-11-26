@@ -235,6 +235,21 @@ jobs:
           timeout: 3m
           report-dir: reports/rotation
 
+      # A chart that never becomes ready, with a run limit far below its install timeout (#164): the
+      # install is cut short at 3m, gitops-render is not run, and the report is still written.
+      - name: Run timeout
+        id: runtimeout
+        uses: ./ # zizmor: ignore[self-repository] only this commit is checked out; switch to $/ once confirmed for a root action
+        with:
+          chart: testdata/charts/unpullable-image
+          scenarios: |
+            upgrade-without-values
+            gitops-render
+          timeout: 10m
+          run-timeout: 3m
+          fail-on: never
+          report-dir: reports/runtimeout
+
       # allow-remote is off by default, so a chart that is not on disk is refused before any cluster
       # exists. The name is never resolved.
       - name: Remote chart, not allowed
@@ -257,6 +272,7 @@ jobs:
           REMOTE_CODE: ${{ steps.remote.outputs.exit-code }}
           REMOTE_VERDICT: ${{ steps.remote.outputs.verdict }}
           ROTATION_CODE: ${{ steps.rotation.outputs.exit-code }}
+          RUNTIMEOUT_CODE: ${{ steps.runtimeout.outputs.exit-code }}
         run: |
           echo "defective: outcome=$BAD_OUTCOME exit=$BAD_CODE verdict=$BAD_VERDICT"
           echo "fixed:     exit=$GOOD_CODE verdict=$GOOD_VERDICT"
@@ -275,3 +291,7 @@ jobs:
           echo "rotation:  exit=$ROTATION_CODE"
           [ "$ROTATION_CODE" = 1 ]
           jq -e '[.results[].findings[]?.id] == ["HB-UV-003"]' reports/rotation/report.json
+          echo "run-timeout: exit=$RUNTIMEOUT_CODE"
+          [ "$RUNTIMEOUT_CODE" = 3 ]
+          jq -e '[.results[].verdict] == ["INCONCLUSIVE", "INCONCLUSIVE"]' reports/runtimeout/report.json
+          jq -e '.results[1].summary | startswith("not run: the run reached --run-timeout")' reports/runtimeout/report.json

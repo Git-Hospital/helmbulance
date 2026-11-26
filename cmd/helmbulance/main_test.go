@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Git-Hospital/helmbulance/internal/execx"
 	"github.com/Git-Hospital/helmbulance/internal/scenario"
@@ -642,6 +644,29 @@ func TestCheckVersions(t *testing.T) {
 	}
 }
 
+// A negative --run-timeout is refused, in test and matrix, before any tool or cluster is touched.
+func TestNegativeRunTimeoutIsRefused(t *testing.T) {
+	// No kind, helm or kubectl: if the refusal is ever lost, the command stops at the missing tools
+	// with another message, instead of creating clusters (review of #175).
+	t.Setenv("PATH", "")
+	for name, cmd := range map[string]func([]string) int{"test": test, "matrix": matrixCmd} {
+		var code int
+		out := stderrOf(t, func() { code = cmd([]string{"--run-timeout", "-5m", t.TempDir()}) })
+		if code != exitError || !strings.Contains(out, "--run-timeout must be 0 (no limit) or more, got -5m0s") {
+			t.Errorf("%s --run-timeout -5m = %d, %q; want exit %d and the refusal", name, code, out, exitError)
+		}
+	}
+	for _, d := range []time.Duration{0, time.Minute} {
+		if out := stderrOf(t, func() {
+			if refuseRunTimeout(d) {
+				t.Errorf("refuseRunTimeout(%s) = true, want false", d)
+			}
+		}); out != "" {
+			t.Errorf("refuseRunTimeout(%s) printed %q", d, out)
+		}
+	}
+}
+
 func TestMatrixRefusesAnUnsupportedVersionBeforeAnyCluster(t *testing.T) {
 	if code := matrixCmd([]string{"--k8s", "1.29", t.TempDir()}); code != exitError {
 		t.Errorf("exit %d, want %d", code, exitError)
@@ -650,6 +675,76 @@ func TestMatrixRefusesAnUnsupportedVersionBeforeAnyCluster(t *testing.T) {
 
 // An alias that names a node holding it is a cycle in yaml.v3's tree; fileSecrets must return
 // instead of recursing until the stack overflows (review of #122).
+// #170: keys from real charts that held a secret and were not hidden, and S3 names with a
+// storage prefix. Keys that name a key in a Secret stay readable.
+func TestFileSecretsChartKeysAndPrefixedS3Names(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte(`
+auth:
+  replicaSetKey: RsKey-1a1a
+ldap:
+  bindpw: BindPw-2b2b
+awsSecretAccessKey: AwsSecret-3c3c
+aws_secret_access_key: AwsSecret-4d4d
+minioSecretKey: MinioSecret-5e5e
+s3SecretKey: S3Secret-6f6f
+s3:
+  passwordSecretKey: password-key-name
+  awsSecretKeyName: s3-key-name
+  existingSecretKey: existing-key-name
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := fileSecrets([]string{values})
+	for _, want := range []string{"RsKey-1a1a", "BindPw-2b2b", "AwsSecret-3c3c", "AwsSecret-4d4d", "MinioSecret-5e5e", "S3Secret-6f6f"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("fileSecrets is missing %q: %q", want, got)
+		}
+	}
+	for _, not := range []string{"password-key-name", "s3-key-name", "existing-key-name"} {
+		if slices.Contains(got, not) {
+			t.Errorf("fileSecrets hides %q, which names a key in a Secret: %q", not, got)
+		}
+	}
+}
+
+// #170, from Kadir's numbers: each key ten aliases of the one before made the walk ten times
+// longer per level (5.9s at a8). helm rejects such a file anyway, but the walk must not stall first.
+// A password at the bottom, under a credential key, must still be found.
+func TestFileSecretsWalksAnAliasTargetOnce(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("a0: &a0 [x, {password: Nested-7a7a}]\n")
+	for i := 1; i <= 8; i++ {
+		fmt.Fprintf(&b, "a%d: &a%d [%s]\n", i, i, strings.TrimSuffix(strings.Repeat(fmt.Sprintf("*a%d,", i-1), 10), ","))
+	}
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []string, 1)
+	go func() { done <- fileSecrets([]string{values}) }()
+	select {
+	case got := <-done:
+		if !slices.Contains(got, "Nested-7a7a") {
+			t.Errorf("fileSecrets = %q, want the password under the aliases", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fileSecrets took more than a second on eight levels of ten aliases")
+	}
+}
+
+// The same node can hold a secret under one key and not under another: key is TLS material under
+// tls, not under an anchor's own name. A node walked once must still be walked under a new parent.
+func TestFileSecretsWalksAnAliasAgainUnderAnotherKey(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(values, []byte("shared: &k {key: TlsKey-8b8b}\ntls: *k\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileSecrets([]string{values}); !slices.Contains(got, "TlsKey-8b8b") {
+		t.Errorf("fileSecrets = %q, want tls.key through the alias", got)
+	}
+}
+
 func TestFileSecretsSurvivesASelfReferencingAlias(t *testing.T) {
 	values := filepath.Join(t.TempDir(), "values.yaml")
 	if err := os.WriteFile(values, []byte("a: &a [*a]\npassword: AfterTheCycle-5c5c\n"), 0o600); err != nil {
@@ -657,5 +752,31 @@ func TestFileSecretsSurvivesASelfReferencingAlias(t *testing.T) {
 	}
 	if got := fileSecrets([]string{values}); !slices.Contains(got, "AfterTheCycle-5c5c") {
 		t.Errorf("fileSecrets = %q, want the password after the cycle", got)
+	}
+}
+
+// #164: a CI job limit kills helmbulance without a signal it can act on, so nothing is written.
+// --run-timeout ends the run from inside: the scenario running is cut short, the rest are "not
+// run" and say why, and the caller still cleans up and writes the report.
+func TestRunTimeoutEndsTheRunAndSaysSo(t *testing.T) {
+	ctx, cancel := withRunTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	names := []string{"a", "b"}
+	got := runEach(ctx, names, func(i int) scenario.Result {
+		<-ctx.Done() // a scenario that would outlast the limit
+		return scenario.Result{Scenario: names[i], Verdict: scenario.Inconclusive, Summary: "cut short"}
+	})
+	if len(got) != 2 || got[0].Summary != "cut short" {
+		t.Fatalf("results %+v, want a's own result first", got)
+	}
+	if got[1].Verdict != scenario.Inconclusive || !strings.Contains(got[1].Summary, "not run: the run reached --run-timeout") {
+		t.Errorf("b: %+v, want INCONCLUSIVE naming --run-timeout", got[1])
+	}
+
+	// 0, the default, sets no limit.
+	ctx, cancel = withRunTimeout(t.Context(), 0)
+	defer cancel()
+	if _, ok := ctx.Deadline(); ok {
+		t.Error("--run-timeout 0 set a deadline")
 	}
 }
