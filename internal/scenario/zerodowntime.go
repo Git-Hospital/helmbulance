@@ -384,8 +384,9 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 			"is wrong with the new version.",
 		Fix: "Run at least two replicas with a RollingUpdate that keeps them available " +
 			"(maxUnavailable: 0), a readiness probe that passes only when the app can serve, a preStop " +
-			"sleep of a few seconds so the pod leaves the Service before it stops. A single replica, " +
-			"or the Recreate strategy, always has a gap. A PodDisruptionBudget helps with node drains " +
+			"sleep of a few seconds so the pod leaves the Service before it stops. A single replica that the " +
+			"rollout stops first (a StatefulSet, or a Deployment with maxUnavailable 1), or the Recreate " +
+			"strategy, always has a gap. A PodDisruptionBudget helps with node drains " +
 			"and other evictions, not rollouts.",
 	})
 	return res
@@ -568,6 +569,8 @@ func causes(workloads []kube.Workload) []string {
 		switch {
 		case w.Kind == "DaemonSet" && (w.MaxSurge == "" || w.MaxSurge == "0" || w.MaxSurge == "0%"):
 			out = append(out, fmt.Sprintf("`%s` updates with maxSurge 0: on each node the old pod stops before the new one starts.", ref))
+		case w.Kind == "Deployment" && w.Replicas == 1 && w.Strategy != "Recreate" && !deploymentCanStopLastPod(w):
+			out = append(out, fmt.Sprintf("`%s` has 1 replica, and its rollout starts the new pod before it stops the old one.", ref))
 		case w.Kind != "DaemonSet" && w.Replicas < 2 && w.Strategy != "Recreate":
 			out = append(out, fmt.Sprintf("`%s` has %d replica; while it restarts nothing else serves.", ref, w.Replicas))
 		}
@@ -726,6 +729,47 @@ func cutoff(restarts []int64, next int) int64 {
 		return restarts[next]
 	}
 	return 0
+}
+
+// deploymentCanStopLastPod reports whether a Deployment's RollingUpdate may stop all of its pods
+// before a new one is ready. Kubernetes scales a percentage against the replica count, rounding
+// maxSurge up and maxUnavailable down, so the default 25% of one replica is a surge of 1 and an
+// unavailable of 0: the new pod is started and must be ready before the old one stops (#167). When
+// both come to 0, Kubernetes sets maxUnavailable to 1, and the old pod stops first. An empty value
+// is the API default, 25%. A value that cannot be read counts as a gap, as before.
+func deploymentCanStopLastPod(w kube.Workload) bool {
+	unavailable, ok := rolloutLimit(w.MaxUnavailable, w.Replicas, false)
+	if !ok {
+		return true
+	}
+	surge, ok := rolloutLimit(w.MaxSurge, w.Replicas, true)
+	if !ok {
+		return true
+	}
+	if surge == 0 && unavailable == 0 {
+		unavailable = 1
+	}
+	return unavailable >= w.Replicas
+}
+
+// rolloutLimit reads a maxSurge or maxUnavailable value, a count or a percentage of replicas,
+// with an empty value as the API default of 25%. roundUp is true for maxSurge.
+func rolloutLimit(v string, replicas int, roundUp bool) (int, bool) {
+	if v == "" {
+		v = "25%"
+	}
+	p, pct := strings.CutSuffix(v, "%")
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	if !pct {
+		return n, true
+	}
+	if roundUp {
+		return (n*replicas + 99) / 100, true
+	}
+	return n * replicas / 100, true
 }
 
 // oneNodeGap reports whether a workload is a DaemonSet that, on the one-node sandbox, has no pod

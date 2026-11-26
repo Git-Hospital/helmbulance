@@ -658,6 +658,32 @@ func TestZeroDowntimeControlSaysHowRequestsFailed(t *testing.T) {
 	}
 }
 
+// A one-replica Deployment with the default RollingUpdate starts the new pod and waits for it to be
+// ready before it stops the old one, so "nothing else serves" is not a cause there. It is with
+// maxUnavailable 1 or 100%, for a StatefulSet, and the Recreate line covers Recreate (#167).
+func TestZeroDowntimeOneReplicaCause(t *testing.T) {
+	const gap = "while it restarts nothing else serves"
+	const surge = "its rollout starts the new pod before it stops the old one"
+	for name, c := range map[string]struct {
+		w         kube.Workload
+		want, not string
+	}{
+		"deployment 25%":           {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "25%", MaxSurge: "25%"}, surge, gap},
+		"deployment default":       {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1}, surge, gap},
+		"deployment unavailable 1": {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "1", MaxSurge: "0"}, gap, surge},
+		"deployment no surge 25%":  {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "25%", MaxSurge: "0"}, gap, surge},
+		"deployment 100%":          {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "100%"}, gap, surge},
+		"deployment unreadable":    {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "RollingUpdate", MaxUnavailable: "x"}, gap, surge},
+		"statefulset":              {kube.Workload{Kind: "StatefulSet", Name: "db", Replicas: 1, Strategy: "RollingUpdate"}, gap, surge},
+		"deployment recreate":      {kube.Workload{Kind: "Deployment", Name: "web", Replicas: 1, Strategy: "Recreate"}, "uses the Recreate strategy", "replica"},
+	} {
+		got := strings.Join(causes([]kube.Workload{c.w}), "\n")
+		if !strings.Contains(got, c.want) || strings.Contains(got, c.not) {
+			t.Errorf("%s: causes =\n%s\nwant %q and not %q", name, got, c.want, c.not)
+		}
+	}
+}
+
 // An install that hit its --wait timeout while an image could not be pulled says so in the
 // INCONCLUSIVE message; helm's own error only says the deadline passed.
 func TestZeroDowntimeInstallTimeoutNamesTheWaitingReason(t *testing.T) {
