@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Git-Hospital/helmbulance/internal/execx"
+	"github.com/Git-Hospital/helmbulance/internal/report"
 	"github.com/Git-Hospital/helmbulance/internal/scenario"
 )
 
@@ -616,7 +618,7 @@ func TestRunEachStopsStartingAfterAnInterrupt(t *testing.T) {
 			cancel() // the interrupt arrives while a runs
 		}
 		return scenario.Result{Scenario: names[i], Verdict: scenario.Pass}
-	})
+	}, nil)
 	if !reflect.DeepEqual(ran, []string{"a"}) {
 		t.Errorf("ran %v, want only a", ran)
 	}
@@ -640,6 +642,29 @@ func TestCheckVersions(t *testing.T) {
 	for _, bad := range []string{"1.34,1.30", "", " , "} {
 		if err := checkVersions(bad); err == nil {
 			t.Errorf("checkVersions(%q) = nil, want an error", bad)
+		}
+	}
+}
+
+// A negative --run-timeout is refused, in test and matrix, before any tool or cluster is touched.
+func TestNegativeRunTimeoutIsRefused(t *testing.T) {
+	// No kind, helm or kubectl: if the refusal is ever lost, the command stops at the missing tools
+	// with another message, instead of creating clusters (review of #175).
+	t.Setenv("PATH", "")
+	for name, cmd := range map[string]func([]string) int{"test": test, "matrix": matrixCmd} {
+		var code int
+		out := stderrOf(t, func() { code = cmd([]string{"--run-timeout", "-5m", t.TempDir()}) })
+		if code != exitError || !strings.Contains(out, "--run-timeout must be 0 (no limit) or more, got -5m0s") {
+			t.Errorf("%s --run-timeout -5m = %d, %q; want exit %d and the refusal", name, code, out, exitError)
+		}
+	}
+	for _, d := range []time.Duration{0, time.Minute} {
+		if out := stderrOf(t, func() {
+			if refuseRunTimeout(d) {
+				t.Errorf("refuseRunTimeout(%s) = true, want false", d)
+			}
+		}); out != "" {
+			t.Errorf("refuseRunTimeout(%s) printed %q", d, out)
 		}
 	}
 }
@@ -729,5 +754,66 @@ func TestFileSecretsSurvivesASelfReferencingAlias(t *testing.T) {
 	}
 	if got := fileSecrets([]string{values}); !slices.Contains(got, "AfterTheCycle-5c5c") {
 		t.Errorf("fileSecrets = %q, want the password after the cycle", got)
+	}
+}
+
+// #164: a CI job limit kills helmbulance without a signal it can act on, so nothing is written.
+// --run-timeout ends the run from inside: the scenario running is cut short, the rest are "not
+// run" and say why, and the caller still cleans up and writes the report.
+func TestRunTimeoutEndsTheRunAndSaysSo(t *testing.T) {
+	ctx, cancel := withRunTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	names := []string{"a", "b"}
+	got := runEach(ctx, names, func(i int) scenario.Result {
+		<-ctx.Done() // a scenario that would outlast the limit
+		return scenario.Result{Scenario: names[i], Verdict: scenario.Inconclusive, Summary: "cut short"}
+	}, nil)
+	if len(got) != 2 || got[0].Summary != "cut short" {
+		t.Fatalf("results %+v, want a's own result first", got)
+	}
+	if got[1].Verdict != scenario.Inconclusive || !strings.Contains(got[1].Summary, "not run: the run reached --run-timeout") {
+		t.Errorf("b: %+v, want INCONCLUSIVE naming --run-timeout", got[1])
+	}
+
+	// 0, the default, sets no limit.
+	ctx, cancel = withRunTimeout(t.Context(), 0)
+	defer cancel()
+	if _, ok := ctx.Deadline(); ok {
+		t.Error("--run-timeout 0 set a deadline")
+	}
+}
+
+// #164: the report is written before the first step and after each step but the last, so a run
+// killed from outside leaves the results it had; the end of the run writes the final one.
+func TestRunEachReportsProgress(t *testing.T) {
+	var seen []int
+	names := []string{"a", "b", "c"}
+	runEach(t.Context(), names, func(i int) scenario.Result {
+		return scenario.Result{Scenario: names[i], Verdict: scenario.Pass}
+	}, func(done []scenario.Result) { seen = append(seen, len(done)) })
+	if !reflect.DeepEqual(seen, []int{0, 1, 2}) {
+		t.Errorf("progress after %v results, want [0 1 2]", seen)
+	}
+}
+
+// The partial report keeps the results so far, marks the rest "not run yet" and is not complete.
+func TestWritePartial(t *testing.T) {
+	dir := t.TempDir()
+	rep := report.Report{SchemaVersion: report.SchemaVersion, Chart: "./chart"}
+	writePartial(rep, execx.NewSandboxRunner(), time.Now(), []string{"a", "b"},
+		[]scenario.Result{{Scenario: "a", Verdict: scenario.Fail, Summary: "found"}}, dir)
+	data, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got report.Report
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Complete || got.Verdict != scenario.Fail || len(got.Results) != 2 {
+		t.Fatalf("partial report: complete=%v verdict=%s results=%+v", got.Complete, got.Verdict, got.Results)
+	}
+	if got.Results[1].Verdict != scenario.Inconclusive || !strings.HasPrefix(got.Results[1].Summary, "not run yet") {
+		t.Errorf("b: %+v, want INCONCLUSIVE not run yet", got.Results[1])
 	}
 }

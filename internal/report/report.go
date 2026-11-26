@@ -36,6 +36,10 @@ type Report struct {
 	Duration         string            `json:"duration"`
 	Results          []scenario.Result `json:"results"`
 	Commands         []execx.Command   `json:"commands"`
+	// Complete is false in the report written after each step while the run goes on, and true in
+	// the one written at its end. A run killed from outside, such as at a CI job limit, leaves the
+	// last partial report (#164).
+	Complete bool `json:"complete"`
 
 	// Hide masks secret values, URL credentials and local paths. Write applies it to every field,
 	// so nothing reaches report.json or report.md around the runner's masking. It is idempotent.
@@ -87,17 +91,41 @@ func (r *Report) Write(dir string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "report.json"), append(data, '\n'), 0o644); err != nil {
+	if err := writeFile(dir, "report.json", append(data, '\n')); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte(r.Markdown()), 0o644); err != nil {
+	if err := writeFile(dir, "report.md", []byte(r.Markdown())); err != nil {
 		return err
 	}
 	sarif, err := r.SARIF()
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "report.sarif"), sarif, 0o644)
+	return writeFile(dir, "report.sarif", sarif)
+}
+
+// writeFile replaces dir/name through a temporary file and a rename, so a run killed while it
+// writes leaves the previous file whole, never half of the new one.
+func writeFile(dir, name string, data []byte) error {
+	f, err := os.CreateTemp(dir, "."+name+".*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o644)
+	}
+	if err == nil {
+		err = os.Rename(tmp, filepath.Join(dir, name))
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }
 
 // redact masks every text field of the report. With no Hide func it falls back to redacting the
@@ -140,6 +168,9 @@ func (r *Report) redact() {
 func (r *Report) Markdown() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Helmbulance report: %s\n\n", r.Worst())
+	if !r.Complete {
+		b.WriteString("This report was written before the run finished. Steps marked \"not run yet\" had not started, and the run may have been stopped from outside.\n\n")
+	}
 	fmt.Fprintf(&b, "- Chart: `%s`\n", r.Chart)
 	if len(r.ValuesFiles) > 0 {
 		fmt.Fprintf(&b, "- Values files: `%s`\n", strings.Join(r.ValuesFiles, "`, `"))

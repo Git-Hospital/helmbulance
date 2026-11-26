@@ -120,6 +120,7 @@ func test(args []string) int {
 	keep := fs.Bool("keep-cluster", false, "keep the sandbox cluster after the run")
 	nodeImage := fs.String("node-image", "", "kind node image")
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install or upgrade")
+	runTimeout := fs.Duration("run-timeout", 0, runTimeoutUsage)
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md, report.json and report.sarif")
 	from := fs.String("from", "", "chart to upgrade from in chart-upgrade (repo/chart, oci://… or a path); defaults to the chart under test")
 	fromVersion := fs.String("from-version", "", "chart version to upgrade from; enables the chart-upgrade scenario. A local chart also needs --from")
@@ -136,7 +137,7 @@ func test(args []string) int {
 		return exitError
 	}
 	// Tools first: refuseFromVersion already runs helm.
-	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) ||
+	if refuseRunTimeout(*runTimeout) || refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart, *from) || refuseMissingValues(files) ||
 		refuseFromVersion(chart, *from, *fromVersion, localVersion) || refuseChartUpgradeWithoutFromVersion(only, *fromVersion) || refuseTraffic(*trafficTarget, *trafficPath) {
 		return exitError
 	}
@@ -147,6 +148,8 @@ func test(args []string) int {
 
 	ctx, stop := interruptContext()
 	defer stop()
+	ctx, stopTimeout := withRunTimeout(ctx, *runTimeout)
+	defer stopTimeout()
 
 	selected, err := pick(only)
 	if err != nil {
@@ -227,9 +230,10 @@ func test(args []string) int {
 	rep.Results = runEach(ctx, names, func(i int) scenario.Result {
 		fmt.Printf("▶ %s\n", names[i])
 		return selected[i].Run(ctx, env)
-	})
+	}, func(done []scenario.Result) { writePartial(*rep, runner, started, names, done, *out) })
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()
+	rep.Complete = true
 
 	if err := rep.Write(*out); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -682,6 +686,7 @@ func matrixCmd(args []string) int {
 	fs.Var(&sets, "set", "value, key=value (repeatable). Values of four or more characters are hidden in reports.")
 	versions := fs.String("k8s", strings.Join(matrix.Versions(), ","), "Kubernetes versions to test, comma-separated")
 	timeout := fs.Duration("timeout", 10*time.Minute, "timeout for each install")
+	runTimeout := fs.Duration("run-timeout", 0, runTimeoutUsage)
 	out := fs.String("report-dir", "helmbulance-report", "where to write report.md, report.json and report.sarif")
 	allowRemote := fs.Bool("allow-remote", false, "run a chart from a repository, OCI registry or URL; it runs without the third-party protections, which arrive in v0.3")
 	chart, ok := parseArgs(fs, args)
@@ -696,11 +701,13 @@ func matrixCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return exitError
 	}
-	if refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
+	if refuseRunTimeout(*runTimeout) || refuseMissingTools(clusterTools...) || refuseRemote(*allowRemote, chart) || refuseMissingValues(files) {
 		return exitError
 	}
 	ctx, stop := interruptContext()
 	defer stop()
+	ctx, stopTimeout := withRunTimeout(ctx, *runTimeout)
+	defer stopTimeout()
 
 	runner := execx.NewSandboxRunner()
 	runner.Secrets = append(execx.SetValues(sets), execx.SecretValues(fileSecrets(files))...)
@@ -727,7 +734,7 @@ func matrixCmd(args []string) int {
 	rep.Results = runEach(ctx, names, func(i int) scenario.Result {
 		fmt.Printf("▶ Kubernetes %s\n", vs[i])
 		return matrix.Run(ctx, vs[i], opts)
-	})
+	}, func(done []scenario.Result) { writePartial(*rep, runner, started, names, done, *out) })
 	attributed := matrix.Attribute(rep.Results)
 	for i, res := range attributed {
 		if res.Verdict != rep.Results[i].Verdict {
@@ -737,6 +744,7 @@ func matrixCmd(args []string) int {
 	rep.Results = attributed
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()
+	rep.Complete = true
 	if err := rep.Write(*out); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitError
@@ -790,6 +798,7 @@ func scanCmd(args []string) int {
 	}
 	rep.Duration = time.Since(started).Round(time.Second).String()
 	rep.Commands = runner.Transcript()
+	rep.Complete = true
 	if err := rep.Write(*out); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitError
@@ -880,22 +889,83 @@ func interruptContext() (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
+const runTimeoutUsage = "limit for the whole run, such as 30m; 0 means none. When it is reached, the step running is cut short, the rest are not run, and cleanup and the report still happen. Below a CI job limit, leave about 12m for that"
+
+// refuseRunTimeout refuses a negative --run-timeout, which would otherwise mean no limit: a typo
+// such as -30m must not quietly drop the limit a CI job relies on (review of #175).
+func refuseRunTimeout(d time.Duration) bool {
+	if d < 0 {
+		fmt.Fprintf(os.Stderr, "--run-timeout must be 0 (no limit) or more, got %s\n", d)
+		return true
+	}
+	return false
+}
+
+// errRunTimeout is the cause of a run's context when --run-timeout ends it (#164).
+var errRunTimeout = errors.New("the run reached --run-timeout")
+
+// withRunTimeout bounds ctx by d, or does nothing when d is 0. A CI job limit kills helmbulance
+// without a signal it can act on (the runner signals only the step's shell), so nothing is cleaned
+// up or written; a limit of its own ends the run the way the first Ctrl-C does (#164).
+func withRunTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return ctx, func() {}
+	}
+	ctx, cancel := context.WithTimeoutCause(ctx, d, errRunTimeout)
+	go func() {
+		<-ctx.Done()
+		if errors.Is(context.Cause(ctx), errRunTimeout) {
+			fmt.Fprintf(os.Stderr, "\nRun timeout of %s reached: cleaning up, then writing the report.\n", d)
+		}
+	}()
+	return ctx, cancel
+}
+
 // runEach runs step for each of names in order and prints its verdict. After an interrupt it starts
 // no more steps: each one left is INCONCLUSIVE, "not run", so the sandbox cluster is deleted
 // without waiting for the start and cleanup of scenarios that would only be cut short (#58).
-func runEach(ctx context.Context, names []string, step func(i int) scenario.Result) []scenario.Result {
+// after, when set, gets the results so far before the first step and after each one (#164).
+func runEach(ctx context.Context, names []string, step func(i int) scenario.Result, after func(done []scenario.Result)) []scenario.Result {
 	results := make([]scenario.Result, 0, len(names))
+	if after != nil {
+		after(results)
+	}
 	for i, name := range names {
 		if ctx.Err() != nil {
+			why := "the run was interrupted"
+			if errors.Is(context.Cause(ctx), errRunTimeout) {
+				why = "the run reached --run-timeout"
+			}
 			results = append(results, scenario.Result{Scenario: name, Verdict: scenario.Inconclusive,
-				Summary: "not run: the run was interrupted before it started"})
+				Summary: "not run: " + why + " before it started"})
 			continue
 		}
 		res := step(i)
 		fmt.Printf("  %s: %s\n", res.Verdict, oneLine(res.Summary))
 		results = append(results, res)
+		if after != nil && i < len(names)-1 {
+			after(results)
+		}
 	}
 	return results
+}
+
+// writePartial writes the report while the run goes on: the results so far, the steps left as
+// INCONCLUSIVE "not run yet", and Complete false. A CI job limit kills helmbulance without a
+// signal it can act on, and this is then the report that is left (#164). rep is a copy, so the
+// final report is untouched. A failed write is logged and the run goes on.
+func writePartial(rep report.Report, runner *execx.Runner, started time.Time, names []string, done []scenario.Result, dir string) {
+	rep.Results = append([]scenario.Result{}, done...)
+	for _, name := range names[len(done):] {
+		rep.Results = append(rep.Results, scenario.Result{Scenario: name, Verdict: scenario.Inconclusive,
+			Summary: "not run yet: this report was written before the run reached it"})
+	}
+	rep.Duration = time.Since(started).Round(time.Second).String()
+	rep.Commands = runner.Transcript()
+	rep.Complete = false
+	if err := rep.Write(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "could not write the partial report: %v\n", err)
+	}
 }
 
 // checkVersions refuses a --k8s list that names a version with no pinned node image, or none at
