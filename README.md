@@ -2,7 +2,7 @@
 
 **Behavioural tests for Helm charts.** Helmbulance installs a chart into a throwaway Kubernetes cluster and runs the things that go wrong in production: upgrades without the original values, uninstall and reinstall, password rotation, network isolation, broken processes, hostile traffic. It reports what actually broke, with evidence and a suggested fix.
 
-> **Status: early.** The CLI runs five scenarios (`upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`) end to end on kind. Nothing is released yet. See [docs/architecture.md](docs/architecture.md) for the design.
+> **Status: early.** The CLI runs six scenarios (`upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `rollback`) end to end on kind. [v0.1.0](https://github.com/Git-Hospital/helmbulance/releases/tag/v0.1.0) is the first release. See [docs/architecture.md](docs/architecture.md) for the design.
 
 ## Why
 
@@ -31,7 +31,7 @@ AI review can propose findings. Helmbulance only reports a finding once the clus
 |---|---|---|
 | `upgrade-without-values` | Does an upgrade from the values files, without the install-time `--set` flags, change or drop Secret values? | **works** |
 | `chart-upgrade` | Does upgrading from an earlier chart version, with the same values, succeed, keep the Secrets, and leave the workloads healthy? | **works** |
-| `rollback` | After an upgrade to the new chart version, does `helm rollback` bring the earlier version back deployed, healthy and with the same Secrets? | **works** (on `main`, after v0.1) |
+| `rollback` | After an upgrade to the new chart version, does `helm rollback` bring the earlier version back deployed, healthy and with the same Secrets? | **works** (v0.1.0) |
 | `zero-downtime` | Do requests fail while the pods are replaced, during a rolling restart or a version upgrade? How long is the outage? | **works** |
 | `helmbulance scan` | Static pre-screen, no cluster, seconds: immutable fields changed since `--from-version`, checksums that change on the first upgrade, Secrets generated anew on every render. Lists **candidates** and the `test` run that confirms each. | **works** |
 | `helmbulance matrix` | Does the chart install and run on every supported Kubernetes version (1.34–1.37), and does the API server warn about what it creates? | **works** |
@@ -94,7 +94,7 @@ More case studies:
 
 ## Roadmap
 
-- **v0.1:** the CLI with `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `scan` and `matrix`, Markdown, JSON and SARIF reports, and an experimental GitHub Action ([its limits](docs/github-action.md#status-experimental)).
+- **v0.1:** the CLI with `upgrade-without-values`, `chart-upgrade`, `zero-downtime`, `reinstall`, `gitops-render`, `rollback`, `scan` and `matrix`, Markdown, JSON and SARIF reports, and an experimental GitHub Action ([its limits](docs/github-action.md#status-experimental)).
 - **v0.1.x:** `network-isolation`.
 - **v0.2:** `secret-rotation`, `immutable-fields`, `process-kill`, uploading the SARIF report to GitHub code scanning, and signed releases.
 - **v0.3:** `probe-abuse`, a hardened mode for charts you did not write, and optional AI hypotheses that the cluster must confirm.
@@ -104,22 +104,43 @@ Helmbulance runs entirely on your machine or in your CI. There is no server and 
 
 ## Try it
 
-Requires Go, Docker, kind, helm and kubectl. CI tests with kind v0.33.0, Helm v4.3.0 and v3.22.0 and kubectl v1.37.1, and `matrix` needs kind v0.33 for its node images. The [GitHub Action](docs/github-action.md) runs the same checks in CI; the [decisions](docs/decisions/) record what is in scope and why.
+Helmbulance needs Docker, kind, helm and kubectl. CI tests with kind v0.33.0, Helm v4.3.0 and v3.22.0 and kubectl v1.37.1, and `matrix` needs kind v0.33 for its node images. The [GitHub Action](docs/github-action.md) runs the same checks in CI; the [decisions](docs/decisions/) record what is in scope and why.
+
+Download the archive for your system from the [v0.1.0 release](https://github.com/Git-Hospital/helmbulance/releases/tag/v0.1.0) (Linux and macOS, amd64 and arm64), check it and put the binary on your `PATH`:
 
 ```sh
-go build -o bin/helmbulance ./cmd/helmbulance
-./bin/helmbulance test ./path/to/chart -f values.yaml --set some.secret=value
-./bin/helmbulance test ./path/to/chart --scenario chart-upgrade --from ./old/chart --from-version 1.2.3
-./bin/helmbulance matrix ./path/to/chart -f values.yaml --k8s 1.34,1.37
-./bin/helmbulance scan ./path/to/chart --from ./old/chart --from-version 1.2.3     # no cluster needed
+v=v0.1.0 os=linux arch=amd64
+gh release download $v -R Git-Hospital/helmbulance -p "helmbulance_${v}_${os}_${arch}.tar.gz" -p SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS   # a Mac without sha256sum: shasum -a 256 --check --ignore-missing SHA256SUMS
+gh attestation verify "helmbulance_${v}_${os}_${arch}.tar.gz" --repo Git-Hospital/helmbulance
+tar xzf "helmbulance_${v}_${os}_${arch}.tar.gz"
+mkdir -p ~/.local/bin
+install "helmbulance_${v}_${os}_${arch}/helmbulance" ~/.local/bin/
 ```
+
+Or with Go 1.21 or later, which fetches the Go 1.27.4 toolchain from `go.mod` by itself unless `GOTOOLCHAIN` turns that off:
+
+```sh
+go install github.com/Git-Hospital/helmbulance/cmd/helmbulance@v0.1.0
+```
+
+Then:
+
+```sh
+helmbulance test ./path/to/chart -f values.yaml --set some.secret=value
+helmbulance test ./path/to/chart --scenario chart-upgrade --from ./old/chart --from-version 1.2.3
+helmbulance matrix ./path/to/chart -f values.yaml --k8s 1.34,1.37
+helmbulance scan ./path/to/chart --from ./old/chart --from-version 1.2.3     # no cluster needed
+```
+
+To build from a checkout instead: `go build -o bin/helmbulance ./cmd/helmbulance`.
 
 The fixtures in `testdata/charts/` show what it finds: each defect has a fixed twin that must pass.
 
 **Secret drift severity.** A changed or removed key is rated from its name and its readers. It is high for a credential (password, token, key) that a workload with a PersistentVolumeClaim reads, since that data was likely written with the old value. It is low for TLS material, which charts often reissue on purpose. Everything else is medium. If the chart rotates a key on purpose, list it and it is named in the summary instead of reported. Secret names carry the release name, `hb-upgrade` in `upgrade-without-values` and `hb-chart` in `chart-upgrade`, so use a glob:
 
 ```sh
-./bin/helmbulance test ./path/to/chart --expected-rotation '*-webhook-tls/*'
+helmbulance test ./path/to/chart --expected-rotation '*-webhook-tls/*'
 ```
 
 **Run only charts you trust.** `test` and `matrix` install the chart into a kind cluster on your Docker host, and the protections for someone else's chart (architecture §4) arrive in v0.3. Until then any third-party chart runs unprotected, whether it comes from a repository or a local copy. `test` and `matrix` refuse a repository, OCI or URL reference unless you pass `--allow-remote`. The refusal catches mistakes; it is not a protection: `helm pull --untar` and a local path skip it, and a local chart's vendored `charts/` subcharts are third-party code too. `scan` only renders the chart and needs no cluster.
