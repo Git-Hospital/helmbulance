@@ -44,6 +44,14 @@ func readsKey(key string) string {
 	return `{"items":[{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{"containers":[{"name":"c","env":[{"name":"X","valueFrom":{"secretKeyRef":{"name":"app","key":"` + key + `","optional":true}}}]}]}}}}]}`
 }
 
+// subPathReads is a Deployment that mounts only app/<key>, by a subPath into a volume of the whole
+// Secret.
+func subPathReads(key string) string {
+	return `{"items":[{"kind":"Deployment","metadata":{"name":"web"},"spec":{"template":{"spec":{
+  "containers":[{"name":"c","volumeMounts":[{"name":"app","mountPath":"/etc/app/` + key + `","subPath":"` + key + `"}]}],
+  "volumes":[{"name":"app","secret":{"secretName":"app"}}]}}}}]}`
+}
+
 // finishedHookReads is a Deployment that reads app/db-password next to a finished post-install hook
 // Job that read app/<key>.
 func finishedHookReads(key string) string {
@@ -112,10 +120,19 @@ func TestChartUpgradeSecretKeys(t *testing.T) {
 		// nothing that will run (#73).
 		{"v2 renames a key only a finished hook Job names", finishedHookReads("password"), secretJSON("db-password", pw),
 			Pass, "values moved to another key, not a finding: `app/password -> app/db-password` moved"},
+		// A subPath mounts one file, so the app that reads token never read password: the rename
+		// is a move, not a key the app lost (review of #188).
+		{"v2 renames a key next to one the app mounts by subPath", subPathReads("token"), secretJSON("db-password", pw, "token", "dA=="),
+			Pass, "values moved to another key, not a finding: `app/password -> app/db-password` moved"},
+		{"v2 renames the key the app mounts by subPath", subPathReads("password"), secretJSON("db-password", pw, "token", "dA=="),
+			Fail, "problem(s) upgrading"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			before := secretJSON("password", pw)
+			if strings.Contains(c.upgraded, `"token"`) {
+				before = secretJSON("password", pw, "token", "dA==")
+			}
 			res := ChartUpgrade{}.Run(t.Context(), stagedEnv(t, c.workloads, before, before, c.upgraded))
 			if res.Verdict != c.verdict || !strings.Contains(res.Summary, c.inSummary) {
 				t.Errorf("verdict %s, summary %q; want %s with %q", res.Verdict, res.Summary, c.verdict, c.inSummary)
