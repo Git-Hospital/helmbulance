@@ -11,6 +11,8 @@
 uncovered:
   HB-K8S-004: no fixture yet for an API server warning, other than a deprecation, about an object the chart creates
   HB-RI-003: no fixture yet for a chart that does not install again after helm uninstall
+  HB-NI-001: network-isolation is not registered yet; its defect/fixed pair comes with the scenario (#182)
+  HB-NI-002: network-isolation is not registered yet; its defect/fixed pair comes with the scenario (#182)
 
 cases:
   # upgrade-without-values
