@@ -3,6 +3,7 @@ package kube
 import (
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -76,6 +77,39 @@ func TestParseListenersEdges(t *testing.T) {
 
 // Listeners adds a restricted ephemeral container running as nobody, waits for it to finish and
 // reads its log.
+// The script exits 0 when only tcp6 is missing, as on a node booted with ipv6.disable=1, and 1
+// when tcp is (review of #181). It runs here with /proc/net swapped for a directory of fakes.
+func TestListenersScriptOnMissingTables(t *testing.T) {
+	for name, c := range map[string]struct {
+		files  []string
+		exit   int
+		header string
+	}{
+		"both":    {[]string{"tcp", "tcp6"}, 0, "== tcp6"},
+		"no tcp6": {[]string{"tcp"}, 0, "== tcp6"},
+		"no tcp":  {[]string{"tcp6"}, 1, "== tcp"},
+		"neither": {nil, 1, "== tcp"},
+	} {
+		dir := t.TempDir()
+		for _, f := range c.files {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("  sl  local_address\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		script := strings.ReplaceAll(listenersScript, "/proc/net/", dir+"/")
+		out, err := exec.Command("sh", "-c", script).CombinedOutput()
+		exit := 0
+		if ee, ok := err.(*exec.ExitError); ok {
+			exit = ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if exit != c.exit || !strings.Contains(string(out), c.header) {
+			t.Errorf("%s: exit %d, output %q; want exit %d and %q", name, exit, out, c.exit, c.header)
+		}
+	}
+}
+
 func TestListeners(t *testing.T) {
 	bin := t.TempDir()
 	calls := filepath.Join(bin, "calls")

@@ -32,8 +32,10 @@ func (l Listener) String() string { return netip.AddrPortFrom(l.Addr, l.Port).St
 var listenerPoll = time.Second
 
 // listenersScript prints both socket tables, each after a header line naming it. tcp6 is missing on
-// a node without IPv6, which is not an error.
-const listenersScript = `for t in tcp tcp6; do echo "== $t"; cat /proc/net/$t 2>/dev/null; done`
+// a node booted without IPv6, which is not an error; a missing tcp is, since there would be no
+// listeners to read. A loop would exit with the status of its last cat, the other way round
+// (review of #181).
+const listenersScript = `echo "== tcp"; cat /proc/net/tcp || exit 1; echo "== tcp6"; cat /proc/net/tcp6 2>/dev/null || true`
 
 // Listeners returns the TCP ports the pod listens on, read from /proc/net/tcp and /proc/net/tcp6
 // by an ephemeral container (architecture: network-isolation, port discovery). The containers of a
