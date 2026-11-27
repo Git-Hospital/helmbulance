@@ -47,7 +47,7 @@ func (s GitopsRender) Run(ctx context.Context, env *Env) (res Result) {
 	}
 
 	mark := len(env.Runner.Transcript())
-	if err := env.Helm.Install(ctx, release, ns, env.Chart, env.Values); err != nil {
+	if err := install(ctx, env, GitopsRender{}.Name(), release, ns, env.Chart); err != nil {
 		return inconclusive(res, "the chart did not install", err)
 	}
 	secrets := newSecretReader(ctx, env, release, ns)

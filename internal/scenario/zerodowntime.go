@@ -72,7 +72,7 @@ func (s ZeroDowntime) Run(ctx context.Context, env *Env) (res Result) {
 	if err := startClean(ctx, env, release, ns); err != nil {
 		return inconclusive(res, "could not clear what an earlier run left", err)
 	}
-	if err := env.Helm.Install(ctx, release, ns, installChart, env.Values, installExtra...); err != nil {
+	if err := install(ctx, env, ZeroDowntime{}.Name(), release, ns, installChart, installExtra...); err != nil {
 		return inconclusive(res, "the chart did not install"+installWaiting(ctx, env, ns, err), err)
 	}
 	if env.FromVersion != "" {

@@ -53,7 +53,7 @@ func (s ChartUpgrade) Run(ctx context.Context, env *Env) (res Result) {
 		return inconclusive(res, "could not clear what an earlier run left", err)
 	}
 	mark := len(env.Runner.Transcript())
-	if err := env.Helm.Install(ctx, release, ns, from, env.Values, "--version", env.FromVersion); err != nil {
+	if err := install(ctx, env, ChartUpgrade{}.Name(), release, ns, from, "--version", env.FromVersion); err != nil {
 		return inconclusive(res, "the earlier version did not install", err)
 	}
 	repro := []string{execx.ReproLine(env.Runner.Transcript()[mark].Line)}
